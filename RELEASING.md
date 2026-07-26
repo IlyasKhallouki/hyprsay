@@ -18,18 +18,23 @@ accounts/credentials; the rest is automated.
 
 ## Cutting a release
 
-1. Bump the version in BOTH `pyproject.toml` (`version`, feeds the
-   PyPI/tag build) and `src/hypruse/__init__.py` (`__version__`, feeds
-   `hypruse --version`); a test guards that they agree. Move the CHANGELOG
-   `[Unreleased]` entries under the new version.
+1. Bump the version in ALL THREE of `pyproject.toml` (`version`, feeds the
+   PyPI/tag build), `src/hypruse/__init__.py` (`__version__`, feeds
+   `hypruse --version`), and `server.json` (`version` *and*
+   `packages[0].version`, the MCP registry entry); a test guards that they
+   agree. Move the CHANGELOG `[Unreleased]` entries under the new version.
 2. Tag and push:
    ```sh
    git tag -a v0.1.0 -m "v0.1.0"
    git push origin v0.1.0
    ```
-   The `release` workflow builds, publishes to PyPI via OIDC, and cuts a
-   GitHub release with the artifacts.
-3. Verify: `uvx hypruse --version`.
+   The `release` workflow builds, publishes to PyPI via OIDC, publishes
+   `server.json` to the MCP registry (also OIDC, after waiting for the
+   release to land on PyPI), and cuts a GitHub release with the artifacts.
+3. Verify: `uvx hypruse --version`, and the registry entry:
+   ```sh
+   curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.IlyasKhallouki/hypruse"
+   ```
 
 ## AUR
 
@@ -50,6 +55,30 @@ makepkg --printsrcinfo > .SRCINFO
 ## Listings (after public + first release)
 
 - `awesome-mcp-servers` and `awesome-hyprland`: PR one entry each.
-- The MCP registry.
+- The MCP registry is automated (see above), first publish included.
 
 Test a PKGBUILD locally before pushing: `makepkg -si` in its directory.
+
+## MCP registry
+
+`server.json` is the registry entry; `mcp-publisher validate` checks it
+against the live schema before a tag goes out.
+
+Two things are easy to break and both cost a whole release to fix, because
+the registry validates ownership against the README PyPI serves as the
+package description, and a published version's description is immutable:
+
+- The `<!-- mcp-name: … -->` comment at the top of `README.md` must match
+  `server.json`'s `name` exactly, trailing boundary included.
+- The name's namespace must match the GitHub account the OIDC token comes
+  from, case for case: `io.github.IlyasKhallouki/*`. The registry builds
+  the publish permission straight from the account name and compares by
+  prefix, so a lowercased namespace is a 403.
+
+A test guards the first. To publish by hand (a re-run after a failed
+workflow, say), authenticate as yourself instead of via CI:
+
+```sh
+mcp-publisher login github     # device flow
+mcp-publisher publish
+```

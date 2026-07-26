@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-07-26
+
+### Added
+- hypruse is listed in the official [MCP registry](https://registry.modelcontextprotocol.io)
+  as `io.github.IlyasKhallouki/hypruse`, so MCP clients that browse the
+  registry can discover and install it. The entry ships as `server.json`
+  and carries the env flags (`HYPRUSE_SCREENSHOT_MODE`, `HYPRUSE_READONLY`,
+  `HYPRUSE_CONFINE`, and the rest of the trust layer) so clients can
+  surface them at install time. The `release` workflow publishes the entry
+  on a version tag, right after PyPI.
+
+No code changes: the registry verifies package ownership by finding a
+`mcp-name:` token in the README PyPI serves as the package description, and
+a published version's description cannot be edited, so the token needed a
+release of its own.
+
 ## [0.9.3] - 2026-07-22
 
 ### Fixed

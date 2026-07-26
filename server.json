@@ -1,0 +1,64 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.IlyasKhallouki/hypruse",
+  "title": "hypruse",
+  "description": "Computer use for Hyprland: semantic desktop state over IPC, plus vision and native input",
+  "version": "0.9.4",
+  "websiteUrl": "https://github.com/IlyasKhallouki/hypruse#readme",
+  "repository": {
+    "url": "https://github.com/IlyasKhallouki/hypruse",
+    "source": "github",
+    "id": "1302513522"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "hypruse",
+      "version": "0.9.4",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "HYPRUSE_SCREENSHOT_MODE",
+          "description": "How captures are returned: 'file' writes to XDG_RUNTIME_DIR and returns the path, 'image' returns the image inline. Use 'image' for clients that render MCP images but cannot read files, such as Claude Desktop.",
+          "default": "file",
+          "choices": ["file", "image"]
+        },
+        {
+          "name": "HYPRUSE_READONLY",
+          "description": "Set to 1 to expose only the observation tools (desktop, screenshot, zoom, ui, marks, binds, wait_for). The agent can see and narrate but cannot click, type, or launch.",
+          "default": "0"
+        },
+        {
+          "name": "HYPRUSE_CONFINE",
+          "description": "Restrict input to a scope of windows and refuse everything outside it: 'launched' (only windows hypruse opened this session), 'class:firefox,kitty', or 'workspace:3,special:notes'. Unset means no confinement.",
+          "placeholder": "launched"
+        },
+        {
+          "name": "HYPRUSE_AUTH_GUARD",
+          "description": "Refuse to click or type into system authentication dialogs (polkit, keyring prompts). On by default; 'strict' also refuses password fields in ordinary windows; 0 disables it.",
+          "default": "1",
+          "choices": ["1", "strict", "0"]
+        },
+        {
+          "name": "HYPRUSE_STRICT",
+          "description": "Set to 1 to refuse to act when the cursor or focused window moved since hypruse's last action, so the agent must re-read the desktop before retrying.",
+          "default": "0"
+        },
+        {
+          "name": "HYPRUSE_MARK",
+          "description": "Set to 1 to make the agent's presence legible: tag every window it opens 'hypruse-owned' and flash an on-screen notice when it opens a window or captures the screen.",
+          "default": "0"
+        },
+        {
+          "name": "HYPRUSE_CLIPBOARD",
+          "description": "Set to 1 to register the opt-in clipboard tool (never in read-only mode). Off by default because clipboards hold passwords.",
+          "default": "0"
+        }
+      ]
+    }
+  ]
+}

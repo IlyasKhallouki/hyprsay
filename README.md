@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.IlyasKhallouki/hypruse -->
+
 # hypruse
 
 **Computer use for [Hyprland](https://hypr.land).** An [MCP](https://modelcontextprotocol.io) server that gives AI agents native hands on your Wayland desktop: workspaces, windows, mouse, keyboard, screenshots.
@@ -126,7 +128,10 @@ From a source checkout:
 claude mcp add -s user hypruse -- uv run --directory /path/to/hypruse hypruse
 ```
 
-Any other MCP client: run `uvx hypruse` as a stdio server.
+Any other MCP client: run `uvx hypruse` as a stdio server. hypruse is also in
+the official [MCP registry](https://registry.modelcontextprotocol.io) as
+`io.github.IlyasKhallouki/hypruse`, so clients that browse the registry can
+install it from there.
 
 **Read-only mode:** set `HYPRUSE_READONLY=1` in the server config to expose only the observation tools (`desktop`, `screenshot`, `zoom`, `ui`, `marks`, `binds`, `wait_for`). The agent can see and narrate but cannot click, type, or launch. A good first week.
 

@@ -7,14 +7,40 @@ import pytest
 import hypruse
 from hypruse import cli
 
+ROOT = Path(__file__).resolve().parent.parent
+
 
 def test_version_sources_agree():
-    # RELEASING.md requires bumping BOTH pyproject.toml (the PyPI build)
-    # and __init__.py (what `hypruse --version` prints); a release cut with
-    # only one bumped would report the previous version forever
-    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
-    version = tomllib.loads(pyproject.read_text())["project"]["version"]
+    # RELEASING.md requires bumping pyproject.toml (the PyPI build),
+    # __init__.py (what `hypruse --version` prints), and server.json (the MCP
+    # registry entry); a release cut with only one bumped would report the
+    # previous version forever
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     assert hypruse.__version__ == version
+
+    server = json.loads((ROOT / "server.json").read_text())
+    assert server["version"] == version
+    # the registry rejects a package version that is not on PyPI yet, and
+    # validates ownership against *that* version's README
+    assert [p["version"] for p in server["packages"]] == [version]
+
+
+def test_registry_ownership_token_matches_server_name():
+    # the MCP registry proves we own the PyPI package by finding
+    # `mcp-name: <name>` in the README it published as the package
+    # description, and a PyPI release is immutable: a name that drifts from
+    # the token can only be fixed by cutting another version
+    name = json.loads((ROOT / "server.json").read_text())["name"]
+    assert tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["readme"] == "README.md"
+
+    readme = (ROOT / "README.md").read_text()
+    token = f"mcp-name: {name}"
+    assert token in readme
+    # the registry requires a boundary after the name, so the token cannot be
+    # read as the prefix of a longer one: anything outside the server-name
+    # charset, or an HTML comment close
+    rest = readme.split(token, 1)[1]
+    assert not rest[:1].isalnum() and rest[:1] not in ".-_/" or rest.startswith(("-->", "--!>"))
 
 
 def test_merge_adds_entry_preserving_others():
