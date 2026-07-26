@@ -277,3 +277,8 @@ Where an app exposes an accessibility tree, hypruse also reads it (the `ui` tool
 ## License
 
 [MIT](LICENSE)
+
+
+
+
+[![MCP Badge](https://lobehub.com/badge/mcp-full/ilyaskhallouki-hypruse)](https://lobehub.com/mcp/ilyaskhallouki-hypruse)
