@@ -178,15 +178,27 @@ def _with_pointer(fn: Callable[[VirtualPointer], Any]) -> Any:
                 raise
 
 
-def _check_button(button: str) -> None:
+# Public because the server calls them BEFORE deciding whether to act: a
+# dry run has to raise everything the real call would, and these checks
+# used to live only past the point a dry run stops at.
+def check_button(button: str) -> None:
     if button not in BUTTONS:
         raise InputError(f"unknown button {button!r}; one of {sorted(BUTTONS)}")
 
 
-def _check_xy(x: float | None, y: float | None) -> bool:
+def check_xy(x: float | None, y: float | None) -> bool:
     if (x is None) != (y is None):
         raise InputError("give both x and y, or neither")
     return x is not None
+
+
+def check_scroll(dy: float, dx: float) -> None:
+    if not dy and not dx:
+        raise InputError("scroll needs a non-zero dy or dx")
+
+
+_check_button = check_button  # the private names predate the dry run
+_check_xy = check_xy
 
 
 def move(x: float, y: float) -> None:
@@ -242,8 +254,7 @@ def scroll(
     dy: float = 0.0, dx: float = 0.0, x: float | None = None, y: float | None = None
 ) -> None:
     journal.refuse_if_dry("scroll")
-    if not dy and not dx:
-        raise InputError("scroll needs a non-zero dy or dx")
+    check_scroll(dy, dx)
     has_xy = _check_xy(x, y)
     with _seat_lock:
         if has_xy:

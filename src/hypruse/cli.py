@@ -18,8 +18,10 @@ one, whatever its shape, it is reported and left alone.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -265,19 +267,44 @@ def _clock(ts: str) -> str:
         return "--:--:--"
 
 
-def _fmt_args(args: dict[str, Any]) -> str:
+# Everything printed from a journal was written by the party being
+# audited. An agent chooses `launch(command=)`, `hypr(workspace=)`,
+# `use_bind(combo=)` and the rest verbatim, and the replay plan on screen
+# is the only review a human gives before --execute, so a value carrying
+# ESC sequences could erase the lines above it and show a plan that is
+# not the one that runs. Same treatment as safety._ACTION_JUNK, for the
+# same reason: whitelist before re-embedding in output we build.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_VALUE_MAX = 120
+
+
+def _safe(value: Any) -> str:
+    text = _CONTROL.sub(".", str(value))
+    return text[:_VALUE_MAX] + "..." if len(text) > _VALUE_MAX else text
+
+
+def _skip(value: Any) -> bool:
+    """Empty, absent, or off. Written out rather than `value in ("", None,
+    False)`, which also swallowed 0 and 0.0: a click at (0, 0) printed
+    with no coordinates at all."""
+    return value is None or value is False or value == ""
+
+
+def _fmt_args(args: Any) -> str:
     """Recorded arguments on one line, defaults and redacted text folded
     down so the interesting part of a call is what shows."""
+    if not isinstance(args, dict):  # a hand-edited or truncated journal
+        return _safe(args)
     parts = []
     for key, value in args.items():
-        if value in ("", None, False) or key == "then":
+        if _skip(value):
             continue
         if isinstance(value, dict) and value.get("redacted"):
-            parts.append(f"{key}=<{value.get('chars', '?')} chars>")
+            parts.append(f"{_safe(key)}=<{_safe(value.get('chars', '?'))} chars>")
         elif isinstance(value, list):
-            parts.append(f"{key}=[{len(value)}]")
+            parts.append(f"{_safe(key)}=[{len(value)}]")
         else:
-            parts.append(f"{key}={value}")
+            parts.append(f"{_safe(key)}={_safe(value)}")
     return " ".join(parts)
 
 
@@ -288,24 +315,27 @@ def _fmt_entry(entry: dict[str, Any], verbose: bool = False) -> str:
     """One line per call, because the arguments already say what happened.
     A refusal or an error earns a second line, since that is what someone
     reading a journal came for; results need --verbose."""
-    seq, when = entry.get("seq", "?"), _clock(entry.get("ts", ""))
+    seq, when = _safe(entry.get("seq", "?")), _clock(entry.get("ts", ""))
     if entry.get("kind") == "session":
-        mode = entry.get("mode") or {}
-        flags = " ".join(f"{k}={v}" for k, v in mode.items() if v) or "no trust flags set"
+        mode = entry.get("mode") if isinstance(entry.get("mode"), dict) else {}
+        flags = " ".join(f"{_safe(k)}={_safe(v)}" for k, v in mode.items() if v)
         tail = ""
         if entry.get("event") == "start":
-            tail = f"{entry.get('version', '')} {flags}".strip()
-        return f"{seq:>5}  {when}  session {entry.get('event', '')} pid {entry.get('pid')} {tail}"
+            tail = f"{_safe(entry.get('version', ''))} {flags or 'no trust flags set'}".strip()
+        event, pid = _safe(entry.get("event", "")), _safe(entry.get("pid"))
+        return f"{seq:>5}  {when}  session {event} pid {pid} {tail}"
     kind = "act " if entry.get("kind") == "act" else "look"
-    detail = _fmt_args(entry.get("args") or {})
-    line = f"{seq:>5}  {when}  {kind} {entry.get('tool', '?'):<10} {detail}"
+    tool, detail = _safe(entry.get("tool", "?")), _fmt_args(entry.get("args"))
+    line = f"{seq:>5}  {when}  {kind} {tool:<10} {detail}"
     if entry.get("dry"):
         line += "  (dry)"
-    outcome = entry.get("outcome", "?")
+    if entry.get("by"):
+        line += f"  (by {_safe(entry['by'])})"
+    outcome = _safe(entry.get("outcome", "?"))
     if outcome != "ok":
-        line += f"\n{_INDENT}{outcome.upper()}  {entry.get('error', '')}".rstrip()
+        line += f"\n{_INDENT}{outcome.upper()}  {_safe(entry.get('error', ''))}".rstrip()
     elif verbose and entry.get("result"):
-        line += f"\n{_INDENT}{entry['result']}"
+        line += f"\n{_INDENT}{_safe(entry['result'])}"
     return line
 
 
@@ -355,8 +385,16 @@ def journal_cmd(argv: list[str]) -> int:
 _ADDRESS_ARGS = ("window", "target")
 
 
+def _args_of(entry: dict[str, Any]) -> dict[str, Any]:
+    """A journal is a file, and a file can be hand-edited or truncated.
+    Anything that is not an object is treated as no arguments at all,
+    which the pre-flight then rejects rather than crashing on."""
+    args = entry.get("args")
+    return args if isinstance(args, dict) else {}
+
+
 def _addresses(entry: dict[str, Any]) -> list[str]:
-    args = entry.get("args") or {}
+    args = _args_of(entry)
     return [str(args[k]) for k in _ADDRESS_ARGS if str(args.get(k, "")).startswith("0x")]
 
 
@@ -384,25 +422,81 @@ def _stale(entries: list[dict[str, Any]]) -> list[str]:
 def _replay_args(entry: dict[str, Any]) -> dict[str, Any]:
     """The recorded call, minus the `then=` observation (replay reports
     its own progress and a snapshot per step would bury it)."""
-    return {k: v for k, v in (entry.get("args") or {}).items() if k != "then"}
+    return {k: v for k, v in _args_of(entry).items() if k != "then"}
 
 
 def _redacted_steps(entries: list[dict[str, Any]]) -> list[int]:
     from hypruse import journal
 
     return [
-        e.get("seq", -1)
-        for e in entries
-        if journal.redacted_text((e.get("args") or {}).get("text"))
+        e.get("seq", -1) for e in entries if journal.redacted_text(_args_of(e).get("text"))
     ]
 
 
-def _countdown(seconds: int) -> None:
+def _unreplayable(entries: list[dict[str, Any]]) -> list[str]:
+    """Recorded actions this version cannot re-issue at all, with the
+    reason. Checked BEFORE the seat is taken: a refusal that lands halfway
+    through leaves the desktop part-way through someone else's plan."""
+    reasons = []
+    for entry in entries:
+        tool, args, seq = entry.get("tool"), _args_of(entry), entry.get("seq", "?")
+        if tool not in journal_module().REPLAYABLE:
+            reasons.append(f"seq {seq}: {_safe(tool)} (recorded by a newer hypruse)")
+        elif not args:
+            reasons.append(f"seq {seq}: {_safe(tool)} has no recorded arguments")
+        elif tool == "click_ui" and args.get("mark"):
+            # marks live in the server process that drew them, so a fresh
+            # replay has no numbering to resolve `mark` against
+            mark = _safe(args["mark"])
+            reasons.append(f"seq {seq}: click_ui(mark={mark}) needs a live marks capture")
+        elif tool == "clipboard" and not _flag_on("HYPRUSE_CLIPBOARD"):
+            # the clipboard tool is opt-in on the SERVER; replay must not
+            # be the way around that gate
+            reasons.append(f"seq {seq}: clipboard is opt-in, set HYPRUSE_CLIPBOARD=1 to replay it")
+    return reasons
+
+
+def journal_module():
+    from hypruse import journal
+
+    return journal
+
+
+def _flag_on(name: str) -> bool:
+    return os.environ.get(name, "").lower() in ("1", "true", "yes", "on")
+
+
+def _take_beacon() -> bool:
+    """Raise the activity beacon for this replay, unless a live hypruse
+    already owns it. Overwriting a running server's beacon would point
+    `hypruse stop` and the Waybar indicator at the replay's pid, and
+    clearing it on the way out would leave the still-running server
+    invisible and un-stoppable."""
+    from hypruse import safety
+
+    path = safety.state_path()
+    if path.exists():
+        with contextlib.suppress(Exception):
+            os.kill(int(json.loads(path.read_text())["pid"]), 0)  # liveness only
+            return False
+    safety.init()
+    return True
+
+
+def _countdown(seconds: int) -> bool:
+    """Returns False if the human took the abort the prompt offers. That
+    abort must exit cleanly, not with a traceback: it is the documented
+    way out, not a crash."""
     print(f"taking the cursor and keyboard in {seconds}s, Ctrl+C to abort", flush=True)
-    for left in range(seconds, 0, -1):
-        print(f"  {left}...", end="\r", flush=True)
-        time.sleep(1)
+    try:
+        for left in range(seconds, 0, -1):
+            print(f"  {left}...", end="\r", flush=True)
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\naborted, nothing was replayed")
+        return False
     print("  replaying   ")
+    return True
 
 
 def _gap_before(entry: dict[str, Any], previous: dict[str, Any] | None) -> float:
@@ -414,9 +508,10 @@ def _gap_before(entry: dict[str, Any], previous: dict[str, Any] | None) -> float
     try:
         a = datetime.fromisoformat(str(previous["ts"]).replace("Z", "+00:00"))
         b = datetime.fromisoformat(str(entry["ts"]).replace("Z", "+00:00"))
-    except (ValueError, TypeError, KeyError):
-        return 0.0
-    return max((b - a).total_seconds() - float(entry.get("ms", 0)) / 1000.0, 0.0)
+        gap = (b - a).total_seconds() - float(entry.get("ms", 0)) / 1000.0
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return 0.0  # a hand-edited timestamp must not stop a replay in its tracks
+    return gap if gap > 0 else 0.0  # NaN compares false, so it lands on 0.0 too
 
 
 def replay(argv: list[str]) -> int:
@@ -438,6 +533,8 @@ def replay(argv: list[str]) -> int:
     )
     parser.add_argument("--yes", action="store_true", help="no countdown before taking the seat")
     args = parser.parse_args(argv)
+    if args.speed <= 0:
+        parser.error("--speed must be greater than 0")
 
     from hypruse import journal
 
@@ -456,14 +553,17 @@ def replay(argv: list[str]) -> int:
 
     print(f"{source}: {len(plan)} action(s) to replay\n")
     for entry in plan:
-        print(f"  {entry.get('seq'):>5}  {entry.get('tool')} {_fmt_args(_replay_args(entry))}")
+        seq = _safe(entry.get("seq"))
+        print(f"  {seq:>5}  {_safe(entry.get('tool'))} {_fmt_args(_replay_args(entry))}")
 
-    unknown = sorted({str(e.get("tool")) for e in plan if e.get("tool") not in journal.REPLAYABLE})
-    if unknown:
-        # a journal written by a newer hypruse. Dropping those actions and
-        # replaying the rest would produce a run that reports success while
-        # having silently done something different, so the whole run stops.
-        print(f"\nthis hypruse cannot replay: {', '.join(unknown)} (a newer version wrote them)")
+    blocked = _unreplayable(plan)
+    if blocked:
+        # Dropping these and running the rest would produce a run that
+        # reports success for a different sequence of events than the one
+        # recorded, so the whole run stops rather than part of it.
+        print("\nthis hypruse cannot replay:")
+        for reason in blocked:
+            print(f"  {reason}")
         if args.execute:
             return 1
 
@@ -493,35 +593,55 @@ def replay(argv: list[str]) -> int:
     if not args.execute:
         print("\ndry: nothing was replayed. Pass --execute to perform these actions.")
         return 0
-    if os.environ.get("HYPRUSE_READONLY", "").lower() in ("1", "true", "yes", "on"):
+    if _flag_on("HYPRUSE_READONLY"):
         print("HYPRUSE_READONLY is set: refusing to replay actions in read-only mode")
+        return 1
+    if journal.dry_run():
+        # every tool would return its "would have" plan, and reporting
+        # "replayed N actions" for that is exactly the phantom success
+        # this project ranks below an honest failure
+        print("HYPRUSE_DRYRUN is set: --execute would deliver nothing. Unset it to replay for "
+              "real, or drop --execute to see the plan.")
         return 1
 
     from hypruse import input as hinput
     from hypruse import safety, server, session
 
     session.ensure_session_env()
-    safety.init()  # the beacon: replay takes the seat, so it must show as active
-    safety.on_shutdown(hinput.release_held)
-    if not args.yes:
-        _countdown(3)
+    # a replay's own actions are journaled, but marked, so that replaying
+    # this file again does not run both the original actions and these
+    journal.set_origin("replay")
+    if _take_beacon():
+        safety.on_shutdown(hinput.release_held)
+    else:
+        print("a hypruse server already holds the activity beacon; leaving it alone")
+    if not args.yes and not _countdown(3):
+        return 1
 
     previous: dict[str, Any] | None = None
+    done = 0
     for entry in plan:
-        gap = min(_gap_before(entry, previous), max(args.max_gap, 0.0)) / max(args.speed, 0.01)
+        gap = min(_gap_before(entry, previous), max(args.max_gap, 0.0)) / args.speed
         if gap:
             time.sleep(gap)
         previous = entry
+        seq = _safe(entry.get("seq"))
         tool = getattr(server, str(entry.get("tool")))  # the pre-flight above vetted the name
         try:
             result = tool(**_replay_args(entry))
-        except Exception as exc:
-            print(f"  {entry.get('seq'):>5}  {entry.get('tool')}: {type(exc).__name__}: {exc}")
-            print("stopped at the first failure; the desktop is part-way through the journal")
+        except KeyboardInterrupt:
+            print(f"\naborted after {done}/{len(plan)} action(s); the desktop is part-way "
+                  "through the journal")
             return 1
-        head = result if isinstance(result, str) else str(result)
-        print(f"  {entry.get('seq'):>5}  {entry.get('tool')}: {head.splitlines()[0][:100]}")
-    print(f"\nreplayed {len(plan)} action(s)")
+        except Exception as exc:
+            print(f"  {seq:>5}  {_safe(entry.get('tool'))}: {type(exc).__name__}: {_safe(exc)}")
+            print(f"stopped after {done}/{len(plan)} action(s); the desktop is part-way "
+                  "through the journal")
+            return 1
+        done += 1
+        head = _safe(result if isinstance(result, str) else str(result)).splitlines()
+        print(f"  {seq:>5}  {_safe(entry.get('tool'))}: {head[0] if head else ''}")
+    print(f"\nreplayed {done} action(s)")
     return 0
 
 

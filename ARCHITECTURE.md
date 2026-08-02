@@ -141,11 +141,19 @@ acting during what the caller was told was a simulation.
 
 `hypruse replay` re-issues a journal's actions through the same tool
 functions, so the same guards apply. It prints the plan and stops unless
-`--execute`, and refuses outright on an action this version cannot
-replay, a recorded window that no longer exists, text recorded as a
-digest, or `HYPRUSE_READONLY`. Window addresses are the honest limit:
-they are heap pointers, so a journal outlives them, and an address can
-even be reused by a different window later, which no pre-flight can see.
+`--execute`, and every refusal happens in a pre-flight, before the seat
+is taken, because a refusal that lands halfway leaves the desktop
+part-way through someone else's plan. Window addresses are the honest
+limit: they are heap pointers, so a journal outlives them, and an address
+can even be reused by a different window later, which no pre-flight can
+see.
+
+Both the plan and `hypruse journal` render values that the audited party
+wrote, so `cli._safe` strips control characters before re-embedding them
+in output hypruse builds, the same treatment and for the same reason as
+`safety._ACTION_JUNK` on the beacon. Without it a recorded argument could
+carry ESC sequences that erase the lines above it, and the plan a human
+approves would not be the plan that runs.
 
 ## Testing tiers
 

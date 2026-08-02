@@ -54,6 +54,7 @@ import hashlib
 import inspect
 import json
 import os
+import stat
 import sys
 import threading
 import time
@@ -64,6 +65,7 @@ from typing import Any
 
 RECORD_VERSION = 1
 
+_ON = ("1", "true", "yes", "on")
 _OFF = ("", "0", "false", "no", "off")
 
 
@@ -79,7 +81,11 @@ class DryRunError(RuntimeError):
 
 
 def _flag(name: str, default: str = "") -> bool:
-    return os.environ.get(name, default).lower() not in _OFF
+    """Same polarity as trust._flag, deliberately: only an explicitly
+    affirmative value turns a flag on. A looser reading would make
+    HYPRUSE_JOURNAL_TEXT=maybe write keystrokes to disk, and would let
+    this module's session header claim a guard was on that was not."""
+    return os.environ.get(name, default).lower() in _ON
 
 
 def dry_run() -> bool:
@@ -108,13 +114,17 @@ def default_path() -> Path:
 
 
 def path() -> Path | None:
-    """Where the journal is written, or None when recording is off."""
+    """Where the journal is written, or None when recording is off. Never
+    raises: this is called on every tool call, and a recorder that turns a
+    bad path into a failed action would be a guard."""
     raw = os.environ.get("HYPRUSE_JOURNAL", "").strip()
     if raw.lower() in _OFF:
         return None
-    if raw.lower() in ("1", "true", "yes", "on"):
-        return default_path()
-    return Path(raw).expanduser()
+    try:
+        return default_path() if raw.lower() in _ON else Path(raw).expanduser()
+    except (OSError, RuntimeError, ValueError) as exc:
+        _warn_once(f"HYPRUSE_JOURNAL={raw!r} is not a usable path ({exc}); not recording")
+        return None
 
 
 def enabled() -> bool:
@@ -122,12 +132,15 @@ def enabled() -> bool:
 
 
 # XDG_STATE_HOME is real disk, so an unattended agent must not fill it.
-# One rotation generation: the current file plus `.1`, capped at this
-# size each. A busy day is a few hundred KB, so the default holds months.
+# One rotation generation: the current file plus `.1`, capped at this size
+# each. A busy day is a few hundred KB, so the default holds months. Zero
+# or less means no rotation, which is what someone setting it to 0 asked
+# for; clamping that UP to some floor would quietly discard history.
 def _max_bytes() -> int:
-    with contextlib.suppress(ValueError):
-        return max(int(os.environ.get("HYPRUSE_JOURNAL_MAX_BYTES", "8388608")), 4096)
-    return 8388608
+    try:
+        return int(os.environ.get("HYPRUSE_JOURNAL_MAX_BYTES", "8388608"))
+    except ValueError:
+        return 8388608
 
 
 _write_lock = threading.Lock()
@@ -135,6 +148,26 @@ _seq_lock = threading.Lock()
 _seq = 0
 _broken = False  # warn once, then stay quiet: stderr is not a log sink
 _local = threading.local()
+_origin = ""  # set by a non-agent writer (replay) so its entries stand apart
+
+
+def set_origin(name: str) -> None:
+    """Mark subsequent records as written by something other than the
+    agent. `hypruse replay` sets it, so that replaying a journal into the
+    same file cannot make the next replay run everything twice."""
+    global _origin
+    _origin = name
+
+
+def _warn_once(message: str) -> None:
+    """The journal never fails an action, so a problem with it is reported
+    exactly once and then stops talking. stderr, because stdout is the MCP
+    transport."""
+    global _broken
+    if _broken:
+        return
+    _broken = True
+    print(f"hypruse: {message}", file=sys.stderr)
 
 
 def _next_seq() -> int:
@@ -149,28 +182,53 @@ def _now() -> str:
 
 
 def _rotate(target: Path, limit: int) -> None:
+    if limit <= 0:
+        return
     with contextlib.suppress(OSError):
         if target.stat().st_size >= limit:
             target.replace(target.with_suffix(target.suffix + ".1"))
 
 
+def _regular(target: Path) -> bool:
+    """Whether the journal path is a plain file we can append to. A FIFO
+    would block the write (and every other tool call behind the lock)
+    until something read it, and /dev/stdout would inject NDJSON straight
+    into the MCP transport. stat() answers without opening, which is the
+    point: opening a FIFO is what blocks."""
+    try:
+        return stat.S_ISREG(os.stat(target).st_mode)
+    except FileNotFoundError:
+        return True  # not there yet; we are about to create it
+    except OSError:
+        return False
+
+
 def _emit(entry: dict[str, Any]) -> None:
-    """Append one line. Best-effort by contract: see the module docstring."""
-    global _broken
+    """Append one line. Best-effort by contract: see the module docstring.
+
+    Created 0600 in a 0700 directory. An audit trail carries window
+    titles, launched command lines, and (opted in) keystrokes, so the
+    default umask's world-readable 0644 is the wrong answer on any
+    machine with a second account on it.
+    """
     target = path()
     if target is None:
         return
-    line = json.dumps(entry, default=str) + "\n"
+    line = (json.dumps(entry, default=str) + "\n").encode("utf-8", "replace")
     try:
         with _write_lock:
-            target.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            if not _regular(target):
+                _warn_once(f"the journal path {target} is not a regular file; not recording")
+                return
             _rotate(target, _max_bytes())
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(line)
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(fd, line)
+            finally:
+                os.close(fd)
     except OSError as exc:
-        if not _broken:
-            _broken = True
-            print(f"hypruse: cannot write the journal at {target} ({exc})", file=sys.stderr)
+        _warn_once(f"cannot write the journal at {target} ({exc})")
 
 
 # --- redaction --------------------------------------------------------------
@@ -187,20 +245,29 @@ def _digest(text: str) -> dict[str, Any]:
     }
 
 
-def redact(args: dict[str, Any]) -> dict[str, Any]:
-    """Replace typed and copied text with a digest, including inside a
-    `sequence`'s steps, unless HYPRUSE_JOURNAL_TEXT is set."""
+def redact(value: Any) -> Any:
+    """Replace typed and copied text with a digest, unless
+    HYPRUSE_JOURNAL_TEXT is set.
+
+    Recurses through every dict and list rather than only through a
+    `sequence`'s `steps`, and digests a `text` of ANY type rather than
+    only a str. Both were holes: a nested structure or a non-string
+    `text` (a JSON number, a list) reached disk verbatim while the
+    caller had been promised a digest. Redaction is the one thing here
+    that must fail CLOSED, so it errs toward digesting something that
+    was not a secret rather than writing something that was.
+    """
     if text_recorded():
-        return args
-    out: dict[str, Any] = {}
-    for key, value in args.items():
-        if key == "text" and isinstance(value, str):
-            out[key] = _digest(value)
-        elif key == "steps" and isinstance(value, list):
-            out[key] = [redact(s) if isinstance(s, dict) else s for s in value]
-        else:
-            out[key] = value
-    return out
+        return value
+    if isinstance(value, dict):
+        return {k: _digest(_as_text(v)) if k == "text" else redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    return value
+
+
+def _as_text(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, default=str)
 
 
 def redacted_text(value: Any) -> bool:
@@ -231,11 +298,26 @@ def _summarize(result: Any) -> str:
 
 def _bound_args(sig: inspect.Signature, args: tuple, kwargs: dict) -> dict[str, Any]:
     """The arguments as CALLED, without defaults filled in, so the record
-    shows what the agent asked for and replay re-issues exactly that."""
+    shows what the agent asked for and replay re-issues exactly that.
+
+    A call that does not bind is normal, not exotic: `sequence` steps are
+    raw dicts the agent wrote, dispatched with `handler(**step)` and never
+    validated by the MCP layer, so one extra or misspelled key lands here.
+    The fallback therefore keeps the KEY NAMES at the top level, because
+    the caller of this function redacts by key name; the earlier version
+    nested them inside a list, where `text` was no longer a key and a
+    password went to disk in plain sight.
+    """
     try:
         bound = sig.bind(*args, **kwargs)
     except TypeError:
-        return {"<unbindable>": [list(args), kwargs]}
+        out: dict[str, Any] = {"unbound": True, **kwargs}
+        if args:
+            # positional arguments cannot be named when the bind failed,
+            # so they cannot be redacted by name either; record that there
+            # were some rather than their values
+            out["positional"] = len(args)
+        return out
     return dict(bound.arguments)
 
 
@@ -259,10 +341,12 @@ def record(
         "ts": _now(),
         "kind": kind,
         "tool": tool,
-        "args": redact(args),
+        "args": redact(dict(args)),
         "outcome": outcome,
         "ms": round(ms, 1),
     }
+    if _origin:
+        entry["by"] = _origin
     if parent is not None:
         entry["parent"] = parent
     if dry_run():
@@ -366,10 +450,39 @@ def _mode() -> dict[str, Any]:
     }
 
 
+def _resume_seq(target: Path) -> None:
+    """Continue the file's numbering instead of restarting at 1.
+
+    A journal outlives the process that wrote it, so a per-process
+    counter would put two different entries numbered 3 in one file and
+    make `replay --from 3` mean nothing. Only the tail is read: the last
+    entry holds the highest number, and reading a months-old journal in
+    full to learn one integer would be silly.
+    """
+    global _seq
+    highest = 0
+    try:
+        with open(target, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 65536))
+            tail = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return
+    for line in tail.splitlines():
+        with contextlib.suppress(json.JSONDecodeError):
+            found = json.loads(line)
+            if isinstance(found, dict) and isinstance(found.get("seq"), int):
+                highest = max(highest, found["seq"])
+    with _seq_lock:
+        _seq = max(_seq, highest)
+
+
 def start(version: str) -> None:
     """Open a session in the journal. Safe to call when recording is off."""
-    if not enabled():
+    target = path()
+    if target is None:
         return
+    _resume_seq(target)
     _emit(
         {
             "v": RECORD_VERSION,
@@ -436,10 +549,17 @@ _NOT_REPLAYED = ("sequence",)
 
 def replayable(entry: dict[str, Any]) -> bool:
     """Whether an entry is an action replay should re-issue: it delivered
-    input (or would have, under a dry run), it succeeded, and it is not
-    the `sequence` wrapper around steps that were recorded separately."""
+    input (or would have, under a dry run), it succeeded, it is not the
+    `sequence` wrapper around steps that were recorded separately, and it
+    was not itself written BY a replay.
+
+    That last one matters because replay appends to the same file it
+    reads: without it, replaying a journal twice would run the first
+    replay's own entries as well, doubling the plan every time.
+    """
     return (
         entry.get("kind") == "act"
         and entry.get("outcome") == "ok"
         and entry.get("tool") not in _NOT_REPLAYED
+        and not entry.get("by")
     )

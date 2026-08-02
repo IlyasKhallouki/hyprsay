@@ -252,6 +252,16 @@ def test_a_clipboard_read_still_reads(dry, monkeypatch):
 )
 def test_the_effect_boundary_refuses_under_dry_run(monkeypatch, call):
     monkeypatch.setenv("HYPRUSE_DRYRUN", "1")
+    # If the barrier ever regresses, this test must FAIL, not dispatch
+    # killactive at whatever the developer had focused. Every backend
+    # below the barrier is replaced with something that says so.
+    def escaped(*_a, **_k):
+        raise AssertionError("the dry-run barrier let a real effect through")
+
+    monkeypatch.setattr(hyprctl, "_run", escaped)
+    monkeypatch.setattr(hinput, "_wtype", escaped)
+    monkeypatch.setattr(hinput, "_with_pointer", escaped)
+    monkeypatch.setattr(clip, "_tool", escaped)
     with pytest.raises(journal.DryRunError, match="dry-run barrier"):
         call()
 
@@ -265,3 +275,51 @@ def test_reads_are_never_barriered(monkeypatch):
 def test_the_barrier_is_off_when_dry_run_is(monkeypatch):
     monkeypatch.delenv("HYPRUSE_DRYRUN", raising=False)
     journal.refuse_if_dry("anything")  # no raise
+
+
+# --- round-6 review: a rehearsal must reject what the real run rejects -------
+
+
+def test_an_unknown_button_is_rejected(dry):
+    # the check lives in hinput.click, which a dry run never reaches, so
+    # the tool has to make it before deciding whether to act
+    with pytest.raises(hinput.InputError, match="unknown button"):
+        srv.pointer("click", x=1, y=1, button="wheel")
+
+
+def test_a_half_given_point_is_rejected(dry):
+    with pytest.raises(hinput.InputError, match="both x and y"):
+        srv.pointer("click", x=1)
+
+
+def test_a_scroll_of_nothing_is_rejected(dry):
+    with pytest.raises(hinput.InputError, match="non-zero"):
+        srv.pointer("scroll", x=1, y=1)
+
+
+def test_an_unknown_modifier_is_rejected(dry):
+    with pytest.raises(hinput.InputError, match="unknown modifier"):
+        srv.keyboard("key", keys="ctlr+t")
+
+
+def test_a_bad_combo_does_not_focus_the_window_first(dry, monkeypatch):
+    # a refused call must not have moved the human's focus on its way out
+    monkeypatch.delenv("HYPRUSE_DRYRUN", raising=False)
+    with pytest.raises(hinput.InputError):
+        srv.keyboard("key", keys="ctlr+t", window="0xabc")
+    assert dry == []
+
+
+def test_a_malformed_target_is_rejected_for_every_action(dry):
+    for action in ("fullscreen", "toggle_floating"):
+        with pytest.raises(ValueError, match="not a window address"):
+            srv.hypr(action, target="firefox")
+
+
+def test_the_same_rejections_happen_for_real(dry, monkeypatch):
+    monkeypatch.delenv("HYPRUSE_DRYRUN", raising=False)
+    with pytest.raises(hinput.InputError, match="unknown button"):
+        srv.pointer("click", x=1, y=1, button="wheel")
+    with pytest.raises(hinput.InputError, match="non-zero"):
+        srv.pointer("scroll", x=1, y=1)
+    assert dry == []

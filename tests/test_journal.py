@@ -3,6 +3,7 @@ and the ways a recorder must not break the thing it records."""
 
 import inspect
 import json
+import os
 
 import pytest
 
@@ -327,3 +328,122 @@ def test_a_clipboard_read_is_an_observation_and_a_write_is_not(journal_file, mon
     srv.clipboard("read")
     srv.clipboard("write", text="hello")
     assert [e["kind"] for e in entries(journal_file)] == ["observe", "act"]
+
+
+# --- what the round-6 adversarial review found ------------------------------
+
+
+def test_a_call_that_does_not_bind_still_redacts(journal_file):
+    # a sequence step is a raw agent-written dict dispatched with
+    # handler(**step), so one extra key lands on the unbindable path; the
+    # first version nested the kwargs inside a list, where `text` was no
+    # longer a key and the password went to disk in plain sight
+    with pytest.raises(TypeError):
+        acted(action="type", text="hunter2", delay_ms=30)
+    args = entries(journal_file)[0]["args"]
+    assert args["unbound"] is True
+    assert args["text"]["redacted"] is True
+    assert "hunter2" not in json.dumps(entries(journal_file))
+
+
+def test_unnameable_positional_args_are_counted_not_recorded(journal_file):
+    @journal.journaled("act")
+    def two_args(a: str, b: str) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError):
+        two_args("x", "secret", "extra")
+    assert entries(journal_file)[0]["args"]["positional"] == 3
+    assert "secret" not in json.dumps(entries(journal_file))
+
+
+def test_text_is_digested_whatever_type_it_is(journal_file):
+    @journal.journaled("act")
+    def sequence(steps: list) -> str:
+        return "ran"
+
+    sequence([{"op": "keyboard", "text": 4321}, {"op": "keyboard", "text": ["a", "b"]}])
+    steps = entries(journal_file)[0]["args"]["steps"]
+    assert all(s["text"]["redacted"] for s in steps)
+    assert "4321" not in json.dumps(entries(journal_file))
+
+
+def test_redaction_reaches_arbitrary_nesting(journal_file):
+    @journal.journaled("act")
+    def sequence(steps: list) -> str:
+        return "ran"
+
+    sequence([{"op": "x", "inner": {"deeper": [{"text": "hunter2"}]}}])
+    assert "hunter2" not in json.dumps(entries(journal_file))
+
+
+def test_opting_in_to_text_needs_an_affirmative_value(journal_file, monkeypatch):
+    # a privacy control must not be turned on by a typo
+    monkeypatch.setenv("HYPRUSE_JOURNAL_TEXT", "please-dont")
+    acted("type", text="hunter2")
+    assert entries(journal_file)[0]["args"]["text"]["redacted"] is True
+
+
+def test_the_session_header_reports_the_flags_the_guards_actually_read(journal_file, monkeypatch):
+    # trust._flag and this module's must agree, or the header claims a
+    # protection that was never in force
+    monkeypatch.setenv("HYPRUSE_STRICT", "sortof")
+    journal.start("9.9.9")
+    assert entries(journal_file)[0]["mode"]["strict"] is False
+
+
+def test_the_journal_is_not_world_readable(journal_file):
+    # window titles, launched command lines, and opted-in keystrokes
+    acted("click")
+    assert journal_file.stat().st_mode & 0o077 == 0
+
+
+def test_an_unusable_path_disables_recording_rather_than_failing_the_action(
+    monkeypatch, capsys, tmp_path
+):
+    monkeypatch.setenv("HYPRUSE_JOURNAL", "~nosuchuser/journal.ndjson")
+    assert acted("click") == "did click"
+    assert journal.path() is None
+
+
+def test_a_fifo_journal_path_is_refused_not_opened(monkeypatch, capsys, tmp_path):
+    # opening a FIFO blocks until something reads it, which would wedge
+    # every tool call behind the write lock; /dev/stdout would be worse
+    # still, injecting NDJSON into the MCP transport
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    monkeypatch.setenv("HYPRUSE_JOURNAL", str(fifo))
+    assert acted("click") == "did click"
+    assert "not a regular file" in capsys.readouterr().err
+
+
+def test_zero_max_bytes_means_no_rotation(journal_file, monkeypatch):
+    monkeypatch.setenv("HYPRUSE_JOURNAL_MAX_BYTES", "0")
+    journal_file.write_text('{"v": 1, "seq": 1, "kind": "act"}\n' * 500)
+    acted("click")
+    assert not journal_file.with_suffix(".ndjson.1").exists()
+    assert len(entries(journal_file)) == 501
+
+
+def test_seq_continues_a_previous_session(journal_file):
+    journal_file.write_text('{"v": 1, "seq": 40, "kind": "act", "tool": "x"}\n')
+    journal.start("9.9.9")
+    acted("click")
+    assert [e["seq"] for e in entries(journal_file)][1:] == [41, 42]
+
+
+def test_a_replays_own_entries_are_not_replayed_again():
+    # replay appends to the file it reads, so without this a second
+    # replay would run both the original actions and the first replay's
+    assert not journal.replayable(
+        {"kind": "act", "outcome": "ok", "tool": "pointer", "by": "replay"}
+    )
+
+
+def test_replay_origin_is_recorded(journal_file):
+    journal.set_origin("replay")
+    try:
+        acted("click")
+    finally:
+        journal.set_origin("")
+    assert entries(journal_file)[0]["by"] == "replay"

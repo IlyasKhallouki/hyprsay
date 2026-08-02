@@ -594,6 +594,10 @@ def pointer(
         # refuse); a move only shifts the cursor. A lock DOMINATES the
         # layer note below: when locked, the input never reached any layer.
         note = trust.guard_session_lock(False, allow_auth)
+    # The input layer's own argument checks run HERE, not only inside the
+    # hinput calls below, because a dry run stops before those and a
+    # rehearsal that accepts a call the real run rejects is worse than no
+    # rehearsal. Same functions, so the errors are identical either way.
     if action == "move":
         # a move only repositions the cursor; the input-delivering actions
         # below are the ones the confinement and auth guards gate
@@ -603,6 +607,8 @@ def pointer(
         if not dry:
             hinput.move(x, y)
     elif action == "click":
+        hinput.check_button(button)
+        hinput.check_xy(x, y)
         trust.guard_pointer(x, y, allow_auth)  # None x/y = click at current cursor
         note = note or _layer_note(x, y)
         plan = f"{'double-' if double else ''}click {button} at {_at(x, y)}"
@@ -611,6 +617,7 @@ def pointer(
     elif action == "drag":
         if None in (x, y, to_x, to_y):
             raise ValueError("drag needs x, y, to_x, to_y")
+        hinput.check_button(button)
         trust.guard_pointer(x, y, allow_auth)
         trust.guard_pointer(to_x, to_y, allow_auth)  # the drag ends elsewhere; guard that too
         note = note or _layer_note(x, y)
@@ -618,6 +625,8 @@ def pointer(
         if not dry:
             hinput.drag(x, y, to_x, to_y, button=button)  # type: ignore[arg-type]
     elif action == "scroll":
+        hinput.check_scroll(scroll_dy, scroll_dx)
+        hinput.check_xy(x, y)
         trust.guard_pointer(x, y, allow_auth)  # None x/y = scroll at current cursor
         note = note or _layer_note(x, y)
         plan = f"scroll dy={scroll_dy:g} dx={scroll_dx:g} at {_at(x, y)}"
@@ -663,6 +672,11 @@ def keyboard(
         raise ValueError("type needs text")
     if action == "key" and not keys:
         raise ValueError("key needs keys")
+    if action == "key":
+        # an unknown modifier used to surface from wtype AFTER the target
+        # window had been focused, which is the seat change a refused call
+        # must not have made; it is also what a dry run has to raise
+        hinput.parse_combo(keys)
     addr_str = _addr(window) if window else ""  # validate the address format first
     # a locked session eats all input, and a mapped launcher layer holds
     # the keyboard grab regardless of window focus: both refuse when that
@@ -876,7 +890,9 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
         raise ValueError("workspace action needs `workspace`")
     if action == "move_window" and not workspace:
         raise ValueError("move_window needs `workspace`")
-    if action in ("focus_window", "move_window", "close_window"):
+    if action in ("focus_window", "move_window", "close_window") or (
+        target and action in ("fullscreen", "toggle_floating")
+    ):
         _addr(target)  # the branches below re-derive it; this is the check
     # confinement: any action naming a specific window must stay in scope;
     # fullscreen/toggle_floating with no target hit the ACTIVE window, so

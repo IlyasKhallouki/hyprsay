@@ -64,6 +64,11 @@
           "default": "0"
         },
         {
+          "name": "HYPRUSE_JOURNAL_MAX_BYTES",
+          "description": "Rotate the journal once it reaches this size, keeping one previous generation alongside it. Set 0 to never rotate.",
+          "default": "8388608"
+        },
+        {
           "name": "HYPRUSE_JOURNAL_TEXT",
           "description": "Set to 1 to record typed and copied text in the journal verbatim instead of as a length plus digest. Off by default because keystrokes are passwords; needed only to replay typing.",
           "default": "0"
