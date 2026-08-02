@@ -11,6 +11,8 @@ from __future__ import annotations
 import shutil
 import subprocess
 
+from hypruse import journal
+
 
 class ClipboardError(RuntimeError):
     """wl-clipboard missing or the clipboard operation failed."""
@@ -42,6 +44,7 @@ def read() -> str:
 
 
 def write(text: str) -> None:
+    journal.refuse_if_dry("clipboard write")
     # wl-copy forks a daemon to keep serving the clipboard; it inherits
     # captured stdout/stderr pipes and never closes them, so capturing
     # output here hangs until the timeout. DEVNULL both; only the exit

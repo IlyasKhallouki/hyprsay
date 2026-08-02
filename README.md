@@ -95,7 +95,7 @@ For an agent the model calls dominate task latency, not the desktop, so the real
 
 ### 5. Safe delegation: trust layers
 
-hypruse hands an agent your real seat, so it ships the controls to bound what that agent can do. Beyond the always-on approval prompts and the Waybar activity beacon, opt-in env flags narrow what an agent can touch: `HYPRUSE_READONLY` exposes only the observation tools; `HYPRUSE_CONFINE` restricts input to the windows the agent launched, or a class/workspace allowlist; `HYPRUSE_AUTH_GUARD` (on by default) refuses to drive authentication dialogs; `HYPRUSE_STRICT` refuses to act if you took the seat back; `HYPRUSE_MARK` tags agent-owned windows and announces when the agent opens a window or captures the screen.
+hypruse hands an agent your real seat, so it ships the controls to bound what that agent can do. Beyond the always-on approval prompts and the Waybar activity beacon, opt-in env flags narrow what an agent can touch: `HYPRUSE_READONLY` exposes only the observation tools; `HYPRUSE_CONFINE` restricts input to the windows the agent launched, or a class/workspace allowlist; `HYPRUSE_AUTH_GUARD` (on by default) refuses to drive authentication dialogs; `HYPRUSE_STRICT` refuses to act if you took the seat back; `HYPRUSE_MARK` tags agent-owned windows and announces when the agent opens a window or captures the screen. Two more record rather than restrict: `HYPRUSE_JOURNAL` writes an auditable NDJSON line per tool call, refusals included, and `HYPRUSE_DRYRUN` runs every check and delivers nothing, so you can watch an agent plan the work before it touches your desktop.
 
 **Use it well:** run read-only for the first week. When you trust a workflow, allowlist its tools and, if you want to walk away, confine the agent to a scope so your password manager on another workspace stays untouchable. Keep a panic bind handy (`hypruse stop`, or `pkill -f hypruse`). The [Security model](#security-model) has the full story.
 
@@ -161,18 +161,57 @@ Read this section before installing. **hypruse hands an agent your mouse, your k
 2. **Visibility:** the server maintains an activity beacon (`$XDG_RUNTIME_DIR/hypruse/state.json`); the shipped [Waybar module](waybar/) is invisible when idle and shows a robot indicator while an agent has hands on your desktop.
 3. **Interruption:** click the indicator, or bind a panic key. The portable form works for every install: `bind = SUPER SHIFT, BackSpace, exec, pkill -f hypruse`. If `hypruse` is on your PATH (the AUR or a pipx install), `bind = SUPER SHIFT, BackSpace, exec, hypruse stop` is nicer: it signals the server to shut down gracefully, releasing any held pointer button and clearing the beacon. For a `uvx` install use `exec, uvx hypruse stop`; for a source checkout, `exec, uv run --directory /path/to/hypruse hypruse stop`. Killing it mid-action is safe either way: button press/release pairs never span tool calls, and even a long drag's held button is released on the way out.
 4. **The seat is shared.** There is one cursor and one keyboard focus, and Hyprland's focus-follows-mouse means a cursor move alone can retarget keystrokes. Don't type while an agent is driving; watch the indicator.
-5. **Scope:** stdio only (no network listener), nothing persisted except the beacon and the capped screenshot cache in `$XDG_RUNTIME_DIR` (tmpfs, newest 20), and no clipboard access unless you opt in: `HYPRUSE_CLIPBOARD=1` registers a `clipboard` tool (never in read-only mode); clipboards hold passwords, so leave it off unless a workflow needs it. A screenshot sees everything visible: treat an agent session like screen sharing.
+5. **Scope:** stdio only (no network listener), nothing persisted except the beacon and the capped screenshot cache in `$XDG_RUNTIME_DIR` (tmpfs, newest 20) and, if you turn it on, the [action journal](#the-record-journal-dry-run-replay) on disk under `$XDG_STATE_HOME` (rotated, one generation, and text-redacted by default). No clipboard access unless you opt in: `HYPRUSE_CLIPBOARD=1` registers a `clipboard` tool (never in read-only mode); clipboards hold passwords, so leave it off unless a workflow needs it. A screenshot sees everything visible: treat an agent session like screen sharing.
 6. **What the agent reads is untrusted.** Window titles, accessibility names and values, and clipboard text flow verbatim into the agent's context, and any web page, filename, or document can put instructions there (prompt injection). hypruse cannot sanitize meaning, so the approval layer is the backstop: keep consequential tools (`launch`, `keyboard`, `clipboard`) on ask-first when the agent will look at untrusted windows, and treat "the screen told me to" as attacker input when reviewing an approval prompt.
 7. **Input never lands where it silently would not work.** Three always-on checks (no env flag) refuse or annotate rather than report a phantom success: a click aimed under a launcher or on-screen keyboard layer surface (which sits above windows and would swallow it), typing while a launcher holds the keyboard grab, and any input while the session is **locked** (a live `hyprlock`/`swaylock` process, which is an `ext-session-lock` client invisible to the window and layer lists). While locked, `keyboard`/`click_ui`/`pointer` refuse unless `allow_auth=true` says a human wants the agent driving the unlock prompt. These are truthfulness aids, not a sandbox: they fail open on an unreadable system state, so they harden the common case without being a boundary you can lean on.
 
 ### Optional confinement
 
-Four opt-in env flags narrow what an agent can touch. Each fails toward *less* action and composes with the layers above:
+Six opt-in env flags narrow what an agent can touch, or record what it did. Each fails toward *less* action and composes with the layers above:
 
 - **`HYPRUSE_CONFINE`** restricts input to a scope of windows: `launched` (only windows hypruse itself opened this session), `class:firefox,kitty`, or `workspace:3,special:notes`. Keyboard, `click_ui`, and `hypr` window ops are refused outside the scope; a `pointer` click is refused when any window under the point is out of scope (Hyprland's window list is not z-ordered, so hypruse fails closed rather than guess which window is on top). This is what lets you leave an agent working while your password manager sits on another workspace, untouchable. `use_bind` is refused outright while confinement is set, because a keybind runs an arbitrary compositor action that cannot be scoped to a window.
 - **`HYPRUSE_AUTH_GUARD`** (default **on**) refuses to click or type into a system authentication dialog (polkit agents, the GNOME keyring prompt), so a manipulated agent cannot approve a privilege escalation. Set `HYPRUSE_AUTH_GUARD=strict` to also refuse typing into a password field inside an ordinary window (a browser login), detected via the accessibility tree. A per-call `allow_auth=true` on `pointer`/`keyboard`/`click_ui` overrides it, and because it changes the tool's arguments the override surfaces distinctly in the approval prompt. `HYPRUSE_AUTH_GUARD=0` disables it.
 - **`HYPRUSE_STRICT`** refuses to act when the cursor or focused window moved since hypruse's last action (the human, or a popup, took the seat): the agent must re-read `desktop`/`screenshot` and retry, so it never types into a window you just switched to.
 - **`HYPRUSE_MARK`** makes the agent's presence legible on the desktop: it tags every window the agent opens `hypruse-owned` and flashes an on-screen notice when the agent opens a window or captures the screen. It also installs a `border_color` windowrule on that tag so owned windows get a colored outline, but whether a *runtime* window rule renders depends on your Hyprland version and config precedence (on some setups it does not take effect). For a guaranteed outline, add the rule to your Hyprland config, which hypruse's tagging then matches: `windowrule = border_color rgb(ff5555), tag hypruse-owned` (older Hyprland: `tag:hypruse-owned`).
+- **`HYPRUSE_JOURNAL`** records what the agent did: one NDJSON line per tool call in `$XDG_STATE_HOME/hypruse/journal.ndjson` (`HYPRUSE_JOURNAL=1`), or a path of your own. See [The record](#the-record-journal-dry-run-replay) below.
+- **`HYPRUSE_DRYRUN`** is a rehearsal: every argument check and every guard above runs, then the call reports what it *would* have done and delivers nothing.
+
+### The record: journal, dry run, replay
+
+The flags above decide what an agent may do in the moment and then forget it happened. `HYPRUSE_JOURNAL` is the memory. One JSON object per line, so `tail -f`, `grep`, and `jq` all work on a live file:
+
+```json
+{"v":1,"seq":7,"ts":"2026-08-02T09:12:13.456Z","kind":"act","tool":"pointer",
+ "args":{"action":"click","x":800,"y":60},"outcome":"ok","ms":37,"result":"click ok"}
+```
+
+`kind` splits the two questions people actually ask: `act` is input delivered to your desktop, `observe` is the agent looking, which is what a privacy audit wants (when the screen was captured, when the clipboard was read). Observation *results* are never recorded, only that they happened, so the journal never becomes a second copy of everything the agent saw. **Refusals are recorded too**, with the guard's own message: it is the only place the history of your trust layers doing their job exists.
+
+Typed and copied text is recorded as a length plus a short digest, not as text, because keystrokes are passwords. `HYPRUSE_JOURNAL_TEXT=1` keeps it verbatim, which you need only to replay typing. The journal is a recorder, not a guard: if it cannot be written the action still happens and hypruse warns once on stderr, because failing your desktop over a log line is the wrong trade.
+
+Read it back with `hypruse journal` (`--acts` for actions only, `--refused` for what the guards stopped, `-n N` to tail, `-v` to include each result):
+
+```
+    1  09:12:10  session start pid 4211 0.10.0 confine=launched auth_guard=1 strict=True
+   14  09:12:13  act  pointer    action=click x=800 y=60
+   16  09:12:15  act  keyboard   action=type text=<11 chars>
+   19  09:12:19  act  hypr       action=close_window target=0x5f2a10
+                  REFUSED  TrustError: 0x5f2a10 (Signal) is outside the agent's confinement scope
+
+312 actions (0 dry), 604 observations, 1 refused by a trust layer, 0 errors
+```
+
+`HYPRUSE_DRYRUN=1` turns the same session into a rehearsal. Every acting tool validates its arguments and runs every trust guard, then reports the plan instead of executing it, so a dry run refuses exactly what a real run would:
+
+```
+DRY RUN, nothing was delivered: would click push button 'Send' at (1204, 880) in signal
+```
+
+Nothing reaches the desktop: not the click, not the keystroke, not even the window focus that normally precedes typing. Enforced twice, once at each tool and once at the input path itself, so a code path nobody thought of fails loudly rather than quietly acting during a simulation. The agent is told dry run is on, so it reports a plan instead of retrying an action that "did not work".
+
+`hypruse replay <journal>` re-issues a journal's actions through the same tool functions, so the same guards apply to the replay. It prints the plan and stops there unless you pass `--execute`, and it refuses to execute at all when an action was recorded by a newer hypruse, when a recorded window no longer exists (`--skip-missing` runs the rest), when typed text was recorded as a digest, or under `HYPRUSE_READONLY`. It paces itself from the recorded timing, capped by `--max-gap` and scaled by `--speed`. The honest limit is window addresses: they are heap pointers, so yesterday's journal mostly names windows that are gone, and an address can even be reused by a different window later, which no pre-flight can catch. Replay is for re-running a flow on a desktop that still looks like the one recorded.
+
+Dry run and replay compose in the obvious direction: let the agent work with `HYPRUSE_DRYRUN=1`, read the journal, and replay it with `--execute` once the plan is one you like.
 
 ## Performance
 
@@ -237,8 +276,7 @@ Grounded in measured hot-path latencies and the finding that LLM calls are 76 to
 
 **Trust**
 
-- Action journal, replay, and dry-run: an auditable NDJSON record of every action, replayable, with a validate-only mode. This is the audit trail the confinement layers (`HYPRUSE_CONFINE`, `HYPRUSE_AUTH_GUARD`, `HYPRUSE_STRICT`, `HYPRUSE_MARK`) imply but do not yet persist.
-- `record` tool: a scoped GIF or mp4 of the agent driving the desktop, via wf-recorder (a wlroots-family binary like grim), a visual companion to the journal.
+- `record` tool: a scoped GIF or mp4 of the agent driving the desktop, via wf-recorder (a wlroots-family binary like grim), a visual companion to the [journal](#the-record-journal-dry-run-replay).
 
 **Platform**
 

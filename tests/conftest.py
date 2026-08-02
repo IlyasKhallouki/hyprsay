@@ -9,7 +9,22 @@ test that wants the interesting state opts in explicitly.
 
 import pytest
 
-from hypruse import trust
+from hypruse import journal, trust
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_journal(monkeypatch):
+    """No recording, no dry run, unless a test asks for it.
+
+    Same rule as below, pointed at the developer's environment rather
+    than the machine's: a suite run with HYPRUSE_JOURNAL exported would
+    append hundreds of fabricated entries to a real audit trail, and one
+    with HYPRUSE_DRYRUN set would pass while every acting tool did
+    nothing.
+    """
+    for var in ("HYPRUSE_JOURNAL", "HYPRUSE_JOURNAL_TEXT", "HYPRUSE_DRYRUN"):
+        monkeypatch.delenv(var, raising=False)
+    journal._broken = False
 
 
 @pytest.fixture(autouse=True)

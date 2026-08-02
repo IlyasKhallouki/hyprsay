@@ -6,8 +6,8 @@ Ten-minute orientation for contributors.
 
 ```
 src/hypruse/
-  cli.py         entry point: server by default, doctor / init / stop
-                 subcommands
+  cli.py         entry point: server by default, doctor / init / stop /
+                 journal / replay subcommands
   server.py      MCP wiring: 15 tools (clipboard is opt-in), docstrings =
                  the agent-facing API
   hyprctl.py     all Hyprland IPC (queries + dispatchers), state trimming,
@@ -22,6 +22,9 @@ src/hypruse/
                  auth-guard password-field check
   trust.py       opt-in confinement, auth interlock, seat-contention guard,
                  and ownership marking (HYPRUSE_CONFINE/AUTH_GUARD/STRICT/MARK)
+  journal.py     NDJSON record of every tool call (HYPRUSE_JOURNAL) and the
+                 dry-run mode (HYPRUSE_DRYRUN) with its effect-boundary
+                 barrier; what `hypruse journal` and `hypruse replay` read
   clipboard.py   wl-clipboard wrapper for the opt-in clipboard tool
   session.py     discovers HYPRLAND_INSTANCE_SIGNATURE / WAYLAND_DISPLAY
                  from runtime-dir sockets when the host stripped the env
@@ -112,6 +115,37 @@ agent driving the prompt. The guards are the confinement
 path over the same happy path above: step 4 is refused if the point is over
 an out-of-scope or authentication window, step 2 if the target is out of
 scope.
+
+## The record: journal, dry run, replay
+
+`journal.py` is the layer beneath the guards: they decide, it remembers.
+`HYPRUSE_JOURNAL` appends one NDJSON line per tool call, written by a
+`@journal.journaled` decorator applied at each tool's DEFINITION site
+rather than at MCP registration, because `sequence` dispatches its steps
+through the module-level tool functions and those steps are the entries
+replay re-issues. Refusals are recorded with the guard's own message,
+which is the only place that history exists. Typed and copied text is
+recorded as a length plus digest unless `HYPRUSE_JOURNAL_TEXT` says
+otherwise, since the alternative is a file of passwords. Unlike a guard,
+the recorder fails toward the ACTION: an unwritable journal warns once on
+stderr and gets out of the way.
+
+`HYPRUSE_DRYRUN` is enforced twice. Each acting tool runs its argument
+checks and every `trust.guard_*` call, then returns the plan it was about
+to execute; a rehearsal whose refusals differ from the real run would be
+worth nothing, so the guards stay exactly where they are. Underneath,
+`journal.refuse_if_dry` raises at the effect boundary itself (`input`'s
+six delivery functions, `hyprctl.dispatch`, `clipboard.write`), so a path
+nobody thought of fails loudly with nothing delivered instead of quietly
+acting during what the caller was told was a simulation.
+
+`hypruse replay` re-issues a journal's actions through the same tool
+functions, so the same guards apply. It prints the plan and stops unless
+`--execute`, and refuses outright on an action this version cannot
+replay, a recorded window that no longer exists, text recorded as a
+digest, or `HYPRUSE_READONLY`. Window addresses are the honest limit:
+they are heap pointers, so a journal outlives them, and an address can
+even be reused by a different window later, which no pre-flight can see.
 
 ## Testing tiers
 

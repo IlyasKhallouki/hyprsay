@@ -6,6 +6,61 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Action journal** (`HYPRUSE_JOURNAL`): an append-only NDJSON record of
+  every tool call, one JSON object per line, in
+  `$XDG_STATE_HOME/hypruse/journal.ndjson` or a path you name. Each entry
+  carries the tool, the arguments as called, how long it took, and the
+  outcome, and a session opens with the trust flags it ran under, so a
+  refusal three hours in can be read next to the configuration that
+  produced it. Refusals are recorded with the guard's own message: the
+  confinement, auth, and seat layers previously decided and forgot, and
+  this is the only place that history exists. `kind` separates input
+  delivered to the desktop from the agent merely looking, which is the
+  split a privacy audit needs; observation payloads are never recorded,
+  only that they happened, so the journal cannot become a second copy of
+  everything the agent saw. Typed and copied text is stored as a length
+  plus a short digest unless `HYPRUSE_JOURNAL_TEXT=1` says otherwise,
+  because keystrokes are passwords. The file rotates at
+  `HYPRUSE_JOURNAL_MAX_BYTES` (8 MiB, one generation kept). Unlike a
+  guard, the recorder fails toward the ACTION: an unwritable journal
+  warns once on stderr and gets out of the way rather than failing a
+  desktop over a log line.
+- **Dry run** (`HYPRUSE_DRYRUN`): every acting tool validates its
+  arguments and runs every trust guard, then reports the plan it was
+  about to execute and delivers nothing. A rehearsal whose refusals
+  differed from the real run would be worth nothing, so the guards stay
+  exactly where they are; what changes is that no click, keystroke,
+  window op, or clipboard write leaves the process, not even the window
+  focus that normally precedes typing. Enforced twice: at each tool, and
+  at the effect boundary itself (`input`'s six delivery functions,
+  `hyprctl dispatch`, `clipboard write`), so a path nobody thought of
+  fails loudly with nothing delivered instead of quietly acting during
+  what the caller was told was a simulation. The server instructions tell
+  the agent dry run is on, so it reports a plan rather than retrying an
+  action that "did not work".
+- `hypruse journal` reads the record back: one line per call, a second
+  line for anything a trust layer refused, and a summary of actions,
+  observations, refusals, and errors. `--acts`, `--refused`, `-n N`,
+  `-v`.
+- `hypruse replay` re-issues a journal's actions through the same tool
+  functions, so the same guards apply to the replay. It prints the plan
+  and stops there unless `--execute`, and refuses to execute at all on an
+  action recorded by a newer hypruse (skipping it and running the rest
+  would report success for a different sequence of events), a recorded
+  window that no longer exists (`--skip-missing` runs the rest), text
+  recorded as a digest, or `HYPRUSE_READONLY`. It paces itself from the
+  recorded think time, capped by `--max-gap` and scaled by `--speed`, and
+  raises the activity beacon while it holds the seat, so the Waybar
+  indicator and `hypruse stop` work against a replay too.
+
+### Changed
+- `hypr` now validates its action, its `workspace` argument, and its
+  target address before any guard runs and before anything is
+  dispatched, matching what `keyboard` already did. A malformed address
+  under confinement now says so, instead of reporting the window as
+  missing.
+
 ## [0.9.4] - 2026-07-26
 
 ### Added

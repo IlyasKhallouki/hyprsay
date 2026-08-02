@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from hypruse import hyprctl
+from hypruse import hyprctl, journal
 from hypruse.wire import BUTTONS, PRESSED, RELEASED, VirtualPointer, WireError
 
 
@@ -125,13 +125,20 @@ def _wtype(args: list[str], stdin: str | None = None) -> None:
 _seat_lock = threading.RLock()
 
 
+# Every function below delivers input to the seat, so each opens with the
+# dry-run barrier: HYPRUSE_DRYRUN promises the caller that nothing reaches
+# the desktop, and the acting tools keep that promise by returning their
+# plan before they get here. The barrier is what makes the promise hold
+# for a path that was missed instead of silently breaking it.
 def type_text(text: str) -> None:
+    journal.refuse_if_dry("type_text")
     if text:
         with _seat_lock:
             _wtype(["-"], stdin=text)  # '-' reads stdin: safe for any content
 
 
 def key_combo(combo: str) -> None:
+    journal.refuse_if_dry("key_combo")
     mods, key = parse_combo(combo)
     with _seat_lock:
         _wtype(combo_to_wtype_args(mods, key))
@@ -183,6 +190,7 @@ def _check_xy(x: float | None, y: float | None) -> bool:
 
 
 def move(x: float, y: float) -> None:
+    journal.refuse_if_dry("move")
     with _seat_lock:
         hyprctl.dispatch("movecursor", str(int(round(x))), str(int(round(y))))
 
@@ -193,6 +201,7 @@ def click(
     button: str = "left",
     double: bool = False,
 ) -> None:
+    journal.refuse_if_dry("click")
     _check_button(button)
     has_xy = _check_xy(x, y)
     with _seat_lock:
@@ -203,6 +212,7 @@ def click(
 
 
 def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left") -> None:
+    journal.refuse_if_dry("drag")
     _check_button(button)
 
     def run(p: VirtualPointer) -> None:
@@ -231,6 +241,7 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left") -> No
 def scroll(
     dy: float = 0.0, dx: float = 0.0, x: float | None = None, y: float | None = None
 ) -> None:
+    journal.refuse_if_dry("scroll")
     if not dy and not dx:
         raise InputError("scroll needs a non-zero dy or dx")
     has_xy = _check_xy(x, y)

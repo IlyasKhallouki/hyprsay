@@ -24,7 +24,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ImageContent, TextContent
 
-from hypruse import __version__, a11y, events, hyprctl, safety, session, trust
+from hypruse import __version__, a11y, events, hyprctl, journal, safety, session, trust
 from hypruse import clipboard as clip
 from hypruse import input as hinput
 from hypruse import screenshot as shot
@@ -110,10 +110,23 @@ global = geometry[:2] + image_pixel / scale, using the metadata's
 When screenshot returns a file path instead of an image, read that
 file."""
 
+DRYRUN_NOTE = """\
+
+DRY RUN IS ON for this session (HYPRUSE_DRYRUN). Every acting tool still
+validates its arguments and runs every trust guard, then reports what it
+WOULD have done and delivers nothing: no click, no keystroke, no window
+op reaches the desktop. Results say so, and the screen will not change,
+so do NOT retry an action because "it did not work". Plan the work and
+report the plan; the human replays it when they are satisfied with it."""
+
 READONLY = os.environ.get("HYPRUSE_READONLY", "").lower() in ("1", "true", "yes", "on")
 CLIPBOARD = os.environ.get("HYPRUSE_CLIPBOARD", "").lower() in ("1", "true", "yes", "on")
 
-mcp = FastMCP("hypruse", instructions=READONLY_INSTRUCTIONS if READONLY else INSTRUCTIONS)
+_instructions = READONLY_INSTRUCTIONS if READONLY else INSTRUCTIONS
+if journal.dry_run() and not READONLY:  # read-only has nothing to simulate
+    _instructions += DRYRUN_NOTE
+
+mcp = FastMCP("hypruse", instructions=_instructions)
 
 
 def _runtime_dir() -> Path:
@@ -130,6 +143,7 @@ def _prune_shots(d: Path, keep: int = 20) -> None:
             old.unlink()
 
 
+@journal.journaled("observe")
 def desktop() -> dict[str, Any]:
     """Semantic desktop snapshot: monitors, workspaces, windows (address,
     class, title, `at` + `size` in global coords), active window, cursor,
@@ -208,6 +222,7 @@ def _deliver_capture(
     return _package(data, meta)
 
 
+@journal.journaled("observe")
 def screenshot(
     window: str = "",
     region: str = "",
@@ -229,6 +244,7 @@ def screenshot(
     return _deliver_capture(window, region, scale=scale, stable=stable, lossless=lossless)
 
 
+@journal.journaled("observe")
 def zoom(
     x: float,
     y: float,
@@ -338,6 +354,7 @@ def _ui_read(window: str = "", name: str = "", actionable: bool = True) -> list[
     return out
 
 
+@journal.journaled("observe")
 def ui(window: str = "", name: str = "", actionable: bool = True) -> list[Any] | str:
     """Read a window's accessibility tree (AT-SPI) and return its elements
     with GLOBAL click points, so you can target a control by NAME with no
@@ -407,6 +424,7 @@ def _draw_marks(
 _last_marks: dict[str, Any] = {}
 
 
+@journal.journaled("observe")
 def marks(window: str = "", name: str = "") -> list[Any] | str:
     """Set-of-Marks capture: a screenshot of the window WITH its accessible
     controls drawn as numbered red marks, plus a JSON legend mapping each
@@ -502,6 +520,21 @@ def _acted(msg: str, then: str, window: str = "") -> list[Any] | str:
     raise ValueError(f"unknown then {then!r}: {'|'.join(_OBSERVE_MODES)}")
 
 
+# Every dry-run result opens with this, so an agent reading its own tool
+# output cannot mistake a simulated call for one that happened.
+_DRY = "DRY RUN, nothing was delivered: would"
+
+
+def _at(x: float | None, y: float | None) -> str:
+    """A point for a dry run's plan. Omitted coordinates mean the action
+    lands wherever the cursor is when it runs, which is deliberately NOT
+    resolved to numbers here: reporting today's cursor position as the
+    plan's target would be a guess, not a prediction."""
+    if x is None or y is None:
+        return "the cursor"
+    return f"({x:.0f}, {y:.0f})"
+
+
 def _layer_note(x: float | None, y: float | None) -> str:
     """A warning to append when a focus-stealing layer surface covers the
     point a pointer action lands on: the layer receives (or swallows) the
@@ -523,6 +556,7 @@ def _layer_note(x: float | None, y: float | None) -> str:
     )
 
 
+@journal.journaled("act")
 def pointer(
     action: str,
     x: float | None = None,
@@ -546,6 +580,12 @@ def pointer(
     refusal to click over a system authentication dialog."""
     safety.touch(f"pointer:{action}")
     trust.guard_seat()
+    # HYPRUSE_DRYRUN runs every check below and then delivers nothing, so
+    # `plan` describes what each branch was about to do. The guards stay
+    # exactly where they are: a dry run whose refusals differ from the
+    # real one would be worth nothing.
+    dry = journal.dry_run()
+    plan = ""
     note = ""
     if action != "move":
         # a locked session routes every event to its credential prompt, so
@@ -559,28 +599,39 @@ def pointer(
         # below are the ones the confinement and auth guards gate
         if x is None or y is None:
             raise ValueError("move needs x and y")
-        hinput.move(x, y)
+        plan = f"move the cursor to ({x:.0f}, {y:.0f})"
+        if not dry:
+            hinput.move(x, y)
     elif action == "click":
         trust.guard_pointer(x, y, allow_auth)  # None x/y = click at current cursor
         note = note or _layer_note(x, y)
-        hinput.click(x, y, button=button, double=double)
+        plan = f"{'double-' if double else ''}click {button} at {_at(x, y)}"
+        if not dry:
+            hinput.click(x, y, button=button, double=double)
     elif action == "drag":
         if None in (x, y, to_x, to_y):
             raise ValueError("drag needs x, y, to_x, to_y")
         trust.guard_pointer(x, y, allow_auth)
         trust.guard_pointer(to_x, to_y, allow_auth)  # the drag ends elsewhere; guard that too
         note = note or _layer_note(x, y)
-        hinput.drag(x, y, to_x, to_y, button=button)  # type: ignore[arg-type]
+        plan = f"drag {button} from {_at(x, y)} to {_at(to_x, to_y)}"
+        if not dry:
+            hinput.drag(x, y, to_x, to_y, button=button)  # type: ignore[arg-type]
     elif action == "scroll":
         trust.guard_pointer(x, y, allow_auth)  # None x/y = scroll at current cursor
         note = note or _layer_note(x, y)
-        hinput.scroll(dy=scroll_dy, dx=scroll_dx, x=x, y=y)
+        plan = f"scroll dy={scroll_dy:g} dx={scroll_dx:g} at {_at(x, y)}"
+        if not dry:
+            hinput.scroll(dy=scroll_dy, dx=scroll_dx, x=x, y=y)
     else:
         raise ValueError(f"unknown action {action!r}: move|click|drag|scroll")
+    if dry:
+        return _acted(f"{_DRY} {plan}{note}", then)
     trust.remember_seat()
     return _acted(f"{action} ok; cursor now at {hyprctl.cursor_pos()}{note}", then)
 
 
+@journal.journaled("act")
 def keyboard(
     action: str,
     text: str = "",
@@ -639,10 +690,15 @@ def keyboard(
                 # compositor focus, so it runs BEFORE the focuswindow
                 # dispatch: a refused call must not move the human's focus
                 trust.guard_password_field(target, allow_auth)
+    into = f" into {window}" if window else ""
+    # focusing the target is itself a visible change to the seat, so the
+    # dry run stops short of it, not just short of the keystrokes
+    if journal.dry_run():
+        plan = f"type {len(text)} characters" if action == "type" else f"press {keys}"
+        return _acted(f"{_DRY} {plan}{into}{note}", then)
     if window:
         hyprctl.dispatch("focuswindow", addr_str)
         time.sleep(0.05)  # let keyboard focus settle before typing into it
-    into = f" into {window}" if window else ""
     if action == "type":
         hinput.type_text(text)
         trust.remember_seat()
@@ -652,6 +708,7 @@ def keyboard(
     return _acted(f"pressed {keys}{into}{note}", then)
 
 
+@journal.journaled("act")
 def click_ui(
     name: str = "",
     mark: int = 0,
@@ -722,6 +779,12 @@ def click_ui(
     # even with allow_auth: there is no "drive the prompt by control name").
     trust.guard_session_lock(True, allow_auth)
     trust.guard_covering_layer(x, y)
+    if journal.dry_run():  # before the focus dispatch, which is a real change
+        return _acted(
+            f"{_DRY} click {desc} at ({x}, {y}) in {client.get('class', '')}",
+            then,
+            window=client["address"],
+        )
     hyprctl.dispatch("focuswindow", f"address:{client['address']}")
     time.sleep(0.05)  # focus (and a possible workspace switch) settles first
     hinput.click(x, y, button=button, double=double)
@@ -782,6 +845,17 @@ def _close_and_confirm(target: str) -> str:
     return f"closed {target}"
 
 
+_HYPR_PLANS = {
+    "workspace": "switch to workspace {workspace}",
+    "focus_window": "focus {target}",
+    "move_window": "move {target} to workspace {workspace}",
+    "close_window": "ask {target} to close",
+    "fullscreen": "toggle fullscreen on {target_or_active}",
+    "toggle_floating": "toggle floating on {target_or_active}",
+}
+
+
+@journal.journaled("act")
 def hypr(action: str, target: str = "", workspace: str = "", then: str = "none") -> list[Any] | str:
     """Window/workspace ops over IPC (instant, no vision).
     action='workspace' (workspace: number/name/'special:name') |
@@ -790,6 +864,20 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
     'toggle_floating' (target?). `then` ('desktop'|'screenshot'|'ui'|'none')
     appends the result to this call."""
     safety.touch(f"hypr:{action}")
+    # every argument is checked before any guard runs and before anything
+    # is dispatched, so a bad call cannot half-run and a dry run raises
+    # exactly what the real call would
+    if action not in _HYPR_PLANS:
+        raise ValueError(
+            f"unknown action {action!r}: workspace|focus_window|move_window|"
+            "close_window|fullscreen|toggle_floating"
+        )
+    if action == "workspace" and not workspace:
+        raise ValueError("workspace action needs `workspace`")
+    if action == "move_window" and not workspace:
+        raise ValueError("move_window needs `workspace`")
+    if action in ("focus_window", "move_window", "close_window"):
+        _addr(target)  # the branches below re-derive it; this is the check
     # confinement: any action naming a specific window must stay in scope;
     # fullscreen/toggle_floating with no target hit the ACTIVE window, so
     # resolve and guard that too, and check the seat has not moved under us
@@ -803,17 +891,21 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
         active = _active_client()
         if active is not None:
             trust.guard_client(active)
+    if journal.dry_run():
+        return _acted(
+            f"{_DRY} "
+            + _HYPR_PLANS[action].format(
+                target=target, workspace=workspace, target_or_active=target or "the active window"
+            ),
+            then,
+        )
     if action == "workspace":
-        if not workspace:
-            raise ValueError("workspace action needs `workspace`")
         hyprctl.dispatch("workspace", workspace)
         msg = f"on workspace {workspace}"
     elif action == "focus_window":
         hyprctl.dispatch("focuswindow", _addr(target))
         msg = f"focused {target}"
     elif action == "move_window":
-        if not workspace:
-            raise ValueError("move_window needs `workspace`")
         hyprctl.dispatch("movetoworkspacesilent", f"{workspace},{_addr(target)}")
         msg = f"moved {target} to workspace {workspace}"
     elif action == "close_window":
@@ -823,15 +915,10 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
             hyprctl.dispatch("focuswindow", _addr(target))
         hyprctl.dispatch("fullscreen", "0")
         msg = "fullscreen toggled"
-    elif action == "toggle_floating":
+    else:  # toggle_floating, the last of _HYPR_PLANS
         args = (_addr(target),) if target else ()
         hyprctl.dispatch("togglefloating", *args)
         msg = "floating toggled"
-    else:
-        raise ValueError(
-            f"unknown action {action!r}: workspace|focus_window|move_window|"
-            "close_window|fullscreen|toggle_floating"
-        )
     trust.remember_seat()  # our own focus/workspace change re-baselines the seat
     return _acted(msg, then)
 
@@ -877,6 +964,7 @@ def _launch_and_wait(rule_command: str, wait_s: float) -> dict[str, Any] | None:
     return win
 
 
+@journal.journaled("act")
 def launch(command: str, workspace: str = "", wait_s: float = 8.0) -> dict[str, Any] | str:
     """Run `command` via Hyprland exec. Optional `workspace` placement
     (silent, works even for single-instance apps like browsers, whose
@@ -886,6 +974,8 @@ def launch(command: str, workspace: str = "", wait_s: float = 8.0) -> dict[str, 
     safety.touch("launch")
     wait_s = min(max(wait_s, 1.0), 30.0)
     rule = f"[workspace {workspace} silent] " if workspace else ""
+    if journal.dry_run():
+        return f"{_DRY} run {rule + command} and wait up to {wait_s:.0f}s for its window"
     win = _launch_and_wait(rule + command, wait_s)
     if win is None:
         return (
@@ -929,6 +1019,7 @@ Check the install with:  hypruse --version
 """
 
 
+@journal.journaled("observe")
 def binds() -> list[dict[str, Any]]:
     """The user's own Hyprland keybinds: combo, action, arg, and a
     description when the config provides one. This is how the desktop's
@@ -939,6 +1030,10 @@ def binds() -> list[dict[str, Any]]:
     return hyprctl.binds()
 
 
+# The one tool that both reads and writes: a clipboard READ is the agent
+# looking at something the human owns (an observation a privacy audit
+# wants), a WRITE changes state (an action replay re-issues).
+@journal.journaled(lambda args: "act" if args.get("action") == "write" else "observe")
 def clipboard(action: str, text: str = "") -> str:
     """Clipboard access (opt-in surface: this tool exists only when the
     user set HYPRUSE_CLIPBOARD=1 in the server env). action='read'
@@ -956,11 +1051,14 @@ def clipboard(action: str, text: str = "") -> str:
     if action == "write":
         if not text:
             raise ValueError("write needs text")
+        if journal.dry_run():
+            return f"{_DRY} copy {len(text)} characters to the clipboard"
         clip.write(text)
         return f"copied {len(text)} characters to the clipboard"
     raise ValueError(f"unknown action {action!r}: read|write")
 
 
+@journal.journaled("act")
 def use_bind(combo: str, then: str = "none") -> list[Any] | str:
     """Run one of the user's own Hyprland keybinds by its combo (from the
     `binds` tool), e.g. 'SUPER+F'. This executes the bound action directly
@@ -977,6 +1075,8 @@ def use_bind(combo: str, then: str = "none") -> list[Any] | str:
     if bind is None:
         raise ValueError(f"no keybind {combo!r}; call binds() for the exact combos")
     action, arg = bind["action"], bind.get("arg", "")
+    if journal.dry_run():
+        return _acted(f"{_DRY} run {bind['combo']}: {action} {arg}".rstrip(), then)
     hyprctl.dispatch(action, *([arg] if arg else []))
     trust.remember_seat()  # the bind may have moved focus/workspace on our behalf
     return _acted(f"ran {bind['combo']}: {action} {arg}".rstrip(), then)
@@ -1042,6 +1142,7 @@ def _already_satisfied(event: str, needle: str) -> dict[str, Any] | None:
     return None
 
 
+@journal.journaled("observe")
 def wait_for(event: str, match: str = "", timeout_s: float = 10) -> dict[str, Any] | str:
     """Block until a desktop event happens (real compositor events, not
     polling). event: 'window_open' | 'window_close' | 'workspace' |
@@ -1235,6 +1336,7 @@ def _seq_wait_for(
     return {"event": hit[0], **hit[1]}
 
 
+@journal.journaled("act")
 def sequence(
     steps: list[dict[str, Any]], stop_on_change: bool = True, then: str = "desktop"
 ) -> list[Any] | str:
@@ -1328,10 +1430,19 @@ def sequence(
             stream.close()
 
     ran = len(results)
+    # each step already says DRY RUN, but the summary line is what gets
+    # skimmed, and "all 4/4 steps ran" reads like four things happened.
+    # A dry run also cannot cause the changes its own later steps expect,
+    # so any wait_for step in it times out honestly rather than being
+    # satisfied by an effect that was never delivered.
+    tag = " (DRY RUN, nothing was delivered)" if journal.dry_run() else ""
     if stopped is None:
-        head = f"sequence: all {ran}/{len(steps)} steps ran\n" + "\n".join(results)
+        head = f"sequence{tag}: all {ran}/{len(steps)} steps ran\n" + "\n".join(results)
     else:
-        head = f"sequence: stopped after {ran}/{len(steps)} steps, {stopped}\n" + "\n".join(results)
+        head = (
+            f"sequence{tag}: stopped after {ran}/{len(steps)} steps, {stopped}\n"
+            + "\n".join(results)
+        )
     return _acted(head, then)
 
 
@@ -1428,6 +1539,8 @@ def main() -> None:
     session.ensure_session_env()
     safety.init()
     safety.on_shutdown(hinput.release_held)  # kill switch mid-drag: release first
+    journal.start(__version__)  # HYPRUSE_JOURNAL: open the session record
+    safety.on_shutdown(journal.stop)  # closed on the SIGTERM path too
     trust.init_marking()  # HYPRUSE_MARK: install the agent-owned border rule
     mcp.run()
 

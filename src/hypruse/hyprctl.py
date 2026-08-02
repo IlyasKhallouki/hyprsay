@@ -18,6 +18,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from hypruse import journal
+
 
 class HyprctlError(RuntimeError):
     """hyprctl failed, returned an error, or is unreachable."""
@@ -77,7 +79,11 @@ def batch_query(commands: list[str]) -> list[Any]:
 
 
 def dispatch(name: str, *args: str) -> None:
-    """Run a dispatcher; Hyprland answers 'ok' on success, an error string otherwise."""
+    """Run a dispatcher; Hyprland answers 'ok' on success, an error string
+    otherwise. Every dispatcher changes the desktop, so this is the second
+    dry-run barrier alongside the input path (see journal.refuse_if_dry).
+    Reads go through query/batch_query and are never barriered."""
+    journal.refuse_if_dry(f"dispatch {name}")
     out = _run("dispatch", name, *args)
     if out != "ok":
         raise HyprctlError(f"dispatch {name} {' '.join(args)}: {out}")

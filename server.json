@@ -57,6 +57,21 @@
           "name": "HYPRUSE_CLIPBOARD",
           "description": "Set to 1 to register the opt-in clipboard tool (never in read-only mode). Off by default because clipboards hold passwords.",
           "default": "0"
+        },
+        {
+          "name": "HYPRUSE_JOURNAL",
+          "description": "Record every tool call, refusals included, as one NDJSON line: 1 writes to XDG_STATE_HOME/hypruse/journal.ndjson, or give a path. Read it back with 'hypruse journal'. Off by default.",
+          "default": "0"
+        },
+        {
+          "name": "HYPRUSE_JOURNAL_TEXT",
+          "description": "Set to 1 to record typed and copied text in the journal verbatim instead of as a length plus digest. Off by default because keystrokes are passwords; needed only to replay typing.",
+          "default": "0"
+        },
+        {
+          "name": "HYPRUSE_DRYRUN",
+          "description": "Set to 1 for a rehearsal: every acting tool validates its arguments and runs every trust guard, then reports what it would have done and delivers no input.",
+          "default": "0"
         }
       ]
     }
