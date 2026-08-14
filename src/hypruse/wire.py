@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import socket
+import tempfile
 import struct
 import time
 
@@ -34,6 +35,14 @@ PTR_MOTION, PTR_MOTION_ABSOLUTE, PTR_BUTTON, PTR_AXIS, PTR_FRAME = 0, 1, 2, 3, 4
 PTR_AXIS_SOURCE, PTR_AXIS_STOP, PTR_AXIS_DISCRETE, PTR_DESTROY = 5, 6, 7, 8
 
 MANAGER_INTERFACE = "zwlr_virtual_pointer_manager_v1"
+SEAT_INTERFACE    = "wl_seat"
+SEAT_EV_NAME      = 1
+
+# Multi-seat: when HYPRUSE_SEAT names a seat, the virtual pointer is created ON
+# that seat instead of the compositor default. Requires a compositor that
+# advertises more than one wl_seat; on stock Hyprland this finds nothing and we
+# fall back to the default seat, so the variable is safe to leave set.
+SEAT_ENV          = "HYPRUSE_SEAT"
 
 BUTTONS = {
     "left": 0x110,
@@ -173,9 +182,53 @@ class VirtualPointer:
             + wl_string(MANAGER_INTERFACE)
             + struct.pack("<II", self._version, self._manager),
         )
+        self._globals_cache = globals_seen
+        self._seat = self._resolve_seat(globals_seen)
+
         self._pointer = self._new_id()
-        self._send(self._manager, MGR_CREATE_POINTER, struct.pack("<II", 0, self._pointer))
+        self._send(self._manager, MGR_CREATE_POINTER, struct.pack("<II", self._seat, self._pointer))
         self._roundtrip()
+
+    def _resolve_seat(self, globals_seen: list[tuple[int, str, int]]) -> int:
+        """Object id of the requested wl_seat, or 0 for the compositor default.
+
+        zwlr_virtual_pointer_manager_v1.create_virtual_pointer takes the seat the
+        device belongs to. hypruse has always passed 0 (null) because there was
+        only ever one seat. Naming one routes this pointer to it, which is how an
+        agent gets its own cursor instead of sharing the human's.
+        """
+        wanted = os.environ.get(SEAT_ENV, "").strip()
+        if not wanted:
+            return 0
+
+        bound: dict[int, str] = {}
+        for name, iface, version in globals_seen:
+            if iface != SEAT_INTERFACE:
+                continue
+            oid = self._new_id()
+            self._send(
+                self._registry,
+                0,
+                struct.pack("<I", name) + wl_string(SEAT_INTERFACE) + struct.pack("<II", min(version, 9), oid),
+            )
+            bound[oid] = ""
+
+        if not bound:
+            return 0
+
+        # names arrive as wl_seat.name events during the next roundtrip
+        pending = dict(bound)
+        self._seat_names = pending
+        self._roundtrip()
+
+        for oid, seat_name in pending.items():
+            if seat_name == wanted:
+                return oid
+
+        raise WireError(
+            f"{SEAT_ENV}={wanted!r} but the compositor advertises no such seat "
+            f"(saw: {sorted(n for n in pending.values() if n)})"
+        )
 
     # -- plumbing --
 
@@ -209,6 +262,10 @@ class VirtualPointer:
                     raise WireError(f"wl_display.error object={err_obj} code={code}: {msg}")
                 if obj == self._registry and opcode == 0 and collect_globals:
                     globals_seen.append(parse_global(body))
+                names = getattr(self, "_seat_names", None)
+                if names is not None and obj in names and opcode == SEAT_EV_NAME:
+                    slen = struct.unpack_from("<I", body, 0)[0]
+                    names[obj] = body[4 : 4 + slen - 1].decode(errors="replace")
                 if obj == done_cb and opcode == 0:  # wl_callback.done
                     return globals_seen
 
@@ -249,3 +306,84 @@ class VirtualPointer:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+# --- virtual keyboard -------------------------------------------------------
+# wtype cannot target a seat, so multi-seat text needs our own keyboard. The
+# trick wtype uses, and we reuse: instead of mapping characters onto the user's
+# layout, generate a keymap where consecutive keycodes ARE the characters we want
+# to type. Layout-independent and unicode-correct by construction.
+
+VK_INTERFACE = "zwp_virtual_keyboard_manager_v1"
+VK_CREATE = 0
+VK_KEYMAP, VK_KEY, VK_MODIFIERS = 0, 1, 2
+XKB_KEYMAP_FORMAT_V1 = 1
+KEYCODE_BASE = 8  # evdev offset: xkb keycode = evdev + 8
+
+
+def _keymap_for(chars: list[str]) -> bytes:
+    """An XKB keymap whose Nth key produces the Nth character."""
+    keycodes, symbols = [], []
+    for i, ch in enumerate(chars):
+        kc = KEYCODE_BASE + 1 + i
+        keycodes.append(f"    <K{i}> = {kc};")
+        symbols.append(f"    key <K{i}> {{ [ U{ord(ch):04X} ] }};")
+    return (
+        "xkb_keymap {\n"
+        "  xkb_keycodes {\n"
+        f"    minimum = {KEYCODE_BASE};\n"
+        f"    maximum = {KEYCODE_BASE + len(chars) + 1};\n"
+        + "\n".join(keycodes)
+        + "\n  };\n"
+        '  xkb_types { include "complete" };\n'
+        '  xkb_compat { include "complete" };\n'
+        '  xkb_symbols "(unnamed)" {\n'
+        + "\n".join(symbols)
+        + "\n  };\n"
+        "};\n"
+    ).encode()
+
+
+class VirtualKeyboard(VirtualPointer):
+    """A virtual keyboard on a chosen seat. Reuses VirtualPointer's connection.
+
+    Subclassing keeps the wire plumbing in one place; the inherited pointer is
+    created and simply unused.
+    """
+
+    def type_text(self, text: str) -> None:
+        if not text:
+            return
+
+        chars = list(dict.fromkeys(text))  # unique, order preserved
+        keymap = _keymap_for(chars)
+        index = {ch: i for i, ch in enumerate(chars)}
+
+        vk = [(n, v) for n, i, v in self._globals_cache if i == VK_INTERFACE]
+        if not vk:
+            raise WireError(f"compositor does not advertise {VK_INTERFACE}")
+        name, version = vk[0]
+        mgr = self._new_id()
+        self._send(
+            self._registry,
+            0,
+            struct.pack("<I", name) + wl_string(VK_INTERFACE) + struct.pack("<II", min(version, 1), mgr),
+        )
+        kb = self._new_id()
+        self._send(mgr, VK_CREATE, struct.pack("<II", self._seat, kb))
+        self._roundtrip()
+
+        with tempfile.TemporaryFile() as tf:
+            tf.write(keymap)
+            tf.flush()
+            tf.seek(0)
+            msg = encode_msg(kb, VK_KEYMAP, struct.pack("<II", XKB_KEYMAP_FORMAT_V1, len(keymap)))
+            self._sock.sendmsg(
+                [msg], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, struct.pack("i", tf.fileno()))]
+            )
+            self._roundtrip()
+
+            for ch in text:
+                code = index[ch] + 1  # evdev code; compositor adds the +8 offset
+                for state in (PRESSED, RELEASED):
+                    self._send(kb, VK_KEY, struct.pack("<III", _now_ms(), code, state))
+                self._roundtrip()
