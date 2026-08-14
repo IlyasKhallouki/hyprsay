@@ -225,10 +225,20 @@ class VirtualPointer:
             if seat_name == wanted:
                 return oid
 
-        raise WireError(
-            f"{SEAT_ENV}={wanted!r} but the compositor advertises no such seat "
-            f"(saw: {sorted(n for n in pending.values() if n)})"
+        # Fall back rather than fail. The variable is easy to leave set in a shell
+        # profile and then use on a compositor with only one seat, where hard
+        # failure makes every single call error out for no good reason. Seat 0 is
+        # the compositor default, which is what hypruse always used.
+        import warnings
+
+        warnings.warn(
+            f"{SEAT_ENV}={wanted!r} but this compositor advertises no such seat "
+            f"(saw: {sorted(n for n in pending.values() if n)}); "
+            f"using the default seat",
+            RuntimeWarning,
+            stacklevel=2,
         )
+        return 0
 
     # -- plumbing --
 
