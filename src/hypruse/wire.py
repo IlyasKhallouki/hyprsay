@@ -386,6 +386,69 @@ def _keymap_for(chars: list[str]) -> bytes:
     ).encode()
 
 
+# wtype's modifier names -> the XKB keysym that produces them, and the XKB real
+# modifier they map onto. A generated keymap has no modifiers at all, so a combo
+# needs both spelled out.
+COMBO_MOD_KEYSYM = {
+    "shift": "Shift_L",
+    "ctrl": "Control_L",
+    "alt": "Alt_L",
+    "logo": "Super_L",
+    "altgr": "ISO_Level3_Shift",
+}
+COMBO_MOD_XKB = {
+    "shift": "Shift",
+    "ctrl": "Control",
+    "alt": "Mod1",
+    "logo": "Mod4",
+    "altgr": "Mod5",
+}
+
+
+def _keymap_for_combo(key: str | None, mods: list[str]) -> tuple[bytes, dict[str, int]]:
+    """A keymap holding one key plus the modifier keys a combo needs.
+
+    Returns the keymap and a name -> evdev code map. Modifiers are pressed as real
+    keys rather than announced through the modifiers event, because that is what a
+    physical keyboard does and it needs no agreement about mask numbering.
+    """
+    entries: list[tuple[str, str]] = []  # (label, keysym)
+    for m in mods:
+        sym = COMBO_MOD_KEYSYM.get(m)
+        if sym is None:
+            raise WireError(f"unknown modifier {m!r}")
+        entries.append((f"M_{m}", sym))
+    if key:
+        entries.append(("KEY", key if len(key) > 1 else f"U{ord(key):04X}"))
+
+    if not entries:
+        raise WireError("combo resolved to nothing")
+
+    keycodes, symbols, modmap, codes = [], [], [], {}
+    for i, (label, sym) in enumerate(entries):
+        kc = KEYCODE_BASE + 1 + i
+        keycodes.append(f"    <{label}> = {kc};")
+        symbols.append(f"    key <{label}> {{ [ {sym} ] }};")
+        codes[label] = kc - KEYCODE_BASE
+    for m in mods:
+        modmap.append(f"    modifier_map {COMBO_MOD_XKB[m]} {{ <M_{m}> }};")
+
+    km = (
+        "xkb_keymap {\n"
+        "  xkb_keycodes {\n"
+        f"    minimum = {KEYCODE_BASE};\n"
+        f"    maximum = {KEYCODE_BASE + len(entries) + 1};\n"
+        + "\n".join(keycodes)
+        + "\n  };\n"
+        '  xkb_types { include "complete" };\n'
+        '  xkb_compat { include "complete" };\n'
+        '  xkb_symbols "(unnamed)" {\n'
+        + "\n".join(symbols + modmap)
+        + "\n  };\n};\n"
+    )
+    return km.encode(), codes
+
+
 class VirtualKeyboard(VirtualPointer):
     """A virtual keyboard on a chosen seat. Reuses VirtualPointer's connection.
 
@@ -401,6 +464,17 @@ class VirtualKeyboard(VirtualPointer):
         keymap = _keymap_for(chars)
         index = {ch: i for i, ch in enumerate(chars)}
 
+        kb = self._new_keyboard()
+
+        self._upload_keymap(kb, keymap)
+        for ch in text:
+            code = index[ch] + 1  # evdev code; compositor adds the +8 offset
+            for state in (PRESSED, RELEASED):
+                self._send(kb, VK_KEY, struct.pack("<III", _now_ms(), code, state))
+            self._roundtrip()
+
+    def _new_keyboard(self) -> int:
+        """Bind the manager and create a virtual keyboard on our seat."""
         vk = [(n, v) for n, i, v in self._globals_cache if i == VK_INTERFACE]
         if not vk:
             raise WireError(f"compositor does not advertise {VK_INTERFACE}")
@@ -414,7 +488,10 @@ class VirtualKeyboard(VirtualPointer):
         kb = self._new_id()
         self._send(mgr, VK_CREATE, struct.pack("<II", self._seat, kb))
         self._roundtrip()
+        return kb
 
+    def _upload_keymap(self, kb: int, keymap: bytes) -> None:
+        """The protocol requires a keymap before any key event, passed as an fd."""
         with tempfile.TemporaryFile() as tf:
             tf.write(keymap)
             tf.flush()
@@ -425,8 +502,20 @@ class VirtualKeyboard(VirtualPointer):
             )
             self._roundtrip()
 
-            for ch in text:
-                code = index[ch] + 1  # evdev code; compositor adds the +8 offset
-                for state in (PRESSED, RELEASED):
-                    self._send(kb, VK_KEY, struct.pack("<III", _now_ms(), code, state))
-                self._roundtrip()
+    def key_combo(self, mods: list[str], key: str | None) -> None:
+        """Press a combo on this seat.
+
+        Modifiers are pressed as real keys, in order, then released in reverse.
+        That mirrors a physical keyboard and avoids depending on any agreement
+        about modifier mask numbering.
+        """
+        keymap, codes = _keymap_for_combo(key, mods)
+        kb = self._new_keyboard()
+        self._upload_keymap(kb, keymap)
+
+        order = [f"M_{m}" for m in mods] + (["KEY"] if key else [])
+        for label in order:
+            self._send(kb, VK_KEY, struct.pack("<III", _now_ms(), codes[label], PRESSED))
+        for label in reversed(order):
+            self._send(kb, VK_KEY, struct.pack("<III", _now_ms(), codes[label], RELEASED))
+        self._roundtrip()

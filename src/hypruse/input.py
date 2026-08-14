@@ -22,7 +22,7 @@ from collections.abc import Callable
 from typing import Any
 
 from hypruse import hyprctl, journal
-from hypruse.wire import BUTTONS, PRESSED, RELEASED, VirtualPointer, WireError
+from hypruse.wire import BUTTONS, PRESSED, RELEASED, VirtualKeyboard, VirtualPointer, WireError
 
 
 class InputError(RuntimeError):
@@ -132,21 +132,34 @@ _seat_lock = threading.RLock()
 # for a path that was missed instead of silently breaking it.
 def type_text(text: str) -> None:
     journal.refuse_if_dry("type_text")
-    if text:
-        with _seat_lock:
-            _wtype(["-"], stdin=text)  # '-' reads stdin: safe for any content
+    if not text:
+        return
+    with _seat_lock:
+        # wtype has no way to name a seat, so on a second seat it types into the
+        # human's. The window= parameter made that worse rather than better: it
+        # focused the window on OUR seat and then typed into theirs.
+        if _on_named_seat():
+            _with_keyboard(lambda k: k.type_text(text))
+            return
+        _wtype(["-"], stdin=text)  # '-' reads stdin: safe for any content
 
 
 def key_combo(combo: str) -> None:
     journal.refuse_if_dry("key_combo")
     mods, key = parse_combo(combo)
     with _seat_lock:
+        # Same reason as type_text: wtype cannot name a seat, so on a second seat
+        # the combo would fire on the human's keyboard.
+        if _on_named_seat():
+            _with_keyboard(lambda k: k.key_combo(mods, key))
+            return
         _wtype(combo_to_wtype_args(mods, key))
 
 
 # --- pointer ----------------------------------------------------------------
 
 _vp: VirtualPointer | None = None
+_vk: VirtualKeyboard | None = None
 _held_button: str | None = None
 
 
@@ -162,6 +175,32 @@ def release_held() -> None:
         with contextlib.suppress(Exception):
             _vp.button(_held_button, RELEASED)
     _held_button = None
+
+
+def _with_keyboard(fn: Callable[[VirtualKeyboard], Any]) -> Any:
+    """Run fn with the shared virtual keyboard, reconnecting once if stale."""
+    global _vk
+    for attempt in (0, 1):
+        if _vk is None:
+            _vk = VirtualKeyboard()
+        try:
+            return fn(_vk)
+        except WireError:
+            _vk = None
+            if attempt:
+                raise
+
+
+def _on_named_seat() -> bool:
+    """True when this compositor gave us a seat other than the default.
+
+    wtype cannot target a seat, so on a named seat every keystroke it sends lands
+    on the HUMAN's seat. Text has to go over the wire instead.
+    """
+    try:
+        return bool(_with_pointer(lambda p: p.on_named_seat))
+    except WireError:
+        return False
 
 
 def _with_pointer(fn: Callable[[VirtualPointer], Any]) -> Any:
