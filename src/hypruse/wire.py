@@ -184,6 +184,8 @@ class VirtualPointer:
         )
         self._globals_cache = globals_seen
         self._seat = self._resolve_seat(globals_seen)
+        # tracked cursor position, established lazily by move_to()
+        self._pos: tuple[float, float] | None = None
 
         self._pointer = self._new_id()
         self._send(self._manager, MGR_CREATE_POINTER, struct.pack("<II", self._seat, self._pointer))
@@ -280,6 +282,37 @@ class VirtualPointer:
                     return globals_seen
 
     # -- pointer actions --
+
+    @property
+    def on_named_seat(self) -> bool:
+        """True when this pointer was created on a seat other than the default."""
+        return bool(self._seat)
+
+    def move(self, dx: float, dy: float) -> None:
+        """Relative motion, in logical pixels."""
+        self._send(self._pointer, PTR_MOTION, struct.pack("<Iii", _now_ms(), int(dx * 256), int(dy * 256)))
+        self._send(self._pointer, PTR_FRAME)
+        self._roundtrip()
+        if self._pos is not None:
+            self._pos = (self._pos[0] + dx, self._pos[1] + dy)
+
+    def move_to(self, x: float, y: float) -> None:
+        """Absolute positioning, built out of relative motion.
+
+        `hyprctl dispatch movecursor` cannot be used on a second seat: it moves the
+        one global cursor, which is the human's. Relative motion is per device and
+        therefore per seat.
+
+        Absolute needs a known origin. The compositor clamps to the output, so a
+        large negative sweep parks the cursor at (0, 0) exactly once; after that the
+        position is tracked, since nothing else moves this cursor.
+        """
+        if self._pos is None:
+            for _ in range(10):
+                self.move(-4000, -4000)
+            self._pos = (0.0, 0.0)
+        self.move(x - self._pos[0], y - self._pos[1])
+        self._pos = (float(x), float(y))
 
     def button(self, name: str, state: int) -> None:
         code = BUTTONS[name]

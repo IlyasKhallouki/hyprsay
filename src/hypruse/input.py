@@ -204,6 +204,17 @@ _check_xy = check_xy
 def move(x: float, y: float) -> None:
     journal.refuse_if_dry("move")
     with _seat_lock:
+        # On a named seat, positioning MUST go over the wire. `movecursor` moves the
+        # single global cursor, which belongs to the human, so using it here would
+        # defeat the whole point of having a second seat.
+        def run(p: VirtualPointer) -> bool:
+            if not p.on_named_seat:
+                return False
+            p.move_to(x, y)
+            return True
+
+        if _with_pointer(run):
+            return
         hyprctl.dispatch("movecursor", str(int(round(x))), str(int(round(y))))
 
 
