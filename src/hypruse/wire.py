@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import os
 import socket
-import tempfile
 import struct
+import tempfile
 import time
 
 DISPLAY_ID = 1
@@ -211,7 +211,9 @@ class VirtualPointer:
             self._send(
                 self._registry,
                 0,
-                struct.pack("<I", name) + wl_string(SEAT_INTERFACE) + struct.pack("<II", min(version, 9), oid),
+                struct.pack("<I", name)
+                + wl_string(SEAT_INTERFACE)
+                + struct.pack("<II", min(version, 9), oid),
             )
             bound[oid] = ""
 
@@ -290,7 +292,8 @@ class VirtualPointer:
 
     def move(self, dx: float, dy: float) -> None:
         """Relative motion, in logical pixels."""
-        self._send(self._pointer, PTR_MOTION, struct.pack("<Iii", _now_ms(), int(dx * 256), int(dy * 256)))
+        motion = struct.pack("<Iii", _now_ms(), int(dx * 256), int(dy * 256))
+        self._send(self._pointer, PTR_MOTION, motion)
         self._send(self._pointer, PTR_FRAME)
         self._roundtrip()
         if self._pos is not None:
@@ -483,7 +486,9 @@ class VirtualKeyboard(VirtualPointer):
         self._send(
             self._registry,
             0,
-            struct.pack("<I", name) + wl_string(VK_INTERFACE) + struct.pack("<II", min(version, 1), mgr),
+            struct.pack("<I", name)
+            + wl_string(VK_INTERFACE)
+            + struct.pack("<II", min(version, 1), mgr),
         )
         kb = self._new_id()
         self._send(mgr, VK_CREATE, struct.pack("<II", self._seat, kb))

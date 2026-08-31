@@ -45,6 +45,10 @@ def test_scroll_requires_a_direction():
 
 
 class FakeVP:
+    # not on a named seat, so positioning falls back to the compositor the
+    # way it does in a default single-seat session (see input.move)
+    on_named_seat = False
+
     def __init__(self):
         self.events = []
 
