@@ -108,3 +108,35 @@ def test_hypr_focus_window_refused_out_of_scope(monkeypatch):
     with pytest.raises(server.trust.TrustError, match="confinement scope"):
         server.hypr("focus_window", target="0xff")
     assert dispatched == []
+
+
+LUA_BINDS = [
+    {"combo": "SUPER+F", "action": "lua", "description": "open files"},
+    {"combo": "SUPER+G", "action": "lua"},
+]
+
+
+@pytest.fixture
+def fake_lua_binds(monkeypatch):
+    monkeypatch.setattr(hyprctl, "binds", lambda: LUA_BINDS)
+    dispatched = []
+    monkeypatch.setattr(hyprctl, "dispatch", lambda *a: dispatched.append(a))
+    return dispatched
+
+
+def test_use_bind_refuses_a_lua_bind_and_says_why(fake_lua_binds):
+    with pytest.raises(ValueError, match="Lua Hyprland config") as exc:
+        server.use_bind("super+f")
+    msg = str(exc.value)
+    assert "retrying will not help" in msg  # close the retry loop
+    assert "'open files'" in msg  # what the bind was FOR
+    assert "hypr" in msg and "launch" in msg  # somewhere else to go
+    assert fake_lua_binds == []
+
+
+def test_use_bind_refuses_a_lua_bind_before_the_dry_run_plan(fake_lua_binds, monkeypatch):
+    # a rehearsal that reported a plan here would be describing something
+    # that can never happen, on any run
+    monkeypatch.setenv("HYPRUSE_DRYRUN", "1")
+    with pytest.raises(ValueError, match="Lua Hyprland config"):
+        server.use_bind("super+g")

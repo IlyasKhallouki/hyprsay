@@ -9,10 +9,10 @@ screenshot's image mode while unit tests were green.
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 
@@ -123,11 +123,15 @@ def test_ui_roundtrip_reads_a11y_tree():
     the window. Exercises AT-SPI + busctl + coordinate mapping end to end."""
     from hypruse import hyprctl
 
-    subprocess.run(
-        ["hyprctl", "dispatch", "exec",
-         "[float; center] yad --title=hypruse-mcp-test --button=Approve:0 "
-         "--button=Deny:1 --width=400 --height=200"],
-        capture_output=True,
+    # through hypruse's own dispatcher, not a raw shell-out: the legacy
+    # strings do not parse on a Lua config, and this is the only harness
+    # that would catch a regression there. conftest pins the provider for
+    # the unit suite, so drop that first and read the real session.
+    hyprctl.forget_provider()
+    hyprctl.dispatch(
+        "exec",
+        "[float; center] yad --title=hypruse-mcp-test --button=Approve:0 "
+        "--button=Deny:1 --width=400 --height=200",
     )
     try:
         win = None
@@ -160,4 +164,7 @@ def test_ui_roundtrip_reads_a11y_tree():
             assert ax <= e["x"] < ax + aw and ay <= e["y"] < ay + ah
             assert e["clickable"] is True
     finally:
-        subprocess.run(["hyprctl", "dispatch", "closewindow", "class:yad"], capture_output=True)
+        # suppressed: dispatch raises where the old shell-out swallowed, and
+        # a cleanup failure here would mask the assertion that got us here
+        with contextlib.suppress(hyprctl.HyprctlError):
+            hyprctl.dispatch("closewindow", "class:yad")

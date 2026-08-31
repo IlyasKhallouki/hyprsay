@@ -10,8 +10,8 @@ src/hypruse/
                  journal / replay subcommands
   server.py      MCP wiring: 15 tools (clipboard is opt-in), docstrings =
                  the agent-facing API
-  hyprctl.py     all Hyprland IPC (queries + dispatchers), state trimming,
-                 keybind decoding
+  hyprctl.py     all Hyprland IPC (queries + dispatchers), the config-manager
+                 probe and the Lua dialect, state trimming, keybind decoding
   events.py      socket2 event stream: parser + wait primitive
   wire.py        raw Wayland client for zwlr_virtual_pointer_v1
   input.py       pointer orchestration (movecursor + wire) and wtype keyboard
@@ -37,7 +37,7 @@ in the leaf modules, which stay importable and testable without MCP.
 ## The coordinate contract
 
 One space rules everything: **Hyprland global logical coordinates** (what
-`hyprctl cursorpos`, client `at`, and `dispatch movecursor` speak).
+`hyprctl cursorpos`, client `at`, and cursor positioning speak).
 
 - `desktop` reports window geometry in it.
 - `pointer` accepts it.
@@ -47,11 +47,44 @@ One space rules everything: **Hyprland global logical coordinates** (what
 If you touch anything coordinate-adjacent, preserve this contract; it is
 what keeps multi-monitor and fractional scaling tractable.
 
+## The two config managers
+
+Hyprland 0.56 added a Lua config manager beside the original hyprlang one
+and picks between them by the config file's extension, so a session runs
+one or the other and no version check can tell you which. The choice
+reaches the IPC, not just the config file: under the Lua manager `hyprctl
+dispatch X` evaluates the Lua expression `hl.dispatch(X)`, so every legacy
+dispatcher string is a syntax error, and `hyprctl keyword` is refused
+outright.
+
+`hyprctl.provider()` probes it once with `-j status` and caches the answer;
+`dispatch()` translates the legacy call into the `hl.dsp.*` expression that
+lands on the same compositor action, and re-probes if a call fails, since
+`hyprctl reload full-reset` can change the manager under a running server.
+Callers upstack never see the difference, which is the point: a window op
+is described once.
+
+Two things the Lua manager takes away rather than renames. `use_bind`
+cannot run a bind, because a Lua config binds an anonymous closure that
+Hyprland exposes no IPC route to call; `binds` still reports the combo and
+description, and `use_bind` refuses with that explanation instead of a
+parser error. And a runtime window rule becomes `hl.window_rule` rather
+than a keyword, which is what `border_rule()` exists to hide.
+
+Everything the Lua path sends is built by `lua_str()` and the `_lua_*`
+builders. That is a security boundary, not formatting: `hyprctl dispatch`
+hands its argument to the compositor's interpreter as an expression with
+the standard library open, so an argument that is not a literal is code
+running inside the compositor.
+
 ## Why input works the way it does
 
-- **Position** via `hyprctl dispatch movecursor x y`, authoritative,
-  global, no per-monitor extent math, immune to
+- **Position** via the compositor's own cursor dispatcher (`movecursor` on
+  hyprlang, `hl.dsp.cursor.move` on Lua), authoritative, global, no
+  per-monitor extent math, immune to
   [hyprwm/Hyprland#6749](https://github.com/hyprwm/Hyprland/issues/6749).
+  On a named seat it goes over the wire instead, because that dispatcher
+  moves the one cursor the human owns.
 - **Buttons/axis** via a virtual pointer created over the raw wire
   (`wire.py` is ~250 lines: registry scan, bind, button/axis/frame, sync
   barrier, wl_display.error surfacing). No daemon, no uinput, no root.

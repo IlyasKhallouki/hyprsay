@@ -67,7 +67,12 @@ def _check_session() -> tuple[bool, str]:
         monitors = hyprctl.query("monitors")
     except hyprctl.HyprctlError as exc:
         return False, str(exc)
-    return True, f"instance {sig[:12]}..., {len(monitors)} monitor(s)"
+    # which config manager is running decides the whole IPC dialect, so it
+    # is the first thing to know when window ops misbehave
+    return True, (
+        f"instance {sig[:12]}..., {len(monitors)} monitor(s), "
+        f"{hyprctl.provider()} config"
+    )
 
 
 def _check_events() -> tuple[bool, str]:

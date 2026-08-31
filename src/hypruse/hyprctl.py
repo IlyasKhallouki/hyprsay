@@ -5,9 +5,16 @@ workspace/window action goes back out through dispatch(). It shells out to
 the hyprctl binary rather than opening the .socket directly so behaviour
 always matches what the user's own shell would do.
 
+Hyprland 0.56 shipped a second config manager, and which one a session runs
+changes the IPC, not just how the config is written: under the Lua manager
+`hyprctl dispatch` evaluates its argument as a Lua expression and `hyprctl
+keyword` is refused outright. It is chosen by the config file's EXTENSION,
+so it is not something a version check can answer. provider() probes it and
+the rest of this module speaks whichever language came back.
+
 Coordinates everywhere in hypruse are Hyprland's global *logical* layout
-coordinates, the same space `hyprctl cursorpos`, client `at`, and
-`dispatch movecursor` use.
+coordinates, the same space `hyprctl cursorpos`, client `at`, and cursor
+positioning use.
 """
 
 from __future__ import annotations
@@ -78,23 +85,281 @@ def batch_query(commands: list[str]) -> list[Any]:
     return vals
 
 
-def dispatch(name: str, *args: str) -> None:
-    """Run a dispatcher; Hyprland answers 'ok' on success, an error string
-    otherwise. Every dispatcher changes the desktop, so this is the second
-    dry-run barrier alongside the input path (see journal.refuse_if_dry).
-    Reads go through query/batch_query and are never barriered."""
-    journal.refuse_if_dry(f"dispatch {name}")
-    out = _run("dispatch", name, *args)
+# --- config manager ---------------------------------------------------------
+
+# Hyprland 0.56 added a Lua config manager beside the original hyprlang one,
+# and picks between them by the config file's extension: `hyprland.lua` is
+# looked for BEFORE `hyprland.conf`, a fresh install is given a .lua, and
+# safe mode always boots one. That choice reaches the IPC. Under the Lua
+# manager `hyprctl dispatch X` is a shorthand for evaluating the Lua
+# expression `hl.dispatch(X)`, so a legacy dispatcher string like
+# `movecursor 100 100` is a syntax error, and `hyprctl keyword` answers
+# "keyword can't work with non-legacy parsers. Use eval." The hyprlang
+# manager is untouched, including on 0.56, which is why this is a provider
+# check and NOT a version check.
+LUA = "lua"
+HYPRLANG = "hyprlang"
+
+
+def parse_provider(out: str) -> str:
+    """Read the config manager out of a `hyprctl -j status` reply.
+
+    Anything unreadable means hyprlang. `status` arrived with the Lua
+    manager in 0.56, and an older compositor answers the plain string
+    "unknown request" with exit code 0, which is exactly the session that
+    wants the legacy strings; so does a reply with a provider name this
+    version of hypruse has never heard of, since legacy is the only other
+    language it can speak."""
+    try:
+        return LUA if json.loads(out).get("configProvider") == LUA else HYPRLANG
+    except (json.JSONDecodeError, AttributeError):
+        return HYPRLANG
+
+
+_provider: str | None = None
+
+
+def provider() -> str:
+    """Which config manager this session runs, probed once and cached.
+
+    `-j status` and not `systeminfo`: both carry the line, but systeminfo
+    shells out to `lspci` on the compositor's own event loop and takes two
+    seconds, which is a desktop freeze to pay for a string. A probe that
+    cannot reach the compositor answers hyprlang without caching, so the
+    caller gets the legacy path (right for every pre-0.56 session) and the
+    next call tries again rather than inheriting a guess."""
+    global _provider
+    if _provider is None:
+        try:
+            _provider = parse_provider(_run("-j", "status"))
+        except HyprctlError:
+            return HYPRLANG
+    return _provider
+
+
+def forget_provider() -> None:
+    """Drop the cached probe, so the next call re-reads it. A session can
+    change manager while hypruse is running: `hyprctl reload full-reset`
+    re-picks it from the config file's extension, and entering safe mode
+    forces the Lua one."""
+    global _provider
+    _provider = None
+
+
+# --- Lua ---------------------------------------------------------------------
+
+# Everything hypruse sends on the Lua path is built by the helpers below and
+# never by an f-string over raw input. `hyprctl dispatch` hands its argument
+# to the compositor's own interpreter as an EXPRESSION, with the standard
+# library open, so an unescaped argument is not a syntax error to shrug at:
+# it is code running inside the compositor.
+
+_LUA_LITERAL = frozenset(range(0x20, 0x7F)) - {0x22, 0x5C}
+
+
+def lua_str(text: str) -> str:
+    """`text` as a Lua string literal, byte for byte.
+
+    Escapes are three digits (`\\009`, not `\\9`) because Lua reads up to
+    three, so a short escape followed by a digit character silently becomes
+    a different byte. Long-bracket literals would be the obvious
+    alternative and are worse on every count: they swallow a leading
+    newline, rewrite CRLF, and end early on a closing bracket in the
+    content, which turns the rest of the payload into code."""
+    if "\0" in text:
+        raise HyprctlError("a NUL byte cannot be sent to hyprctl")
+    body = "".join(
+        chr(b) if b in _LUA_LITERAL else f"\\{b:03d}" for b in text.encode("utf-8")
+    )
+    return f'"{body}"'
+
+
+def _lua_exec(command: str) -> str:
+    # exec_cmd, not exec_raw: only exec_cmd reaches the spawner that parses
+    # a leading `[workspace 3 silent]` rule prefix, which is how launch()
+    # places a window. It is the same C++ spawn call legacy `exec` made.
+    return f"hl.dsp.exec_cmd({lua_str(command)})"
+
+
+def _lua_movecursor(x: str, y: str) -> str:
+    return f"hl.dsp.cursor.move({{ x = {int(x)}, y = {int(y)} }})"
+
+
+def _lua_focuswindow(window: str) -> str:
+    return f"hl.dsp.focus({{ window = {lua_str(window)} }})"
+
+
+def _lua_workspace(workspace: str) -> str:
+    # `hl.dsp.workspace` holds rename/move/swap, not the switch: changing
+    # which workspace you are LOOKING at is hl.dsp.focus, the same
+    # dispatcher that focuses a window.
+    return f"hl.dsp.focus({{ workspace = {lua_str(workspace)} }})"
+
+
+def _lua_closewindow(window: str) -> str:
+    return f"hl.dsp.window.close({{ window = {lua_str(window)} }})"
+
+
+def _lua_movetoworkspacesilent(arg: str) -> str:
+    # `follow = false` is the entire difference between this and the loud
+    # move, and it has to be the Lua literal. Hyprland reads the field as
+    # `silent = follow.has_value() && !*follow`, so leaving it out, or
+    # sending anything that is not boolean false, drags the human's view to
+    # the target workspace and still answers "ok".
+    workspace, _, window = arg.partition(",")
+    target = f", window = {lua_str(window)}" if window else ""
+    return f"hl.dsp.window.move({{ workspace = {lua_str(workspace)}{target}, follow = false }})"
+
+
+_LUA_FULLSCREEN_MODES = {"0": "fullscreen", "1": "maximized"}
+
+
+def _lua_fullscreen(mode: str = "0") -> str:
+    name = _LUA_FULLSCREEN_MODES.get(mode)
+    if name is None:
+        raise HyprctlError(f"fullscreen {mode}: expected 0 (fullscreen) or 1 (maximized)")
+    return f'hl.dsp.window.fullscreen({{ mode = "{name}", action = "toggle" }})'
+
+
+def _lua_togglefloating(window: str = "") -> str:
+    target = f", window = {lua_str(window)}" if window else ""
+    return f'hl.dsp.window.float({{ action = "toggle"{target} }})'
+
+
+def _lua_tagwindow(tag: str, window: str = "") -> str:
+    # the +/- prefix stays inside the tag string on both sides: Hyprland's
+    # tag keeper reads it there ('+' sets, '-' unsets, bare toggles).
+    target = f", window = {lua_str(window)}" if window else ""
+    return f"hl.dsp.window.tag({{ tag = {lua_str(tag)}{target} }})"
+
+
+# Every dispatcher hypruse emits, and the Lua expression that does the same
+# thing. Each pair lands on the SAME C++ action, so the desktop behaves
+# identically either way; the two places where the Lua defaults are not the
+# legacy ones (a silent move, a fullscreen toggle) are spelled out above.
+_LUA_DISPATCH = {
+    "exec": _lua_exec,
+    "movecursor": _lua_movecursor,
+    "focuswindow": _lua_focuswindow,
+    "workspace": _lua_workspace,
+    "closewindow": _lua_closewindow,
+    "movetoworkspacesilent": _lua_movetoworkspacesilent,
+    "fullscreen": _lua_fullscreen,
+    "togglefloating": _lua_togglefloating,
+    "tagwindow": _lua_tagwindow,
+}
+
+
+def lua_dispatch(name: str, args: tuple[str, ...] = ()) -> str:
+    """The Lua expression for a legacy dispatcher call, as one argument for
+    `hyprctl dispatch`. Sent as a single argv element: hyprctl joins argv
+    with spaces, and the expression already carries its own."""
+    build = _LUA_DISPATCH.get(name)
+    if build is None:
+        raise HyprctlError(
+            f"dispatch {name}: this session runs the Lua config manager, which does "
+            "not speak the legacy dispatcher strings, and hypruse has no Lua form "
+            f"for {name!r}"
+        )
+    try:
+        return build(*args)
+    except (TypeError, ValueError) as exc:
+        raise HyprctlError(f"dispatch {name} {' '.join(args)}: {exc}") from exc
+
+
+def eval_lua(code: str) -> None:
+    """Run a snippet in the compositor's own Lua interpreter (`hyprctl
+    eval`). The config-edit sibling of keyword(), and refused by the
+    hyprlang manager the way keyword() is refused by the Lua one. Not an
+    acting path: dispatchers go through dispatch(), which is where the
+    dry-run barrier lives."""
+    out = _run("eval", code)
+    if out != "ok":
+        raise HyprctlError(f"eval {code}: {out}")
+
+
+# --- acting -----------------------------------------------------------------
+
+
+def _dispatch_as(prov: str, name: str, args: tuple[str, ...]) -> None:
+    request = (lua_dispatch(name, args),) if prov == LUA else (name, *args)
+    out = _run("dispatch", *request)
     if out != "ok":
         raise HyprctlError(f"dispatch {name} {' '.join(args)}: {out}")
 
 
+def dispatch(name: str, *args: str) -> None:
+    """Run a dispatcher; Hyprland answers 'ok' on success, an error string
+    otherwise. Every dispatcher changes the desktop, so this is the second
+    dry-run barrier alongside the input path (see journal.refuse_if_dry).
+    Reads go through query/batch_query and are never barriered.
+
+    Callers pass the legacy dispatcher name and arguments whichever config
+    manager is running; translation to Lua happens here, so the shape of a
+    window op is one thing described in one place."""
+    journal.refuse_if_dry(f"dispatch {name}")
+    was = provider()
+    try:
+        _dispatch_as(was, name, args)
+    except HyprctlError:
+        # The failure may be that the session changed manager under us.
+        # Retry only when a re-probe says so, and only when that re-probe
+        # actually reached the compositor: provider() answers hyprlang on an
+        # unreachable one, and a guess is not evidence the manager moved. It
+        # matters because the failure could equally have been the compositor
+        # going quiet mid-call, where a retry would repeat a dispatch that
+        # did land. When the answer really did move, the first attempt was
+        # in the wrong language and inert (a legacy string does not parse as
+        # Lua, and an escaped Lua expression is not a dispatcher name), so
+        # there is nothing to repeat.
+        forget_provider()
+        now = provider()
+        if now == was or _provider is None:
+            raise
+        _dispatch_as(now, name, args)
+
+
 def keyword(name: str, *values: str) -> None:
     """Set a config keyword at runtime (`hyprctl keyword`, not a dispatcher):
-    used for runtime windowrulev2/border rules. Answers 'ok' on success."""
+    used for runtime windowrulev2/border rules. Answers 'ok' on success.
+    Only the hyprlang manager has keywords; see border_rule()."""
     out = _run("keyword", name, *values)
     if out != "ok":
         raise HyprctlError(f"keyword {name} {' '.join(values)}: {out}")
+
+
+# The matcher spelling changed across Hyprland versions (0.42+ dropped the
+# colon: `tag NAME`, older is `tag:NAME`) and the field was renamed from the
+# deprecated `windowrulev2 bordercolor` to `windowrule border_color` with a
+# single 6-char color, so we try the current form first and fall back.
+_BORDER_RULES = (
+    "border_color {color}, tag {tag}",   # Hyprland 0.42+
+    "border_color {color}, tag:{tag}",   # older
+)
+
+
+def border_rule(tag: str, color: str) -> None:
+    """Install the runtime window rule that outlines a tagged window.
+
+    A runtime rule is a config edit, and the two managers take config
+    differently: hyprlang has `hyprctl keyword`, which the Lua manager
+    refuses, and Lua has `hl.window_rule`, a table it registers and then
+    re-applies to every open window. The rule is named on the Lua side so a
+    restart reuses it instead of stacking a second copy. Session-scoped
+    either way: a config reload drops it."""
+    if provider() == LUA:
+        eval_lua(
+            f"hl.window_rule({{ name = {lua_str(tag)}, match = {{ tag = {lua_str(tag)} }}, "
+            f"border_color = {lua_str(color)} }})"
+        )
+        return
+    for rule in _BORDER_RULES:
+        try:
+            keyword("windowrule", rule.format(color=color, tag=tag))
+            return  # first accepted form wins
+        except HyprctlError:
+            continue
+    raise HyprctlError(f"no windowrule spelling this Hyprland accepts for tag {tag}")
 
 
 def notify(message: str, ms: int = 4000, icon: int = -1, color: str = "0") -> None:
@@ -300,11 +565,29 @@ def modmask_to_names(mask: int) -> list[str]:
     return [name for bit, name in _MOD_BITS if mask & bit]
 
 
+# A Lua config binds a closure rather than a named dispatcher, and Hyprland
+# reports every one of them as the pseudo-dispatcher `__lua` with a Lua
+# registry index for an argument. That index means nothing outside the
+# compositor and there is no IPC route that calls the closure, so parse_binds
+# reports the fact instead of the number: the combo and the description still
+# say what the owner's workflow IS, which is most of what `binds` is for.
+_LUA_HANDLER = "__lua"
+LUA_BIND = "lua"
+
+# A bind on a device that is not the keyboard. `mouse` is the hyprlang
+# manager's own flag and a Lua config never sets it, so the key name has to
+# be read too. Prefixes, not bare words: `mouse_up`/`mouse_down` are the
+# scroll binds, and those DO carry a real dispatcher, so they stay listed
+# and use_bind still runs them.
+_UNPRESSABLE_KEYS = ("mouse:", "switch:")
+
+
 def parse_binds(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Trim hyprctl's bind records to what an agent can actually use.
 
-    Mouse binds are dropped (not reproducible through the keyboard tool);
-    keycode-only binds keep a code: marker so they are at least visible.
+    Pointer-button and lid/switch binds are dropped (nothing here can
+    reproduce them); keycode-only binds keep a code: marker so they are at
+    least visible; a Lua closure's action reads `lua` and carries no arg.
     """
     out: list[dict[str, Any]] = []
     for b in raw:
@@ -313,14 +596,16 @@ def parse_binds(raw: list[dict[str, Any]]) -> list[dict[str, Any]]:
         key = b.get("key") or ""
         if not key and b.get("keycode"):
             key = f"code:{b['keycode']}"
-        if not key:
+        if not key or key.startswith(_UNPRESSABLE_KEYS):
             continue
         combo = "+".join([*modmask_to_names(int(b.get("modmask", 0))), key])
-        entry: dict[str, Any] = {
-            "combo": combo,
-            "action": b.get("dispatcher", ""),
-            "arg": b.get("arg", ""),
-        }
+        action = b.get("dispatcher", "")
+        entry: dict[str, Any] = {"combo": combo}
+        if action == _LUA_HANDLER:
+            entry["action"] = LUA_BIND
+        else:
+            entry["action"] = action
+            entry["arg"] = b.get("arg", "")
         if b.get("description"):
             entry["description"] = b["description"]
         if b.get("submap"):

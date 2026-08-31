@@ -752,3 +752,36 @@ def test_level_rank_orders_the_full_named_scale(monkeypatch):
         assert trust._level_rank(name) == i
     assert trust._level_rank("99") < trust._level_rank(trust.hyprctl.LAYER_LEVELS[0])
     assert trust._level_rank("nonsense") == -1
+
+
+def test_init_marking_uses_the_lua_rule_on_a_lua_config(monkeypatch):
+    monkeypatch.setenv("HYPRUSE_MARK", "1")
+    monkeypatch.setattr(trust.hyprctl, "_provider", trust.hyprctl.LUA)
+    evaluated = []
+    monkeypatch.setattr(trust.hyprctl, "_run", lambda *a: evaluated.append(a) or "ok")
+    trust.init_marking()
+    assert evaluated == [
+        (
+            "eval",
+            'hl.window_rule({ name = "hypruse-owned", match = { tag = "hypruse-owned" }, '
+            'border_color = "rgb(ff5555)" })',
+        )
+    ]
+
+
+def test_init_marking_warns_instead_of_dying_when_the_rule_will_not_install(
+    monkeypatch, capsys
+):
+    # marking makes the agent legible; it is not a containment boundary, so
+    # losing it must not take the desktop's guards down with it. But a
+    # visibility layer that quietly is not running is worse than none.
+    monkeypatch.setenv("HYPRUSE_MARK", "1")
+
+    def boom(*_a, **_k):
+        raise trust.hyprctl.HyprctlError("keyword can't work with non-legacy parsers")
+
+    monkeypatch.setattr(trust.hyprctl, "border_rule", boom)
+    trust.init_marking()  # returns, does not raise
+    err = capsys.readouterr().err
+    assert "HYPRUSE_MARK is set but the border rule did not install" in err
+    assert "hypruse-owned" in err  # the config-file workaround still works

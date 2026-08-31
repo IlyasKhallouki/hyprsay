@@ -9,7 +9,7 @@ test that wants the interesting state opts in explicitly.
 
 import pytest
 
-from hypruse import journal, trust
+from hypruse import hyprctl, journal, trust
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,18 @@ def no_ambient_journal(monkeypatch):
     for var in ("HYPRUSE_JOURNAL", "HYPRUSE_JOURNAL_TEXT", "HYPRUSE_DRYRUN"):
         monkeypatch.delenv(var, raising=False)
     journal._broken = False
+
+
+@pytest.fixture(autouse=True)
+def hyprlang_provider(monkeypatch):
+    """The config manager is hyprlang, unless a test says otherwise.
+
+    Same rule again: hyprctl.provider() shells out to the compositor and
+    then caches the answer in a module global, so without this the suite
+    would probe the developer's own session and whichever test got there
+    first would decide the wire format for every test after it.
+    """
+    monkeypatch.setattr(hyprctl, "_provider", hyprctl.HYPRLANG)
 
 
 @pytest.fixture(autouse=True)

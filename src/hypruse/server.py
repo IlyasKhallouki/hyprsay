@@ -823,6 +823,29 @@ def _addr(target: str) -> str:
     return f"address:{target}"
 
 
+# Hyprland accepts a lot of shapes here (3, name:notes, special:magic, +1,
+# e+1, previous, empty) and a workspace NAME may contain spaces, so there is
+# no grammar to match against; what this refuses is the punctuation a
+# workspace identifier never contains. That keeps the argument inert as a
+# Lua expression, which matters because `hyprctl dispatch` on a Lua config
+# evaluates its argument inside the compositor's interpreter: this is the
+# one dispatcher argument an agent supplies that is not an address, and it
+# is deliberately the one `hypr` action that skips the confinement guard.
+# The comma is refused for a second reason: move_window joins the workspace
+# and the address with one.
+_WORKSPACE_REFUSED = frozenset("()[]{}\"'`;=\\,\n\r\t")
+
+
+def _workspace(name: str) -> str:
+    bad = sorted(set(name) & _WORKSPACE_REFUSED)
+    if bad:
+        raise ValueError(
+            f"{name!r} is not a workspace: {''.join(bad)!r} cannot appear in one. "
+            "Use a number, a name, or special:name."
+        )
+    return name
+
+
 _CLOSE_WAIT_S = 1.0
 
 
@@ -890,6 +913,8 @@ def hypr(action: str, target: str = "", workspace: str = "", then: str = "none")
         raise ValueError("workspace action needs `workspace`")
     if action == "move_window" and not workspace:
         raise ValueError("move_window needs `workspace`")
+    if workspace:
+        _workspace(workspace)
     if action in ("focus_window", "move_window", "close_window") or (
         target and action in ("fullscreen", "toggle_floating")
     ):
@@ -989,7 +1014,7 @@ def launch(command: str, workspace: str = "", wait_s: float = 8.0) -> dict[str, 
     address/class/title/workspace, or a timeout note."""
     safety.touch("launch")
     wait_s = min(max(wait_s, 1.0), 30.0)
-    rule = f"[workspace {workspace} silent] " if workspace else ""
+    rule = f"[workspace {_workspace(workspace)} silent] " if workspace else ""
     if journal.dry_run():
         return f"{_DRY} run {rule + command} and wait up to {wait_s:.0f}s for its window"
     win = _launch_and_wait(rule + command, wait_s)
@@ -1040,9 +1065,12 @@ def binds() -> list[dict[str, Any]]:
     """The user's own Hyprland keybinds: combo, action, arg, and a
     description when the config provides one. This is how the desktop's
     owner drives it: to perform one of these workflows, call `use_bind`
-    with the combo (it runs the bound action). NOTE: the `keyboard` tool
-    canNOT trigger these compositor binds (synthetic keys reach apps, not
-    Hyprland's bind matcher), so do not try to press them."""
+    with the combo (it runs the bound action). An action of `lua` means the
+    bind is a closure in a Lua Hyprland config, which nothing can run from
+    outside: read its description and do the same thing with `hypr` or
+    `launch`. NOTE: the `keyboard` tool canNOT trigger these compositor
+    binds (synthetic keys reach apps, not Hyprland's bind matcher), so do
+    not try to press them."""
     return hyprctl.binds()
 
 
@@ -1090,6 +1118,18 @@ def use_bind(combo: str, then: str = "none") -> list[Any] | str:
     bind = hyprctl.find_bind(combo)
     if bind is None:
         raise ValueError(f"no keybind {combo!r}; call binds() for the exact combos")
+    # Refused before the dry run, not after: a rehearsal that reported a
+    # plan for this would be describing something that can never happen.
+    if bind["action"] == hyprctl.LUA_BIND:
+        described = f" It is described as {bind['description']!r}." if bind.get(
+            "description"
+        ) else ""
+        raise ValueError(
+            f"{bind['combo']} is bound in a Lua Hyprland config, where a bind is an "
+            "anonymous closure the compositor exposes no way to call. No tool can run "
+            f"it and retrying will not help.{described} Do the action directly instead: "
+            "`hypr` for window and workspace ops, `launch` for apps."
+        )
     action, arg = bind["action"], bind.get("arg", "")
     if journal.dry_run():
         return _acted(f"{_DRY} run {bind['combo']}: {action} {arg}".rstrip(), then)
@@ -1518,9 +1558,10 @@ _READONLY_DOCS = {
     no tree (then use screenshot + zoom).""",
     "binds": """The user's own Hyprland keybinds: combo, action, arg, and a
     description when the config provides one. This is how the desktop's
-    owner drives it; read them to understand the owner's workflows.
-    Running a bind is an acting operation and is disabled in read-only
-    mode.""",
+    owner drives it; read them to understand the owner's workflows. An
+    action of `lua` means the bind is a closure in a Lua Hyprland config,
+    so only its combo and description are readable. Running a bind is an
+    acting operation and is disabled in read-only mode.""",
 }
 
 # Observation tools register in BOTH modes (docstrings become the MCP tool

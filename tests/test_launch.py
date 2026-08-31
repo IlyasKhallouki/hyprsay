@@ -150,3 +150,45 @@ def test_wait_for_tool_matching(monkeypatch):
 def test_wait_for_rejects_unknown_event():
     with pytest.raises(ValueError, match="unknown event"):
         server.wait_for("coffee_ready")
+
+
+# --- workspace arguments are not free-form ----------------------------------
+#
+# `hypr action=workspace` is deliberately the one action that skips the
+# confinement guard, and on a Lua config `hyprctl dispatch` evaluates its
+# argument inside the compositor's own interpreter. A workspace identifier
+# never contains this punctuation, so refusing it costs nothing real.
+
+
+@pytest.mark.parametrize(
+    "workspace",
+    ['3") or os.execute("touch /tmp/pwn', "3;4", "3,address:0xa", "a=b", "x\ny"],
+)
+def test_workspace_refuses_expression_punctuation(workspace):
+    with pytest.raises(ValueError, match="is not a workspace"):
+        server._workspace(workspace)
+
+
+@pytest.mark.parametrize(
+    "workspace", ["3", "-3", "+1", "e+1", "previous", "special:magic", "name:my notes"]
+)
+def test_workspace_keeps_every_shape_hyprland_accepts(workspace):
+    assert server._workspace(workspace) == workspace
+
+
+def test_hypr_refuses_a_bad_workspace_before_dispatching(monkeypatch):
+    monkeypatch.setattr(server.safety, "touch", lambda *a: None)
+    dispatched = []
+    monkeypatch.setattr(server.hyprctl, "dispatch", lambda *a: dispatched.append(a))
+    with pytest.raises(ValueError, match="is not a workspace"):
+        server.hypr("workspace", workspace='3") or os.execute("id')
+    assert dispatched == []
+
+
+def test_launch_refuses_a_bad_workspace_before_spawning(monkeypatch):
+    monkeypatch.setattr(server.safety, "touch", lambda *a: None)
+    dispatched = []
+    monkeypatch.setattr(server.hyprctl, "dispatch", lambda *a: dispatched.append(a))
+    with pytest.raises(ValueError, match="is not a workspace"):
+        server.launch("foot", workspace="2] tag pwned [")
+    assert dispatched == []

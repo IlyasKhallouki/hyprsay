@@ -1,6 +1,6 @@
 """Synthetic input.
 
-Pointer: positioning goes through `hyprctl dispatch movecursor` (global
+Pointer: positioning goes through the compositor's cursor dispatcher (global
 logical coordinates, authoritative on any monitor layout); only button and
 axis events go through the virtual-pointer wire client. This split
 sidesteps the known multi-monitor mapping bugs of absolute virtual-pointer

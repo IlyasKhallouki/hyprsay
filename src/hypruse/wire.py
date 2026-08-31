@@ -302,7 +302,7 @@ class VirtualPointer:
     def move_to(self, x: float, y: float) -> None:
         """Absolute positioning, built out of relative motion.
 
-        `hyprctl dispatch movecursor` cannot be used on a second seat: it moves the
+        The compositor's cursor dispatcher cannot be used on a second seat: it moves the
         one global cursor, which is the human's. Relative motion is per device and
         therefore per seat.
 

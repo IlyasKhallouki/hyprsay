@@ -63,6 +63,53 @@ All notable changes to this project are documented here. The format follows
   only when no live hypruse already holds it, so a running server keeps
   its own `hypruse stop` and Waybar indicator.
 
+### Fixed
+- **Hyprland's Lua config manager** (0.56+). Every window operation failed
+  on a desktop configured with a `hyprland.lua`: `launch`, all six `hypr`
+  actions, `click_ui`, `keyboard` with a `window=` target, `use_bind`, and,
+  without a named seat, every `pointer` and `sequence` move. 0.56 did not
+  remove the string dispatchers, as the reports read; it added a second
+  config manager and gave it a different IPC. Under that one `hyprctl
+  dispatch X` evaluates the Lua expression `hl.dispatch(X)`, so
+  `movecursor 100 100` is a syntax error, and `hyprctl keyword` is refused
+  outright. Which manager runs is decided by the config file's extension,
+  and `hyprland.lua` is looked for first, so a fresh 0.56 install is a Lua
+  desktop while a 0.56 install with the old config is untouched: this is
+  not something a version check can answer. hypruse now probes the manager
+  once (`hyprctl -j status`, a JSON line, not the two-second `systeminfo`),
+  speaks whichever dialect came back, and re-probes if a call fails, since
+  `hyprctl reload full-reset` can swap managers under a running server.
+  Callers are unchanged: a window op is still described once, in the
+  legacy shape, and `hyprctl.py` translates. Thanks to @Sokoshy for the
+  report, the `hl.dsp` enumeration, and the verified migration examples
+  ([#1](https://github.com/IlyasKhallouki/hypruse/issues/1)).
+- Ownership marking (`HYPRUSE_MARK`) was silently dead on a Lua config:
+  the border rule could not install and no window was ever tagged, so even
+  the documented workaround of putting the rule in your own config matched
+  nothing, and the only surviving signal was the toast. The rule now goes
+  out as `hl.window_rule` there, and a failure to install it says so on
+  stderr instead of leaving a visibility layer quietly not running.
+- `use_bind` on a Lua config now explains itself. Hyprland stores a Lua
+  bind as an anonymous closure and exposes no IPC route to call it, so the
+  tool refused with a Lua parser error about `__lua` plus an upstream note
+  suggesting the caller had sent bad syntax, and a dry run cheerfully
+  planned an action that could never run. `binds` reports those as action
+  `lua` and drops the registry index, which is meaningless outside the
+  compositor; the combo and description still say what the workflow is,
+  and `use_bind` names the cause and points at `hypr` and `launch`.
+- `binds` no longer lists pointer binds as if they were pressable. The
+  `mouse` flag it filtered on is the hyprlang manager's, and a Lua config
+  never sets it, so `SUPER+mouse:272` came through as a keyboard combo.
+- `hypr` and `launch` now reject a `workspace` argument containing the
+  punctuation a workspace identifier never has. On a Lua desktop the
+  dispatcher argument is evaluated inside the compositor's own interpreter
+  with the standard library open, and `workspace` was the one agent-supplied
+  dispatcher argument with no structural validation, on deliberately the
+  one `hypr` action that skips the confinement guard. Everything hypruse
+  sends on the Lua path is now built as an escaped literal rather than
+  interpolated.
+- `hypruse doctor` reports which config manager the session runs.
+
 ### Changed
 - `hypr` now validates its action, its `workspace` argument, and its
   target address before any guard runs and before anything is

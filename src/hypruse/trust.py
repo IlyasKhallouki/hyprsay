@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from typing import Any
 
 from hypruse import a11y, hyprctl
@@ -605,29 +606,35 @@ def marking_on() -> bool:
 
 # Border color for agent-owned windows. The rule matches the tag hypruse
 # applies in note_launched, and Hyprland re-evaluates it when the tag is
-# set, so windows tagged after they open still get the border. The matcher
-# spelling changed across Hyprland versions (0.42+ dropped the colon:
-# `tag NAME`, older is `tag:NAME`) and the field was renamed from the
-# deprecated `windowrulev2 bordercolor` to `windowrule border_color` with a
-# single 6-char color, so we try the current form first and fall back.
-_BORDER_RULES = (
-    f"border_color rgb(ff5555), tag {_OWNED_TAG}",   # Hyprland 0.42+
-    f"border_color rgb(ff5555), tag:{_OWNED_TAG}",   # older
-)
+# set, so windows tagged after they open still get the border. Installing it
+# is hyprctl's problem: which IPC call carries a runtime rule depends on the
+# session's config manager.
+_MARK_COLOR = "rgb(ff5555)"
 
 
 def init_marking() -> None:
-    """Install the agent-owned border rule once at startup (best-effort;
-    no-op unless HYPRUSE_MARK is set). Left in place on exit: it only colors
-    windows carrying hypruse's own tag, and a config reload clears it."""
+    """Install the agent-owned border rule once at startup (no-op unless
+    HYPRUSE_MARK is set). Left in place on exit: it only colors windows
+    carrying hypruse's own tag, and a config reload clears it.
+
+    A failure here does not stop the server: marking makes the agent's
+    presence legible, it is not a containment boundary the way confinement
+    is, and taking the desktop's guards away over a missing outline would
+    be the worse trade. It does say so, though. The whole point of the
+    feature is that the human at the desk can see what the agent owns, and
+    a marking layer that quietly is not running is worse than one that was
+    never asked for."""
     if not marking_on():
         return
-    for rule in _BORDER_RULES:
-        try:
-            hyprctl.keyword("windowrule", rule)
-            return  # first accepted form wins
-        except hyprctl.HyprctlError:
-            continue
+    try:
+        hyprctl.border_rule(_OWNED_TAG, _MARK_COLOR)
+    except hyprctl.HyprctlError as exc:
+        print(
+            f"hypruse: HYPRUSE_MARK is set but the border rule did not install ({exc}); "
+            f"agent windows are still tagged {_OWNED_TAG}, so a rule in your own "
+            "Hyprland config will still color them",
+            file=sys.stderr,
+        )
 
 
 _last_notify: dict[str, float] = {"ts": 0.0}
