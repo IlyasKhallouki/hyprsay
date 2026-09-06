@@ -43,6 +43,14 @@ def test_default_exposes_everything(reloaded):
     assert "READ-ONLY" not in reloaded(None).mcp.instructions
 
 
+def test_both_instruction_sets_separate_listed_layers_from_visible(reloaded):
+    # `hyprctl layers` reports surfaces the compositor tracks, mapped or
+    # not, so neither instruction set may let presence read as visibility
+    for value in ("1", None):
+        text = " ".join((reloaded(value).mcp.instructions or "").split())
+        assert "not one you can see" in text
+
+
 @pytest.mark.parametrize(
     "value,expect_readonly",
     [("true", True), ("0", False), ("off", False), ("YES", True)],
