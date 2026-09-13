@@ -23,6 +23,9 @@ def test_version_sources_agree():
     # the registry rejects a package version that is not on PyPI yet, and
     # validates ownership against *that* version's README
     assert [p["version"] for p in server["packages"]] == [version]
+    # the skill ships inside the wheel and names the release it describes
+    skill = (ROOT / "skills" / "hypruse" / "SKILL.md").read_text()
+    assert f'version: "{version}"' in skill
 
 
 def test_registry_ownership_token_matches_server_name():
@@ -167,6 +170,62 @@ def test_stop_handles_dict_beacon_missing_pid(tmp_path, monkeypatch, capsys):
     (d / "state.json").write_text('{"started": 1}')
     assert cli.stop() == 1
     assert "unreadable" in capsys.readouterr().out
+
+
+def test_stop_reaches_a_verb_acting_beside_a_server(tmp_path, monkeypatch, capsys):
+    # a verb acting while a server owns the beacon is findable only through
+    # the lock it holds; the panic bind must stop it too
+    from hypruse import verbs
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    d = tmp_path / "hypruse"
+    d.mkdir()
+    (d / "state.json").write_text(json.dumps({"pid": 4242, "started": 1}))
+    held = verbs._lock()  # this process stands in for the verb
+    held.seek(0)
+    held.truncate()
+    held.write("7777")  # a pid that is not ours, so stop() may signal it
+    held.flush()
+    killed = []
+    monkeypatch.setattr(cli.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    try:
+        assert cli._running_verb_pid() == 7777
+        assert cli.stop() == 0
+    finally:
+        held.close()
+    assert killed == [(7777, cli.signal.SIGTERM), (4242, cli.signal.SIGTERM)]
+    out = capsys.readouterr().out
+    assert "stopped a running hypruse verb (pid 7777)" in out
+    assert "stopped hypruse (pid 4242)" in out
+    # lock released: nothing acting any more
+    assert cli._running_verb_pid() is None
+
+
+def test_init_yes_does_not_write_into_agent_directories_unasked(monkeypatch, capsys):
+    from hypruse import skill
+
+    installs = []
+    monkeypatch.setattr(skill, "install", lambda agents, copy: installs.append(agents) or 0)
+    cli._init_skill(assume_yes=True, wanted=False)
+    assert installs == [] and "skipped" in capsys.readouterr().out
+    cli._init_skill(assume_yes=True, wanted=True)
+    assert installs == [[]]
+
+
+def test_a_verbs_beacon_is_not_removed_once_a_server_took_the_file(tmp_path, monkeypatch):
+    from hypruse import safety
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(safety, "_armed", True)  # keep atexit/signal out of the test process
+    safety.init()
+    beacon = safety.state_path()
+    assert json.loads(beacon.read_text())["pid"] == cli.os.getpid()
+    beacon.write_text(json.dumps({"pid": 4242, "started": 2}))  # a server started meanwhile
+    safety.shutdown()
+    assert json.loads(beacon.read_text())["pid"] == 4242
+    safety.init()
+    safety.shutdown()
+    assert not beacon.exists()
 
 
 def test_stop_clears_stale_beacon(tmp_path, monkeypatch, capsys):

@@ -21,9 +21,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ImageContent, TextContent
-
 from hypruse import __version__, a11y, events, hyprctl, journal, safety, session, trust
 from hypruse import clipboard as clip
 from hypruse import input as hinput
@@ -131,7 +128,48 @@ _instructions = READONLY_INSTRUCTIONS if READONLY else INSTRUCTIONS
 if journal.dry_run() and not READONLY:  # read-only has nothing to simulate
     _instructions += DRYRUN_NOTE
 
-mcp = FastMCP("hypruse", instructions=_instructions)
+# Content blocks. The MCP types are pydantic models that `mcp.types` builds
+# at import, and that import is most of a shell verb's startup time, so the
+# tools never name them: they ask for a block, and the CLI, which only ever
+# prints text and file paths, gets a plain one instead.
+
+
+class Block:
+    """A content block for a caller that does not speak MCP (the CLI verbs):
+    the fields the MCP types carry, and nothing imported to carry them."""
+
+    __slots__ = ("type", "text", "data", "mimeType")
+
+    def __init__(self, type: str, text: str = "", data: str = "", mimeType: str = "") -> None:
+        self.type, self.text, self.data, self.mimeType = type, text, data, mimeType
+
+    def __repr__(self) -> str:
+        return f"Block({self.type!r}, {self.text[:40]!r})"
+
+
+_plain_blocks = False
+
+
+def use_plain_blocks() -> None:
+    """Return Block instead of mcp.types objects from here on (the CLI)."""
+    global _plain_blocks
+    _plain_blocks = True
+
+
+def _text(text: str) -> Any:
+    if _plain_blocks:
+        return Block("text", text=text)
+    from mcp.types import TextContent
+
+    return TextContent(type="text", text=text)
+
+
+def _image(*, data: str, mimeType: str) -> Any:
+    if _plain_blocks:
+        return Block("image", data=data, mimeType=mimeType)
+    from mcp.types import ImageContent
+
+    return ImageContent(type="image", data=data, mimeType=mimeType)
 
 
 def _runtime_dir() -> Path:
@@ -195,21 +233,19 @@ def _package(data: bytes, meta: dict[str, Any]) -> list[Any]:
     """Package an image for MCP transport: inline + metadata in image mode,
     a saved file path + metadata otherwise."""
     if _image_mode():
-        image_block = ImageContent(
-            type="image",
-            data=base64.b64encode(data).decode(),
+        image_block = _image(data=base64.b64encode(data).decode(),
             mimeType=f"image/{meta['format']}",
         )
-        return [image_block, TextContent(type="text", text=json.dumps(meta))]
+        return [image_block, _text(json.dumps(meta))]
     d = _runtime_dir()
     path = d / f"shot-{int(time.time() * 1000)}.{meta['format']}"
     path.write_bytes(data)
     _prune_shots(d)
+    meta["path"] = str(path)  # the CLI reads it from here, not from the sentence
     return [
-        TextContent(
-            type="text", text=f"screenshot saved, read this file to view the screen: {path}"
+        _text(f"screenshot saved, read this file to view the screen: {path}"
         ),
-        TextContent(type="text", text=json.dumps(meta)),
+        _text(json.dumps(meta)),
     ]
 
 
@@ -430,6 +466,38 @@ def _draw_marks(
 _last_marks: dict[str, Any] = {}
 
 
+def marks_state() -> dict[str, Any]:
+    """The numbering the next click_ui(mark=N) resolves against; cli_state
+    carries it across one-shot CLI processes."""
+    return _last_marks
+
+
+def restore_marks(state: Any) -> None:
+    """Load what marks_state returned after a JSON round-trip (mark numbers
+    come back as string keys). Anything malformed means no marks."""
+    global _last_marks
+    _last_marks = {}
+    if not isinstance(state, dict) or not isinstance(state.get("items"), dict):
+        return
+    items: dict[int, dict[str, Any]] = {}
+    for key, item in state["items"].items():
+        with contextlib.suppress(ValueError, TypeError):
+            if isinstance(item, dict) and {"dx", "dy", "label"} <= set(item):
+                items[int(key)] = item
+    if items and isinstance(state.get("window"), str):
+        _last_marks = {"window": state["window"], "items": items}
+        if isinstance(state.get("class"), str):
+            _last_marks["class"] = state["class"]
+        # a record without a timestamp is treated as expired, never as fresh
+        ts = state.get("ts")
+        _last_marks["ts"] = float(ts) if isinstance(ts, int | float) else 0.0
+
+
+# how long a marks numbering stays clickable; the CLI persists it, and a
+# number an agent copied from yesterday must not become a click today
+_MARKS_TTL_S = 600.0
+
+
 @journal.journaled("observe")
 def marks(window: str = "", name: str = "") -> list[Any] | str:
     """Set-of-Marks capture: a screenshot of the window WITH its accessible
@@ -463,22 +531,23 @@ def marks(window: str = "", name: str = "") -> list[Any] | str:
         stored[i] = {"dx": e["x"] - ax, "dy": e["y"] - ay,
                      "label": f"{e['role']} {e['name']!r}"}
     global _last_marks
-    _last_marks = {"window": addr, "items": stored}
+    # class and time travel with the numbering: a later click_ui(mark=N)
+    # checks both, since the CLI carries this record across processes and an
+    # address can be handed to a different window later
+    _last_marks = {
+        "window": addr, "class": client.get("class", ""), "ts": time.time(), "items": stored,
+    }
     hint = (
         "numbered marks match the legend entries"
         if READONLY  # click_ui does not exist in read-only mode
         else "click_ui(mark=N) clicks a numbered mark"
     )
-    legend_text = TextContent(
-        type="text",
-        text=json.dumps({"legend": legend, "hint": hint}),
+    legend_text = _text(json.dumps({"legend": legend, "hint": hint}),
     )
     marked = _draw_marks(data, meta["format"], points)
     if marked is None:
         return [
-            TextContent(
-                type="text",
-                text="ImageMagick not found, returning the legend only (its "
+            _text("ImageMagick not found, returning the legend only (its "
                 "coordinates are exact; install imagemagick for marked captures)",
             ),
             legend_text,
@@ -504,9 +573,9 @@ def _acted(msg: str, then: str, window: str = "") -> list[Any] | str:
     `'none'` appends nothing."""
     if then == "none":
         return msg
-    head = TextContent(type="text", text=msg)
+    head = _text(msg)
     if then == "desktop":
-        return [head, TextContent(type="text", text=json.dumps(hyprctl.snapshot()))]
+        return [head, _text(json.dumps(hyprctl.snapshot()))]
     if then == "screenshot":
         return [head, *_deliver_capture(stable=True)]
     if then == "ui":
@@ -522,7 +591,7 @@ def _acted(msg: str, then: str, window: str = "") -> list[Any] | str:
                 with contextlib.suppress(Exception):
                     view = _ui_read()
         payload = view if isinstance(view, str) else json.dumps(view)
-        return [head, TextContent(type="text", text=payload)]
+        return [head, _text(payload)]
     raise ValueError(f"unknown then {then!r}: {'|'.join(_OBSERVE_MODES)}")
 
 
@@ -763,7 +832,18 @@ def click_ui(
             raise ValueError(
                 f"no mark {mark}; current marks: {known or 'none, call marks() first'}"
             )
+        age = time.time() - _last_marks.get("ts", time.time())
+        if age > _MARKS_TTL_S:
+            raise ValueError(
+                f"no mark {mark}: the last marks capture is {age / 60:.0f} minutes old and "
+                "the window has surely changed; call marks() again"
+            )
         client = _resolve_window(_last_marks["window"])  # raises if the window is gone
+        if _last_marks.get("class") and client.get("class") != _last_marks["class"]:
+            raise ValueError(
+                f"no mark {mark}: the last marks capture was of {_last_marks['class']!r} and "
+                f"that address now belongs to {client.get('class')!r}; call marks() again"
+            )
         item = _last_marks["items"][mark]
         x, y = client["at"][0] + item["dx"], client["at"][1] + item["dy"]
         desc = f"mark {mark} ({item['label']})"
@@ -780,12 +860,10 @@ def click_ui(
             pool = [pool[index]]
         if len(pool) > 1:
             return [
-                TextContent(
-                    type="text",
-                    text=f"{name!r} is ambiguous ({len(pool)} candidates); call again "
+                _text(f"{name!r} is ambiguous ({len(pool)} candidates); call again "
                     "with index=N (0-based) or a more specific name:",
                 ),
-                TextContent(type="text", text=json.dumps(pool)),
+                _text(json.dumps(pool)),
             ]
         e = pool[0]
         x, y = e["x"], e["y"]
@@ -1063,6 +1141,7 @@ Register it with Claude Code:
 
 Or set `uvx hypruse` as a stdio server in your MCP client's config.
 Check the install with:  hypruse --version
+The same tools as shell verbs (for agents that run commands): hypruse --help
 """
 
 
@@ -1581,13 +1660,41 @@ if READONLY:
         _observe_tool.__doc__ = _READONLY_DOCS.get(
             _observe_tool.__name__, _observe_tool.__doc__
         )
-for _observe_tool in _OBSERVE_TOOLS:
-    mcp.tool()(_observe_tool)
-if not READONLY:
-    for _acting_tool in (pointer, keyboard, click_ui, hypr, launch, use_bind, sequence):
-        mcp.tool()(_acting_tool)
-    if CLIPBOARD:
-        mcp.tool()(clipboard)
+
+
+def build_app() -> Any:
+    """The FastMCP application with the tools registered for this mode."""
+    from mcp.server.fastmcp import FastMCP
+
+    app_ = FastMCP("hypruse", instructions=_instructions)
+    for observe_tool in _OBSERVE_TOOLS:
+        app_.tool()(observe_tool)
+    if not READONLY:
+        for acting_tool in (pointer, keyboard, click_ui, hypr, launch, use_bind, sequence):
+            app_.tool()(acting_tool)
+        if CLIPBOARD:
+            app_.tool()(clipboard)
+    return app_
+
+
+_app: Any = None  # assigned here so a reload (the read-only tests) starts over
+
+
+def app() -> Any:
+    """The application, built on first use rather than at import: importing
+    FastMCP costs about a second, which the MCP server pays once and a
+    shell verb, which never serves anything, must not pay at all. Reachable
+    as `server.mcp` too, through the module __getattr__ below."""
+    global _app
+    if _app is None:
+        _app = build_app()
+    return _app
+
+
+def __getattr__(name: str) -> Any:
+    if name == "mcp":
+        return app()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main() -> None:
@@ -1606,7 +1713,7 @@ def main() -> None:
     journal.start(__version__)  # HYPRUSE_JOURNAL: open the session record
     safety.on_shutdown(journal.stop)  # closed on the SIGTERM path too
     trust.init_marking()  # HYPRUSE_MARK: install the agent-owned border rule
-    mcp.run()
+    app().run()
 
 
 if __name__ == "__main__":

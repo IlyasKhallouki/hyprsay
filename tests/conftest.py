@@ -9,7 +9,7 @@ test that wants the interesting state opts in explicitly.
 
 import pytest
 
-from hypruse import hyprctl, journal, trust
+from hypruse import hyprctl, journal, server, trust
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +25,14 @@ def no_ambient_journal(monkeypatch):
     for var in ("HYPRUSE_JOURNAL", "HYPRUSE_JOURNAL_TEXT", "HYPRUSE_DRYRUN"):
         monkeypatch.delenv(var, raising=False)
     journal._broken = False
+    # replay marks its records `by: replay` and the CLI verbs stamp theirs
+    # with a source; a test that ran either must not leave the mark on every
+    # record the next test writes
+    monkeypatch.setattr(journal, "_origin", "")
+    monkeypatch.setattr(journal, "_source", "")
+    # and a verb switches the content blocks to the plain kind for the rest
+    # of the process; the MCP-facing tests must keep seeing the real types
+    monkeypatch.setattr(server, "_plain_blocks", False)
 
 
 @pytest.fixture(autouse=True)

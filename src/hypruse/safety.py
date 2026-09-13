@@ -58,12 +58,20 @@ def _write(payload: dict) -> None:
         tmp.replace(_state_path)
 
 
-def init() -> None:
-    """Start the beacon; safe to call once at server startup."""
-    global _state_path, _started
-    _state_path = state_path()
-    _started = time.time()
-    _write({"pid": os.getpid(), "started": _started, "last_action": "", "last_ts": 0})
+_armed = False
+
+
+def arm() -> None:
+    """Install the shutdown path (atexit + SIGTERM) without raising the
+    beacon. A CLI verb running beside a live server must leave the server's
+    beacon alone, but `pkill -f hypruse` matches the verb too, and a verb
+    killed mid-drag must still release the button it holds: the cleanups
+    are what make the kill switch safe, the beacon is only what makes the
+    agent visible."""
+    global _armed
+    if _armed:
+        return
+    _armed = True
     atexit.register(shutdown)
     # SIGTERM (what the kill switch's `pkill` sends) has no default cleanup,
     # so remove the beacon then let the default disposition terminate us.
@@ -74,6 +82,15 @@ def init() -> None:
     #, the Waybar module liveness-checks the pid.
     with contextlib.suppress(ValueError):  # signal() only works on the main thread
         signal.signal(signal.SIGTERM, _on_sigterm)
+
+
+def init() -> None:
+    """Start the beacon; safe to call once at server startup."""
+    global _state_path, _started
+    _state_path = state_path()
+    _started = time.time()
+    _write({"pid": os.getpid(), "started": _started, "last_action": "", "last_ts": 0})
+    arm()
 
 
 def touch(action: str) -> None:
@@ -103,8 +120,12 @@ def shutdown() -> None:
         with contextlib.suppress(Exception):
             _cleanups.pop()()
     if _state_path is not None:
-        with contextlib.suppress(OSError):
-            _state_path.unlink(missing_ok=True)
+        # only our own beacon: a server started during a long verb (a launch
+        # waiting on its window) has overwritten the file with its pid, and
+        # removing that would leave the live server invisible and un-stoppable
+        with contextlib.suppress(OSError, ValueError, TypeError, KeyError):
+            if int(json.loads(_state_path.read_text())["pid"]) == os.getpid():
+                _state_path.unlink(missing_ok=True)
         _state_path = None
 
 

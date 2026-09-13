@@ -10,6 +10,10 @@ the record an agent leaves behind:
     hypruse stop     emergency stop, releasing anything a drag holds
     hypruse journal  read back what an agent did (HYPRUSE_JOURNAL)
     hypruse replay   re-issue a journal's actions, dry by default
+    hypruse skill    install the Agent Skill that teaches the verbs
+
+The tools themselves are verbs too (`hypruse desktop`, `hypruse click_ui
+Save`), for agents that run shell commands instead of MCP: see verbs.py.
 
 init never overwrites an existing hypruse entry: if a client already has
 one, whatever its shape, it is reported and left alone.
@@ -114,6 +118,17 @@ def _mode_note() -> tuple[bool, str]:
     return True, ", ".join(parts)
 
 
+def _skill_note() -> tuple[bool, str]:
+    """Informational: the skill is for agents that run shell commands, and
+    an MCP-only setup is complete without it."""
+    from hypruse import skill
+
+    canonical = Path(skill.CANONICAL).expanduser() / skill.NAME
+    if (canonical / "SKILL.md").is_file():
+        return True, f"agent skill installed at {canonical}"
+    return True, "agent skill not installed (hypruse skill install, for shell-driven agents)"
+
+
 CHECKS = (
     ("dependencies", _check_deps),
     ("session", _check_session),
@@ -121,6 +136,7 @@ CHECKS = (
     ("pointer", _check_pointer),
     ("screenshot", _check_screenshot),
     ("mode", _mode_note),
+    ("skill", _skill_note),
 )
 
 
@@ -204,10 +220,29 @@ def _init_claude_desktop(assume_yes: bool) -> None:
     print("  written. Restart Claude Desktop to load it.")
 
 
-def init(assume_yes: bool) -> int:
+def _init_skill(assume_yes: bool, wanted: bool) -> None:
+    """The skill is what agents that run shell commands (Pi, Codex, Hermes,
+    OpenClaw, or Claude Code without the MCP server) read to learn the
+    verbs. Offered, never forced: an MCP-only setup does not need it."""
+    from hypruse import skill
+
+    if wanted:
+        skill.install([], copy=False)
+        return
+    # --yes answers the client questions; it does not write into other
+    # agents' directories unasked, that is what --skill is for
+    if not assume_yes and _ask("- Install the agent skill into your agents' skill directories?",
+                               assume_yes=False):
+        skill.install([], copy=False)
+    else:
+        print("- agent skill: skipped (hypruse init --skill, or hypruse skill install)")
+
+
+def init(assume_yes: bool, install_skill: bool = False) -> int:
     print("hypruse init: registering with detected MCP clients\n")
     _init_claude_code(assume_yes)
     _init_claude_desktop(assume_yes)
+    _init_skill(assume_yes, install_skill)
     print(f"\n{GENERIC_SNIPPET}")
     print("Running doctor:\n")
     return doctor()
@@ -226,9 +261,24 @@ def stop() -> int:
     """
     from hypruse import safety
 
+    stopped = 0
+    # a shell verb acting beside a live server never touches the server's
+    # beacon, so it is only findable through the lock it holds while acting
+    verb_pid = _running_verb_pid()
+    if verb_pid and verb_pid != os.getpid():
+        try:
+            os.kill(verb_pid, signal.SIGTERM)
+            print(f"stopped a running hypruse verb (pid {verb_pid})")
+            stopped += 1
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            print(f"not permitted to signal pid {verb_pid}")
+            return 1
     path = safety.state_path()
     if not path.exists():
-        print("no active hypruse session (no beacon found)")
+        if not stopped:
+            print("no active hypruse session (no beacon found)")
         return 0
     try:
         pid = int(json.loads(path.read_text())["pid"])
@@ -238,8 +288,6 @@ def stop() -> int:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        import contextlib
-
         with contextlib.suppress(OSError):
             path.unlink()
         print(f"hypruse pid {pid} was already gone; cleared the stale beacon")
@@ -249,6 +297,27 @@ def stop() -> int:
         return 1
     print(f"stopped hypruse (pid {pid})")
     return 0
+
+
+def _running_verb_pid() -> int | None:
+    """The pid of a shell verb currently acting, read from the lock it
+    holds (see verbs._lock), or None when the lock is free or absent."""
+    import fcntl
+
+    from hypruse import verbs
+
+    lock = verbs.lock_path()
+    try:
+        with open(lock) as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:  # held: a verb is acting right now
+                raw = fh.read().strip()
+                return int(raw) if raw.isdigit() else None
+            fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError:
+        return None
+    return None
 
 
 # --- journal ----------------------------------------------------------------
@@ -328,12 +397,16 @@ def _fmt_entry(entry: dict[str, Any], verbose: bool = False) -> str:
         if entry.get("event") == "start":
             tail = f"{_safe(entry.get('version', ''))} {flags or 'no trust flags set'}".strip()
         event, pid = _safe(entry.get("event", "")), _safe(entry.get("pid"))
+        if entry.get("source"):
+            event += f" ({_safe(entry['source'])})"
         return f"{seq:>5}  {when}  session {event} pid {pid} {tail}"
     kind = "act " if entry.get("kind") == "act" else "look"
     tool, detail = _safe(entry.get("tool", "?")), _fmt_args(entry.get("args"))
     line = f"{seq:>5}  {when}  {kind} {tool:<10} {detail}"
     if entry.get("dry"):
         line += "  (dry)"
+    if entry.get("source"):
+        line += f"  ({_safe(entry['source'])})"
     if entry.get("by"):
         line += f"  (by {_safe(entry['by'])})"
     outcome = _safe(entry.get("outcome", "?"))
@@ -653,36 +726,79 @@ def replay(argv: list[str]) -> int:
 # --- entry ------------------------------------------------------------------
 
 _USAGE = """\
-usage: hypruse [doctor | init [--yes] | stop | journal | replay | --version]
+usage: hypruse [VERB ...]        hypruse VERB --help for a verb's flags
 
 no arguments   run the MCP stdio server (this is what MCP clients spawn)
-doctor         diagnose dependencies, session, protocols; exit 0 if green
-init           register hypruse in detected MCP clients, then run doctor
-stop           emergency stop: signal a running server to shut down safely
-               (bind it: bind = SUPER SHIFT, BackSpace, exec, hypruse stop)
-journal        read back what an agent did (needs HYPRUSE_JOURNAL set on
-               the server); --acts, --refused, -n N
-replay         re-issue a journal's actions through the same guards;
-               prints the plan and stops unless --execute is given
+
+The tools as shell verbs (the same guards, journal and beacon as the MCP
+server; for agents that run commands). Observation, works in read-only mode:
+  desktop                        monitors, workspaces, windows, active, cursor, layers
+  screenshot [--window ADDR] [--region x,y,WxH] [--scale F] [--stable] [--lossless]
+             [--out PATH]
+  zoom X Y [--size WxH] [--window ADDR] [--stable] [--lossless] [--out PATH]
+  ui [--window ADDR] [--name TEXT] [--all]
+  marks [--window ADDR] [--name TEXT] [--out PATH]
+  binds
+  wait_for EVENT [--match TEXT] [--timeout S]
+Acting (refused with exit 3 under HYPRUSE_READONLY; all take --dry-run, which
+rehearses; all but launch and clipboard take --then none|desktop|ui|screenshot,
+which appends the effect; pointer, keyboard and click_ui take --allow-auth):
+  pointer move X Y | click [X Y] [--button B] [--double] | drag X Y TO_X TO_Y [--button B]
+          | scroll DY [DX] [--at X Y]
+  keyboard type TEXT|- [--window ADDR] | key COMBO [--window ADDR]
+  click_ui NAME [--window ADDR] [--index I] [--button B] [--double]   or   click_ui --mark N
+  hypr workspace WS | focus_window ADDR | move_window ADDR WS | close_window ADDR
+       | fullscreen [ADDR] | toggle_floating [ADDR]
+  launch [--workspace WS] [--wait S] COMMAND...   (the app's own flags after --)
+  use_bind COMBO
+  sequence STEPS|@file|- [--no-stop-on-change]
+  clipboard read | write TEXT|-          needs HYPRUSE_CLIPBOARD=1
+Every tool verb takes --json (raw result, one line). click-ui, use-bind and
+wait-for are accepted spellings. Exit: 0 ok, 1 error, 2 usage, 3 refused,
+4 no result. hypruse VERB [ACTION] --help shows the flags.
+
+For the owner:
+  doctor         diagnose dependencies, session, protocols; exit 0 if green
+  init [--yes] [--skill]   register hypruse in detected MCP clients, then doctor
+  stop           emergency stop: signal a running server to shut down safely
+                 (bind it: bind = SUPER SHIFT, BackSpace, exec, hypruse stop)
+  journal        read back what an agent did (needs HYPRUSE_JOURNAL);
+                 --acts, --refused, -n N
+  replay         re-issue a journal's actions through the same guards;
+                 prints the plan and stops unless --execute is given
+  skill          path | install [--agent NAME] [--copy] | uninstall
+  serve          the MCP stdio server, explicitly
+  --version
 """
 
 
 def main() -> None:
     argv = sys.argv[1:]
-    if not argv or argv[0].startswith("-"):
+    if not argv:
         from hypruse.server import main as server_main
 
         server_main()
         return
-    if argv[0] == "doctor":
-        sys.exit(doctor())
-    if argv[0] == "init":
-        sys.exit(init(assume_yes="--yes" in argv[1:]))
-    if argv[0] == "stop":
-        sys.exit(stop())
-    if argv[0] == "journal":
-        sys.exit(journal_cmd(argv[1:]))
-    if argv[0] == "replay":
-        sys.exit(replay(argv[1:]))
-    print(_USAGE, file=sys.stderr)
-    sys.exit(2)
+    # help and version must never start the server: an agent's shell has a
+    # piped stdin, and a server started there waits forever for a client
+    if argv[0] in ("-h", "--help"):
+        print(_USAGE, end="")
+        sys.exit(0)
+    if argv[0] == "--version":
+        from hypruse import __version__
+
+        print(f"hypruse {__version__}")
+        sys.exit(0)
+    from hypruse import verbs
+
+    try:
+        code = verbs.main(argv)
+        if not sys.stdout.closed:  # `serve` hands stdout to the MCP session, which closes it
+            sys.stdout.flush()
+    except BrokenPipeError:
+        # `hypruse desktop | head` closed the pipe early: that is the
+        # reader's choice, not a failure, and the interpreter must not
+        # trip over it again while flushing at exit
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        code = 0
+    sys.exit(code)

@@ -36,6 +36,17 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hypruse"]
 
+# the Agent Skill ships inside the package, so `hypruse skill install` always
+# describes the verbs the installed binary has
+[tool.hatch.build.targets.wheel.force-include]
+"skills/hypruse" = "hypruse/skill"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/hypruse", "/skills/hypruse", "/tests", "/server.json",
+    "/README.md", "/LICENSE", "/CHANGELOG.md", "/ARCHITECTURE.md", "/CONTRIBUTING.md",
+]
+
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
 

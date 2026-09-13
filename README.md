@@ -65,6 +65,8 @@ Design decisions:
 
 The acting tools (`pointer`, `keyboard`, `click_ui`, `hypr`, `use_bind`, `sequence`) take an optional `then` argument that appends the result to the same call, so the agent sees the effect without a second round-trip: `then='desktop'` adds a fresh semantic snapshot (~20 ms, cheap, best for window/focus changes), `then='screenshot'` a stable capture (best for visual changes), `then='ui'` the acted-on window's controls with their current values (a few hundred exact tokens, best after typing or toggling; `click_ui` reads the window it clicked even if the click handed focus to a dialog, the others read the focused window), `then='none'` nothing (the default everywhere except `sequence`, which defaults to `'desktop'`).
 
+Every tool is also a shell verb (`hypruse desktop`, `hypruse click_ui Save --window 0x...`) for agents that run commands instead of MCP, with a skill that teaches them: see [Shell verbs and the agent skill](#shell-verbs-and-the-agent-skill).
+
 ## Features
 
 The tools group into five capabilities, ordered most-reliable-and-cheapest first. An agent that reaches for them in this order is both faster and more accurate, and many tasks never need a screenshot at all.
@@ -99,6 +101,36 @@ hypruse hands an agent your real seat, so it ships the controls to bound what th
 
 **Use it well:** run read-only for the first week. When you trust a workflow, allowlist its tools and, if you want to walk away, confine the agent to a scope so your password manager on another workspace stays untouchable. Keep a panic bind handy (`hypruse stop`, or `pkill -f hypruse`). The [Security model](#security-model) has the full story.
 
+## Shell verbs and the agent skill
+
+Not every agent speaks MCP, and the ones that do increasingly prefer a command line: a tool list costs a few thousand tokens per session before the first call, a shell verb costs nothing until it runs. So the same fifteen tools are verbs, going through the same functions the MCP server registers, with the same trust guards, journal and activity beacon:
+
+```sh
+hypruse desktop                                  # one line per monitor, workspace, window, layer
+hypruse launch --workspace 2 -- firefox --new-window https://example.org
+hypruse ui --window 0x55a4479a1200 --name Save   # [0] push button "Save" @1204,88
+hypruse click_ui Save --window 0x55a4479a1200 --then ui
+hypruse screenshot --window 0x55a4479a1200       # a file path, then {"geometry":[x,y,w,h],"scale":1.0,...}
+hypruse zoom 1180 840 --window 0x55a4479a1200
+hypruse keyboard type "hello" --window 0x55a4479a1200
+hypruse wait_for title_change --match Inbox --timeout 10
+hypruse sequence '[{"op":"click_ui","name":"Search","window":"0x55a4479a1200"},{"op":"keyboard","action":"type","text":"btop"},{"op":"keyboard","action":"key","keys":"enter"}]'
+```
+
+The contract is built for a program reading the output: the verbs are the tool names, a tool's `action` is a positional sub-verb (`pointer click 800 60`, `hypr workspace 3`, `clipboard read`), output is compact plain text (one line per fact, `--json` for the raw result as one line), a capture prints its file path and coordinate metadata rather than bytes, and errors are one line on stderr with a meaningful exit code: 0 delivered, 1 error, 2 usage, 3 refused by a trust layer (or by read-only mode), 4 ran but found nothing to act on (a `wait_for` timeout, no accessibility tree, an ambiguous name). `hypruse --help` lists every verb and `hypruse <verb> --help` its flags; `--dry-run` rehearses an acting verb. A verb starts in a few hundred milliseconds: the MCP stack is never imported on that path.
+
+Between one-shot processes hypruse keeps the little state a verb would otherwise lose in `$XDG_RUNTIME_DIR/hypruse/cli-state.json`, keyed by the compositor instance: the `marks` numbering (so `click_ui --mark N` works), the `launched` confinement set, and the `HYPRUSE_STRICT` seat baseline, which is the one that would otherwise fail open.
+
+The skill that teaches an agent the verbs, the desktop-first workflow and the safety rules ships inside the package. Install it into the skill directories of the agents on your machine (Claude Code, Codex, Pi, Hermes, OpenClaw, OpenCode, Gemini, Antigravity, Cursor, Copilot), or via the [skills](https://skills.sh) CLI:
+
+```sh
+hypruse skill install                # ~/.agents/skills/hypruse, linked into each agent that is installed
+hypruse skill install --agent codex  # one agent, created if absent
+npx skills add IlyasKhallouki/hypruse -g
+```
+
+`hypruse init` offers the same install. The skill pre-approves only the observation verbs, `doctor`, `--help` and reading the capture files; acting verbs stay behind your agent's own approval prompt, which is the boundary the [Security model](#security-model) leans on.
+
 ## Install
 
 Requirements: Hyprland (both config managers: `hyprland.conf` and the Lua `hyprland.lua` that 0.56 introduced), `grim`, `wtype` (most Hyprland setups already have both), and [uv](https://docs.astral.sh/uv/). The accessibility tools (`ui`/`marks`/`click_ui`) use `busctl`, which ships with systemd. Optional: `wl-clipboard` for the opt-in clipboard tool, `imagemagick` for numbered `marks` captures.
@@ -112,7 +144,7 @@ yay -S hypruse        # or hypruse-git for main
 Then let it set itself up and verify the environment:
 
 ```sh
-hypruse init     # detects your MCP clients, registers (asks first), runs doctor
+hypruse init     # detects your MCP clients, registers (asks first), offers the agent skill, runs doctor
 hypruse doctor   # just the diagnostics
 ```
 

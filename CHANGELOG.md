@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Shell verbs**: every tool is now a command, for agents that run shell
+  commands instead of MCP (Pi, Codex, Hermes, OpenClaw, or a Claude Code
+  session that prefers a skill to a tool list). The verbs are the tool
+  names, a tool's `action` is a positional sub-verb (`hypruse pointer click
+  800 60`, `hypruse keyboard type hello --window 0x..`, `hypruse hypr
+  workspace 3`, `hypruse clipboard read`), and the calls go through the
+  same functions the MCP server registers, so every trust guard, the
+  journal and the activity beacon apply unchanged. The contract is built
+  for a program reading the output: compact plain text, one line per fact
+  (`--json` for the raw result as one line); a capture prints its file path
+  and coordinate metadata, never bytes (`--out PATH` moves it); errors are
+  one line on stderr; exit 0 delivered, 1 error, 2 usage, 3 refused by a
+  trust layer or by read-only mode, 4 ran but found nothing to act on (a
+  `wait_for` timeout, no accessibility tree, an ambiguous name, a sequence
+  that stopped). `--then` and `--dry-run` work as on the tools, `--allow-auth`
+  where the tool has it, `-` reads text from stdin, and `launch` takes the
+  app's own flags after `--`. `hypruse --help` lists every verb.
+- **Agent skill** (`skills/hypruse`, shipped inside the package): a
+  SKILL.md following the Agent Skills specification that teaches an agent
+  the desktop-first workflow, the coordinate contract, the exit codes and
+  the safety rules, with `references/verbs.md` and `references/recipes.md`
+  one level down. `hypruse skill install` copies it to
+  `~/.agents/skills/hypruse` and links it into the skills directory of each
+  agent present on the machine (`--agent NAME` for one, created if absent;
+  `--copy` instead of symlinks); `hypruse skill uninstall` removes exactly
+  what it made and nothing that is not hypruse's. `hypruse init` offers the
+  install and `doctor` reports it. The repo layout also works with
+  `npx skills add IlyasKhallouki/hypruse`.
+- **Cross-process state** for the verbs, in
+  `$XDG_RUNTIME_DIR/hypruse/cli-state.json`, keyed by compositor instance:
+  the `marks` numbering (so `click_ui --mark N` resolves), the `launched`
+  confinement set (which would otherwise be empty again after the launch),
+  and the `HYPRUSE_STRICT` seat baseline, without which the seat guard is a
+  no-op in every fresh process and strict mode would silently fail open.
+  Under `launched` confinement the set is pruned against the live window
+  list before it is trusted, since an address can be reused.
+- `hypruse serve` runs the MCP server explicitly (bare `hypruse` still does).
+- Journal records written through the verbs carry `source: "cli"`, and
+  `hypruse journal` shows it; they are still the agent's own actions, so
+  `replay` re-issues them. The session header is written once per run of
+  identical flags rather than once per process.
+
+### Changed
+- `hypruse.server` no longer imports the MCP stack at import time: the
+  tools ask for content blocks through two small factories, and the FastMCP
+  app is built on first use (`server.app()`, still reachable as
+  `server.mcp`). A shell verb therefore never loads `mcp`, and starts in
+  a few hundred milliseconds instead of several seconds.
+- `safety.arm()` installs the SIGTERM and atexit cleanup without raising the
+  beacon; `init()` calls it. A verb running beside a live server leaves the
+  server's beacon alone but is still safe under `pkill -f hypruse` mid-drag.
+- The file-mode capture metadata now carries `path`, so a reader takes the
+  location from the record rather than from the sentence around it.
+- The CLI's default usage is a complete verb list, and the interactive
+  notice the server prints on a terminal points at it.
+
+### Fixed
+- `hypruse --help` and `-h` started the MCP server (silently, when stdin
+  was a pipe, which it always is under an agent's shell): the entry point
+  routed every leading dash to the server. Help and `--version` now print
+  and exit without importing it.
+
 ## [0.10.0] - 2026-08-31
 
 ### Added

@@ -1,0 +1,4 @@
+interface:
+  display_name: "hypruse"
+  short_description: "See and drive the live Hyprland desktop"
+  default_prompt: "Use $hypruse to look at the Hyprland desktop and operate it: read hypruse desktop first, act by window address, click controls by name before estimating pixels, and verify every action before reporting it done."

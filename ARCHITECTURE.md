@@ -7,9 +7,15 @@ Ten-minute orientation for contributors.
 ```
 src/hypruse/
   cli.py         entry point: server by default, doctor / init / stop /
-                 journal / replay subcommands
-  server.py      MCP wiring: 15 tools (clipboard is opt-in), docstrings =
-                 the agent-facing API
+                 journal / replay / skill subcommands, --help
+  verbs.py       the 15 tools as shell verbs: argparse over the same tool
+                 functions, the output and exit-code contract, renderers
+  cli_state.py   what a one-shot verb remembers between processes (marks
+                 numbering, launched-confinement set, strict seat baseline)
+  skill.py       the packaged Agent Skill (skills/hypruse) and its install
+                 into each agent's skills directory
+  server.py      the tools (clipboard is opt-in), docstrings = the
+                 agent-facing API; the FastMCP app is built on first use
   hyprctl.py     all Hyprland IPC (queries + dispatchers), the config-manager
                  probe and the Lua dialect, state trimming, keybind decoding
   events.py      socket2 event stream: parser + wait primitive
@@ -33,6 +39,34 @@ src/hypruse/
 
 Rule of thumb: `server.py` validates and narrates; everything real happens
 in the leaf modules, which stay importable and testable without MCP.
+
+## Two surfaces, one set of tools
+
+The MCP server and the shell verbs call the same module-level functions in
+`server.py`, so a guard, a journal entry or a beacon touch is written once.
+What differs is transport. A tool returns either a string or a list of
+content blocks, and it asks for those blocks through `_text()`/`_image()`
+rather than naming `mcp.types`: the MCP path gets the pydantic objects
+FastMCP expects, the CLI path (`use_plain_blocks()`) gets a plain `Block`
+with the same fields. That, plus building the FastMCP app on first access
+(`app()`, reachable as `server.mcp`) instead of at import, is what keeps a
+verb's startup at a few hundred milliseconds: importing the MCP stack costs about two seconds
+of pydantic model building, which a process that only prints text and file
+paths must not pay.
+
+The CLI adds three things the server does not need. `cli_state.py` carries
+across processes what a long-lived server keeps in memory: the `marks`
+numbering, the `launched` confinement set, and the strict-mode seat
+baseline (without which `guard_seat` is a no-op in every fresh process,
+the one case that fails open). It is keyed by compositor instance, since
+window addresses are heap pointers, and every consumer degrades to
+"nothing remembered". A verb that acts takes a cross-process lock and
+always arms the SIGTERM cleanup (`safety.arm()`), even when a live server
+already holds the beacon, because `pkill -f hypruse` matches the verb too
+and a verb killed mid-drag must still release its button. And the journal
+stamps a verb's records with `source: "cli"`, never `by`, so they remain
+the agent's own actions to `replay`; the session header is written once
+per run of identical flags rather than once per process.
 
 ## The coordinate contract
 

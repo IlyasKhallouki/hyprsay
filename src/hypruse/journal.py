@@ -49,6 +49,7 @@ desktop for a log line.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import functools
 import hashlib
 import inspect
@@ -149,6 +150,7 @@ _seq = 0
 _broken = False  # warn once, then stay quiet: stderr is not a log sink
 _local = threading.local()
 _origin = ""  # set by a non-agent writer (replay) so its entries stand apart
+_source = ""  # which surface the agent used (the CLI verbs set "cli")
 
 
 def set_origin(name: str) -> None:
@@ -157,6 +159,15 @@ def set_origin(name: str) -> None:
     same file cannot make the next replay run everything twice."""
     global _origin
     _origin = name
+
+
+def set_source(name: str) -> None:
+    """Mark subsequent records with the surface the AGENT called through.
+    Deliberately a different field from `by`: a CLI verb is still the agent
+    acting, so its entries must stay replayable, and `replayable` treats
+    any `by` as not-the-agent."""
+    global _source
+    _source = name
 
 
 def _warn_once(message: str) -> None:
@@ -170,9 +181,32 @@ def _warn_once(message: str) -> None:
     print(f"hypruse: {message}", file=sys.stderr)
 
 
+def _counter_path(target: Path) -> Path:
+    return target.with_name(target.name + ".seq")
+
+
 def _next_seq() -> int:
+    """The next entry number, unique across every process writing this
+    journal. A counter file beside the journal is read, bumped and written
+    under a lock, so a shell verb acting beside a live server, or two verbs
+    at once, never hand out the same number (which would make `replay
+    --from N` mean nothing). The in-process counter is the floor, so a
+    missing or unwritable counter file degrades to the old behavior."""
     global _seq
     with _seq_lock:
+        target = path()
+        if target is not None:
+            with contextlib.suppress(OSError, ValueError):
+                fd = os.open(_counter_path(target), os.O_RDWR | os.O_CREAT, 0o600)
+                with os.fdopen(fd, "r+") as fh:
+                    fcntl.flock(fh, fcntl.LOCK_EX)
+                    raw = fh.read().strip()
+                    _seq = max(_seq, int(raw) if raw else 0) + 1
+                    fh.seek(0)
+                    fh.truncate()
+                    fh.write(str(_seq))
+                    fh.flush()
+                return _seq
         _seq += 1
         return _seq
 
@@ -347,6 +381,8 @@ def record(
     }
     if _origin:
         entry["by"] = _origin
+    if _source:
+        entry["source"] = _source
     if parent is not None:
         entry["parent"] = parent
     if dry_run():
@@ -450,51 +486,89 @@ def _mode() -> dict[str, Any]:
     }
 
 
-def _resume_seq(target: Path) -> None:
-    """Continue the file's numbering instead of restarting at 1.
-
-    A journal outlives the process that wrote it, so a per-process
-    counter would put two different entries numbered 3 in one file and
-    make `replay --from 3` mean nothing. Only the tail is read: the last
-    entry holds the highest number, and reading a months-old journal in
-    full to learn one integer would be silly.
-    """
-    global _seq
-    highest = 0
+def _tail_entries(target: Path) -> list[dict[str, Any]]:
+    """The parsed objects in the file's last 64 KiB. Only the tail is read:
+    the last entry holds the highest number, and reading a months-old
+    journal in full to learn one integer would be silly."""
     try:
         with open(target, "rb") as fh:
             fh.seek(0, os.SEEK_END)
             fh.seek(max(0, fh.tell() - 65536))
             tail = fh.read().decode("utf-8", "replace")
     except OSError:
-        return
+        return []
+    found: list[dict[str, Any]] = []
     for line in tail.splitlines():
         with contextlib.suppress(json.JSONDecodeError):
-            found = json.loads(line)
-            if isinstance(found, dict) and isinstance(found.get("seq"), int):
-                highest = max(highest, found["seq"])
+            entry = json.loads(line)
+            if isinstance(entry, dict):
+                found.append(entry)
+    return found
+
+
+def _resume_seq(entries: list[dict[str, Any]]) -> None:
+    """Continue the file's numbering instead of restarting at 1.
+
+    A journal outlives the process that wrote it, so a per-process
+    counter would put two different entries numbered 3 in one file and
+    make `replay --from 3` mean nothing.
+    """
+    global _seq
+    highest = 0
+    for entry in entries:
+        if isinstance(entry.get("seq"), int):
+            highest = max(highest, entry["seq"])
     with _seq_lock:
         _seq = max(_seq, highest)
 
 
-def start(version: str) -> None:
-    """Open a session in the journal. Safe to call when recording is off."""
+def start(version: str, source: str = "") -> None:
+    """Open a session in the journal. Safe to call when recording is off.
+
+    With `source` (the CLI verbs pass "cli") the header is written only
+    when the file's last session header is not already a matching one:
+    a verb is a process per call, and a header per call would bury the
+    actions under the record of the flags they ran with. The flags are
+    what the header exists to record, so a CHANGE in them still opens a
+    new header, and a call after a server session (whose header carries
+    no source) does too."""
     target = path()
     if target is None:
         return
-    _resume_seq(target)
-    _emit(
-        {
-            "v": RECORD_VERSION,
-            "seq": _next_seq(),
-            "ts": _now(),
-            "kind": "session",
-            "event": "start",
-            "pid": os.getpid(),
-            "version": version,
-            "mode": _mode(),
-        }
-    )
+    entries = _tail_entries(target)
+    _resume_seq(entries)
+    if source:
+        last = next(
+            (e for e in reversed(entries)
+             if e.get("kind") == "session" and e.get("event") == "start"),
+            None,
+        )
+        # every record already says `dry: true` for itself, so a rehearsal
+        # between two real calls is not a change of configuration
+        mode_now = {k: v for k, v in _mode().items() if k != "dry_run"}
+        mode_last = last.get("mode") if last is not None else None
+        if isinstance(mode_last, dict):
+            mode_last = {k: v for k, v in mode_last.items() if k != "dry_run"}
+        if (
+            last is not None
+            and last.get("source") == source
+            and last.get("version") == version
+            and mode_last == mode_now
+        ):
+            return
+    header: dict[str, Any] = {
+        "v": RECORD_VERSION,
+        "seq": _next_seq(),
+        "ts": _now(),
+        "kind": "session",
+        "event": "start",
+        "pid": os.getpid(),
+        "version": version,
+        "mode": _mode(),
+    }
+    if source:
+        header["source"] = source
+    _emit(header)
 
 
 def stop() -> None:

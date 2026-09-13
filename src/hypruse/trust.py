@@ -77,6 +77,48 @@ def owned() -> set[str]:
     return set(_owned)
 
 
+# --- cross-process state ------------------------------------------------------
+#
+# The owned-set, the strict seat baseline and the capture-notice limiter live
+# in this process. The MCP server is one long process, so that is all it
+# needs; a CLI verb is a fresh process per call, and without these two
+# functions `launched` confinement would refuse everything after the launch
+# and HYPRUSE_STRICT would silently never fire (guard_seat is a no-op until
+# something remembered a seat). cli_state carries them across calls.
+
+
+def export_state() -> dict[str, Any]:
+    return {
+        "owned": sorted(_owned),
+        "seat": {"cursor": _seat["cursor"], "active": _seat["active"]},
+        "notify_ts": _last_notify["ts"],
+    }
+
+
+def restore_state(state: Any) -> None:
+    """Replace the remembered state with what export_state wrote, or with
+    nothing when the record is missing or malformed: a hand-edited or
+    truncated file degrades to 'nothing remembered', never to a crash and
+    never to a baseline left over from some other compositor. The cursor
+    comes back as a tuple, because guard_seat compares it to
+    hyprctl.cursor_pos() with != and a list would never be equal."""
+    if not isinstance(state, dict):
+        state = {}
+    owned = state.get("owned")
+    _owned.clear()
+    if isinstance(owned, list):
+        _owned.update(a for a in owned if isinstance(a, str))
+    seat = state.get("seat")
+    seat = seat if isinstance(seat, dict) else {}
+    cursor = seat.get("cursor")
+    is_pair = isinstance(cursor, list | tuple) and len(cursor) == 2
+    _seat["cursor"] = tuple(cursor) if is_pair else None
+    active = seat.get("active")
+    _seat["active"] = active if isinstance(active, str) else None
+    ts = state.get("notify_ts")
+    _last_notify["ts"] = float(ts) if isinstance(ts, int | float) else 0.0
+
+
 def _confine_scope() -> tuple[str, tuple[str, ...]] | None:
     """Parse HYPRUSE_CONFINE, or None when confinement is off. Raises
     TrustError (which denies the action) on a malformed value, so a typo
