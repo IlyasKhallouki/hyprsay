@@ -61,6 +61,17 @@ class Desk:
         self.volume_stdout = "Volume: 0.45\n"
         self.returncode = 0
 
+    def apply_volume(self, spec: str) -> None:
+        parts = self.volume_stdout.split()
+        level, muted = round(float(parts[1]) * 100), " [MUTED]" if "[MUTED]" in parts else ""
+        if spec.endswith("%+"):
+            level += int(spec[:-2])
+        elif spec.endswith("%-"):
+            level -= int(spec[:-2])
+        else:
+            level = int(spec.rstrip("%"))
+        self.volume_stdout = f"Volume: {min(100, max(0, level)) / 100:.2f}{muted}\n"
+
     def provide(self) -> DesktopState:
         self.state_reads += 1
         return self.state
@@ -101,6 +112,8 @@ def desk(monkeypatch) -> Desk:
         assert isinstance(argv, list), "an argument vector, never a shell line"
         assert not kwargs.get("shell")
         d._record("run", ("run", tuple(argv)), None)
+        if "set-volume" in argv:
+            d.apply_volume(argv[-1])  # a sink that really has a level, capped like wpctl -l 1.0
         stdout = d.volume_stdout if "get-volume" in argv else ""
         return subprocess.CompletedProcess(argv, d.returncode, stdout=stdout, stderr="")
 
@@ -511,13 +524,29 @@ def test_undoing_a_directionless_shrink_grows_by_the_same_amount(desk):
     assert undo_calls(desk, shrink) == [("dispatch", "resizewindowpixel", "40 40,address:0xf1")]
 
 
-@pytest.mark.parametrize(
-    ("verb", "undone"),
-    [("up", "5%-"), ("down", "5%+")],
-)
-def test_undoing_a_volume_step_steps_the_other_way(desk, verb, undone):
+@pytest.mark.parametrize("verb", ["up", "down"])
+def test_undoing_a_volume_step_restores_the_level_that_was_there(desk, verb):
+    # not "step the other way": that is only the same thing away from the ends of the scale
     calls = undo_calls(desk, Action(Intent.VOLUME, verb=verb))
-    assert calls == [wpctl("set-volume", "-l", "1.0", ops.SINK, undone)]
+    assert calls == [wpctl("set-volume", "-l", "1.0", ops.SINK, "45%")]
+
+
+def test_volume_up_at_the_maximum_says_so_and_leaves_nothing_to_undo(desk):
+    # seen live: "up" at 100 percent changed nothing, reported "done", and an undo that
+    # stepped down would then have lowered the volume by 5 percent
+    desk.volume_stdout = "Volume: 1.00\n"
+    executor = desk.executor()
+    outcome = executor.execute(Action(Intent.VOLUME, verb="up"))
+    assert outcome.ok and outcome.message.startswith(ops.NOTHING_CHANGED)
+    assert "100 percent" in outcome.message
+    assert outcome.inverse is None
+    assert executor.undo().ok is False
+    assert desk.volume_stdout == "Volume: 1.00\n"
+
+
+def test_a_volume_change_reports_the_level_it_reached(desk):
+    executor = desk.executor()
+    assert executor.execute(Action(Intent.VOLUME, verb="up")).message == "Volume 50 percent."
 
 
 def test_undoing_mute_unmutes(desk):

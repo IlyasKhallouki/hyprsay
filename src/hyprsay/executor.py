@@ -167,7 +167,7 @@ class Executor:
 
         inverse = _quietly(operation.inverse, checked, fresh)
         message = operation.perform(checked, fresh)
-        if message.startswith("DRY RUN"):
+        if message.startswith(("DRY RUN", ops.NOTHING_CHANGED)):
             inverse = None  # nothing happened, so there is nothing to undo
         return Outcome(True, message, inverse)
 

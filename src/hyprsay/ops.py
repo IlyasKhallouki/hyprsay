@@ -99,6 +99,8 @@ _SHRINK_VERBS = frozenset({"shrink", "smaller"})
 # whitespace-like controls become a space so the words on either side stay apart
 _SPACE_LIKE = frozenset("\t\n\v\f\r\x85\u2028\u2029")
 _DRY_PREFIX = "DRY RUN"
+# an operation that ran but had no effect. The executor drops the inverse for these.
+NOTHING_CHANGED = "Nothing changed"
 
 
 class OpError(Exception):
@@ -387,8 +389,16 @@ def _volume(action: Action, _before: DesktopState) -> str:
     if journal.dry_run():
         return _would(f"run {' '.join(argv)}")
     safety.touch("volume")
+    was = current_volume_percent()
     _run_tool(argv, "wpctl is not installed, so the volume cannot be changed.")
-    return f"Volume {action.verb}."
+    if action.verb not in ("up", "down", "set"):
+        return f"Volume {action.verb}."
+    now = current_volume_percent()
+    if was is not None and now == was:
+        # say so: "done" for a change that did not happen is a lie, and an undo of it
+        # would move the volume the other way (seen live: up at 100 percent, then down)
+        return f"{NOTHING_CHANGED}: the volume is already at {now} percent."
+    return f"Volume {now} percent." if now is not None else f"Volume {action.verb}."
 
 
 _MEDIA = {"play_pause": "play-pause", "next": "next", "previous": "previous"}
@@ -481,11 +491,15 @@ def current_volume_percent() -> int | None:
 def _opposite_volume(action: Action, _before: DesktopState) -> Action | None:
     verb = action.verb or ""
     flipped = {"up": "down", "down": "up", "mute": "unmute", "unmute": "mute", "toggle": "toggle"}
+    if verb in ("up", "down", "set"):
+        # restore the level that was there, not "step the other way": at the cap a step
+        # up changes nothing, and stepping down to undo it would lower the volume. The
+        # executor asks for the inverse BEFORE performing, so this reads the old level.
+        was = current_volume_percent()
+        if was is not None:
+            return replace(action, verb="set", number=was)
     if verb in flipped:
         return replace(action, verb=flipped[verb])
-    if verb == "set":
-        was = current_volume_percent()
-        return replace(action, number=was) if was is not None else None
     return None
 
 
