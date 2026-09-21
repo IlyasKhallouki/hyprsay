@@ -57,6 +57,11 @@ class Ptt:
         self.forced.append(reason)
         self.held = False
 
+    async def events(self):
+        await asyncio.sleep(0.05)  # long enough for the startup tasks to run
+        return
+        yield  # pragma: no cover - makes this an async generator that ends at once
+
 
 class Recorder:
     def __init__(self, *, spoke=True, pcm=PCM, fails=False):
@@ -87,9 +92,12 @@ class Recognizer:
 
     def __init__(self, text="focus firefox", rescued: str | None = None):
         self.text, self.rescued = text, rescued
-        self.calls = self.rescues = 0
+        self.calls = self.rescues = self.warmed = 0
         if rescued is None:
             self.rescue = None  # a local-only recognizer has no rescue at all
+
+    async def warm(self):
+        self.warmed += 1
 
     async def transcribe(self, pcm, sample_rate):
         self.calls += 1
@@ -215,6 +223,25 @@ def test_the_window_focused_at_key_down_is_what_the_understander_is_given():
 
     run(go())
     assert e._pinned == "0x1"
+
+
+def test_the_speech_model_is_loaded_at_startup_not_on_the_first_command():
+    # found live: it loaded lazily, so the first command waited 2 to 6 s for the model
+    e, p = engine()
+    run(e.run())
+    assert p["recognizer"].warmed == 1
+    assert p["recognizer"].calls == 1  # the throwaway inference that warms the session
+    assert p["executor"].executed == []
+
+
+def test_a_model_that_cannot_load_is_reported_and_the_engine_keeps_running():
+    class Broken(Recognizer):
+        async def warm(self):
+            raise RuntimeError("model files are missing")
+
+    e, p = engine(recognizer=Broken())
+    run(e.run())  # must not raise
+    assert any("model files are missing" in m.get("text", "") for m in p["hud"].sent)
 
 
 # ------------------------------------------------------------------------------ locked

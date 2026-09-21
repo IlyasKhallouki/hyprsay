@@ -65,7 +65,11 @@ class Engine:
     async def run(self) -> None:
         self.latch.on_lock(self._on_lock)
         self.world.on_custom(self.ptt.feed_custom)
-        tasks = [asyncio.create_task(self.world.run()), asyncio.create_task(self.hud.start())]
+        tasks = [
+            asyncio.create_task(self.world.run()),
+            asyncio.create_task(self.hud.start()),
+            asyncio.create_task(self._warm_speech()),
+        ]
         try:
             async for event in self.ptt.events():
                 try:
@@ -82,6 +86,27 @@ class Engine:
             self._worker.shutdown(wait=False, cancel_futures=True)
             with contextlib.suppress(Exception):
                 await self.hud.close()
+
+    async def _warm_speech(self) -> None:
+        """Load the speech model now, not on the first command.
+
+        Found on the live system: the model loaded lazily inside the first decode, so the
+        first thing anyone said waited 2 to 6 s, and a SIGTERM during that load hung the
+        shutdown. One throwaway inference follows the load because the first real decode
+        is the slow one too (450 ms measured, against about 165 ms after it).
+        """
+        warm = getattr(self.recognizer, "warm", None)
+        if warm is None:
+            return
+        started = time.perf_counter()
+        try:
+            await warm()
+            await self.recognizer.transcribe(b"\0\0" * 3200, 16000)
+        except Exception as exc:
+            log.warning("speech model is not ready: %s", exc)
+            await self._show("refused", text=f"speech model: {exc}", ttl_ms=6000)
+            return
+        log.info("speech model ready in %.1f s", time.perf_counter() - started)
 
     def _on_lock(self) -> None:
         """The session locked. Runs from whatever thread noticed; touch nothing async here."""
