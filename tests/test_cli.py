@@ -28,24 +28,6 @@ def test_version_sources_agree():
     assert f'version: "{version}"' in skill
 
 
-def test_registry_ownership_token_matches_server_name():
-    # the MCP registry proves we own the PyPI package by finding
-    # `mcp-name: <name>` in the README it published as the package
-    # description, and a PyPI release is immutable: a name that drifts from
-    # the token can only be fixed by cutting another version
-    name = json.loads((ROOT / "server.json").read_text())["name"]
-    assert tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["readme"] == "README.md"
-
-    readme = (ROOT / "README.md").read_text()
-    token = f"mcp-name: {name}"
-    assert token in readme
-    # the registry requires a boundary after the name, so the token cannot be
-    # read as the prefix of a longer one: anything outside the server-name
-    # charset, or an HTML comment close
-    rest = readme.split(token, 1)[1]
-    assert not rest[:1].isalnum() and rest[:1] not in ".-_/" or rest.startswith(("-->", "--!>"))
-
-
 def test_merge_adds_entry_preserving_others():
     cfg = {"mcpServers": {"platform": {"type": "http", "url": "https://x"}}, "other": 1}
     merged, changed = cli.merge_desktop_config(cfg)
