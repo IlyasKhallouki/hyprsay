@@ -140,6 +140,13 @@ async def main() -> int:
                 outcome = score(d, windows, intent, target, workspace, expect)
                 got = {"verdict": d.verdict.value, "tier": d.tier, "reason": d.reason,
                        "action": d.action.describe() if d.action else None,
+                    # which window, by fixture key: "firefox" alone cannot tell a real
+                    # window from a hostile one of the same class
+                    "window": next(
+                        (k for k, w in windows.items()
+                         if d.action and d.action.window and w.address == d.action.window.address),
+                        None,
+                    ),  # fmt: skip
                        "candidates": [c.label for c in d.candidates]}  # fmt: skip
             except Exception as exc:  # the pipeline promises never to raise: count it if it does
                 outcome, got = "CRASH", {"error": f"{type(exc).__name__}: {exc}"}
