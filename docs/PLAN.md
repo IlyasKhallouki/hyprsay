@@ -162,8 +162,12 @@ can reach `.socket.sock` can emit the event, and the release bind never fires if
 locks mid-hold [S]. P0 exercises both live; `bindr` has never been run on this machine.
 
 Both transports enforce a maximum hold (default 15 s) and require a fresh down and up pair per
-utterance. Key down prewarms the Jev connection: a cold first call took about 1.2 s [O], and
-speech outlasts a handshake, so no keepalive pings are needed.
+utterance. Key down prewarms the Jev connection with one unauthenticated GET. Measured on new
+connections, interleaved, n=10 each: with no prewarm the first evaluation takes 526 ms p50
+(399 to 832); after the GET it takes 325 ms (259 to 605), the same as steady state; adding a
+small authenticated call on top buys nothing (338 ms) [M]. The GET itself takes about 250 ms,
+less than anyone spends speaking, so no keepalive pings are needed. What is still unknown is
+how long an idle connection survives (section 11).
 
 ### 5.2 Capture and speech to text
 
