@@ -9,12 +9,12 @@ command, so none of this has to be taken on trust.
 
 | | Default (`hybrid`) | `stt.backend = "local"` and `jev.enabled = false` |
 |---|---|---|
-| Your voice (audio) | stays local, **except** when the local recognizer's transcript leads nowhere: then that one clip is sent to a speech model through the gateway | never leaves |
+| Your voice (audio) | stays local, **except** when the local recognizer produced words that could not be placed, or produced nothing from real speech: then that one clip is sent to a speech model through the gateway. Not when the transcript was fine and something else was wrong, and never for a dictation | never leaves |
 | What you said (text) | sent to Jev when the local grammar cannot resolve the command | never leaves |
-| Dictated text ("type ...") | **never sent anywhere**, and never written to the journal | never leaves |
+| Dictated text ("type ...") | **never sent anywhere**, never shown on the overlay while waiting, and stored in the journal only as a length and a hash. An utterance that opens with any form of type, say, write or dictate is treated as dictation even when the grammar cannot parse it, so a misheard "typed" does not turn it into a request | never leaves |
 | Names and kinds of your open apps, workspace numbers | sent to Jev with a semantic command | never leaves |
 | Window titles | **not sent**, except to tell apart several windows of the same app, and then only theirs, truncated and redacted | never leaves |
-| Names of installed apps | sent to Jev when you ask to open something the grammar cannot resolve | never leaves |
+| Names and kinds of your installed apps | sent to Jev with **every** semantic command, not only when you ask to open something: the questions all go in one round trip, before anything knows which one you meant | never leaves |
 
 Common commands ("workspace three", "close this", "open firefox") are resolved entirely on
 your machine by a grammar. Nothing is sent for them in any mode.
@@ -47,7 +47,8 @@ references fall back to numbered hints on screen.
 
 `~/.local/state/hyprsay/journal.jsonl`, mode 0600, capped at 5 MB with one rotation. It
 records what was heard, what was decided, what was done, and what was sent. It does **not**
-record dictated text (only its length and a short hash), audio, or window titles.
+record dictated text (only its length and a short hash), audio, or window titles, including
+the titles inside a request body.
 `HYPRSAY_JOURNAL=off` disables it.
 
 The gateway key is read from `AI_GATEWAY_API_KEY` or `~/.config/hyprsay/ai-gateway.key`
