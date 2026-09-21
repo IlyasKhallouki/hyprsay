@@ -1,0 +1,478 @@
+{
+ "meta": {
+  "started": "2026-09-21T06:05:10+0000",
+  "finished": "2026-09-21T06:07:26+0000",
+  "n_apps_found": 82
+ },
+ "errors": [
+  {
+   "tag": "tok130",
+   "status": 503,
+   "ms": 287,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 321,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 437,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 291,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 261,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 419,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 283,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 430,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 415,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 444,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 277,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 380,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 287,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "tok260",
+   "status": 503,
+   "ms": 453,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  },
+  {
+   "tag": "perm",
+   "status": 503,
+   "ms": 272,
+   "body": "{\"error\":{\"message\":\"Service temporarily unavailable. Please try again shortly.\",\"type\":\"service_unavailable_error\",\"param\":{\"error\":\"Service temporarily unavai"
+  }
+ ],
+ "latency_vs_tokens": {
+  "3_windows": {
+   "total_ms": {
+    "n": 30,
+    "p50": 315,
+    "p90": 356,
+    "max": 458,
+    "min": 274
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 219,
+    "p90": 257,
+    "max": 288,
+    "min": 196
+   },
+   "input_tokens": 725
+  },
+  "40_windows": {
+   "total_ms": {
+    "n": 30,
+    "p50": 314,
+    "p90": 362,
+    "max": 610,
+    "min": 284
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 222,
+    "p90": 260,
+    "max": 531,
+    "min": 192
+   },
+   "input_tokens": 2246
+  },
+  "130_windows": {
+   "total_ms": {
+    "n": 29,
+    "p50": 448,
+    "p90": 513,
+    "max": 776,
+    "min": 295
+   },
+   "provider_ms": {
+    "n": 29,
+    "p50": 359,
+    "p90": 403,
+    "max": 411,
+    "min": 215
+   },
+   "input_tokens": 6037
+  },
+  "260_windows": {
+   "total_ms": {
+    "n": 17,
+    "p50": 544,
+    "p90": 682,
+    "max": 866,
+    "min": 411
+   },
+   "provider_ms": {
+    "n": 17,
+    "p50": 406,
+    "p90": 423,
+    "max": 462,
+    "min": 291
+   },
+   "input_tokens": 11542
+  }
+ },
+ "latency_vs_questions": {
+  "1": {
+   "total_ms": {
+    "n": 30,
+    "p50": 323,
+    "p90": 371,
+    "max": 458,
+    "min": 288
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 233,
+    "p90": 253,
+    "max": 364,
+    "min": 197
+   },
+   "input_tokens": 517
+  },
+  "5": {
+   "total_ms": {
+    "n": 30,
+    "p50": 322,
+    "p90": 365,
+    "max": 602,
+    "min": 278
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 228,
+    "p90": 268,
+    "max": 316,
+    "min": 203
+   },
+   "input_tokens": 605
+  },
+  "15": {
+   "total_ms": {
+    "n": 30,
+    "p50": 312,
+    "p90": 367,
+    "max": 1617,
+    "min": 264
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 226,
+    "p90": 287,
+    "max": 1466,
+    "min": 188
+   },
+   "input_tokens": 837
+  },
+  "40": {
+   "total_ms": {
+    "n": 30,
+    "p50": 317,
+    "p90": 373,
+    "max": 648,
+    "min": 262
+   },
+   "provider_ms": {
+    "n": 30,
+    "p50": 235,
+    "p90": 276,
+    "max": 542,
+    "min": 181
+   },
+   "input_tokens": 1438
+  }
+ },
+ "route_A_vs_B": {
+  "A": {
+   "n": 30,
+   "p50": 335,
+   "p90": 439,
+   "max": 738,
+   "min": 266
+  },
+  "B": {
+   "n": 30,
+   "p50": 316,
+   "p90": 409,
+   "max": 769,
+   "min": 271
+  }
+ },
+ "determinism": {
+  "n": 30,
+  "target_p_w1": [
+   0.45,
+   0.49,
+   0.5,
+   0.52,
+   0.53,
+   0.54,
+   0.55,
+   0.56,
+   0.57,
+   0.58,
+   0.59,
+   0.61,
+   0.62,
+   0.63,
+   0.64,
+   0.67
+  ],
+  "target_choice_counts": {
+   "w1": 26,
+   "w2": 4
+  },
+  "intent_p_top": [
+   1
+  ],
+  "cmd_noul": [
+   0.9,
+   0.91,
+   0.92
+  ]
+ },
+ "independence": {
+  "p_w1_alone": [
+   0.53,
+   0.58,
+   0.64,
+   0.56,
+   0.64,
+   0.58,
+   0.5,
+   0.51
+  ],
+  "p_w1_among_20": [
+   0.52,
+   0.54,
+   0.51,
+   0.6,
+   0.55,
+   0.55,
+   0.56,
+   0.41
+  ]
+ },
+ "option_order": {
+  "n_options": 83,
+  "distinct_choices": [
+   "org.kde.dolphin"
+  ],
+  "runs": [
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.71
+     ],
+     [
+      "yazi",
+      0.22
+     ],
+     [
+      "none",
+      0.07
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.79
+     ],
+     [
+      "yazi",
+      0.14
+     ],
+     [
+      "none",
+      0.07
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.68
+     ],
+     [
+      "yazi",
+      0.2
+     ],
+     [
+      "none",
+      0.11
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.6900000000000001
+     ],
+     [
+      "yazi",
+      0.18
+     ],
+     [
+      "none",
+      0.13
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.79
+     ],
+     [
+      "yazi",
+      0.16
+     ],
+     [
+      "none",
+      0.05
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.78
+     ],
+     [
+      "yazi",
+      0.15000000000000002
+     ],
+     [
+      "none",
+      0.07
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.83
+     ],
+     [
+      "yazi",
+      0.13
+     ],
+     [
+      "none",
+      0.04
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.79
+     ],
+     [
+      "yazi",
+      0.14
+     ],
+     [
+      "none",
+      0.07
+     ]
+    ]
+   },
+   {
+    "choice": "org.kde.dolphin",
+    "top3": [
+     [
+      "org.kde.dolphin",
+      0.83
+     ],
+     [
+      "yazi",
+      0.1
+     ],
+     [
+      "none",
+      0.07
+     ]
+    ]
+   }
+  ]
+ },
+ "concurrent_3_wall_ms": {
+  "n": 12,
+  "p50": 359,
+  "p90": 410,
+  "max": 607,
+  "min": 317
+ }
+}
