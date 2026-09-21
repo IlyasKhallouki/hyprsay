@@ -1,0 +1,35 @@
+{
+ "interleaved_503": {
+  "small": {
+   "n": 25,
+   "ok": 25,
+   "503": 0,
+   "other": []
+  },
+  "large": {
+   "n": 25,
+   "ok": 21,
+   "503": 4,
+   "other": []
+  }
+ },
+ "self_ensemble": {
+  "requests_ok": 19,
+  "copies_per_request": 8,
+  "copies_identical_within_a_request": false,
+  "within_request_spread_max": 0.16,
+  "within_request_spread_median": 0.08,
+  "single_copy": {
+   "min": 0.46,
+   "max": 0.69,
+   "stdev": 0.059,
+   "picked_w2": 1
+  },
+  "mean_of_8": {
+   "min": 0.482,
+   "max": 0.639,
+   "stdev": 0.04,
+   "picked_w2": 1
+  }
+ }
+}

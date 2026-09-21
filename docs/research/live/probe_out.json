@@ -1,0 +1,597 @@
+{
+ "A_tiny": {
+  "model": "typesafe-ai/jev",
+  "answers": {
+   "q": {
+    "type": "boolean",
+    "probability": 0.94
+   }
+  },
+  "usage": {
+   "inputTokens": 281,
+   "outputTokens": 20
+  },
+  "providerMetadata": {
+   "typesafe": {
+    "confidence": {}
+   },
+   "gateway": {
+    "routing": {
+     "originalModelId": "typesafe-ai/jev",
+     "resolvedProvider": "typesafe-ai",
+     "fallbacksAvailable": [],
+     "planningReasoning": "System credentials planned for: typesafe-ai. Total execution order: typesafe-ai(system)",
+     "canonicalSlug": "typesafe-ai/jev",
+     "finalProvider": "typesafe-ai",
+     "modelAttemptCount": 1,
+     "modelAttempts": [
+      {
+       "canonicalSlug": "typesafe-ai/jev",
+       "success": true,
+       "providerAttemptCount": 1,
+       "providerAttempts": [
+        {
+         "provider": "typesafe-ai",
+         "credentialType": "system",
+         "success": true,
+         "startTime": 1789970339769,
+         "endTime": 1789970340328,
+         "statusCode": 200
+        }
+       ]
+      }
+     ],
+     "totalProviderAttemptCount": 1
+    },
+    "cost": "0",
+    "marketCost": "0.000011802",
+    "surchargeCost": "0",
+    "gatewayCost": "0",
+    "generationId": "gen_01M318QNHP7S9K0ACHP1Z8NBJN"
+   }
+  }
+ },
+ "A_full": null,
+ "B_full": {
+  "model": "typesafe-ai/jev",
+  "answers": {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "confidence": 1,
+    "probabilities": {
+     "screenshot": 0,
+     "switch_workspace": 0,
+     "launch_app": 0,
+     "move_to_workspace": 1,
+     "toggle_floating": 0,
+     "type_text": 0,
+     "scroll": 0,
+     "swap_windows": 0,
+     "resize_window": 0,
+     "lock_screen": 0,
+     "toggle_fullscreen": 0,
+     "focus_window": 0,
+     "close_window": 0,
+     "none": 0,
+     "volume": 0
+    }
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "confidence": 0.47,
+    "probabilities": {
+     "w5": 0,
+     "w3": 0,
+     "w4": 0,
+     "w1": 0.58,
+     "w2": 0.42
+    }
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "confidence": 1,
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    }
+   },
+   "is_command": {
+    "type": "noul",
+    "noul": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.25,
+    "confidence": 0.75,
+    "legend": {
+     "0": "Nothing can be lost",
+     "1": "Minor, easily undone",
+     "2": "A window closes",
+     "3": "The whole session ends"
+    },
+    "probabilities": {
+     "0": 0.76,
+     "1": 0.24,
+     "2": 0,
+     "3": 0
+    }
+   }
+  },
+  "usage": {
+   "input_tokens": 1226,
+   "output_tokens": 324
+  },
+  "provider_metadata": {
+   "typesafe": {
+    "confidence": {
+     "intent": 1,
+     "target": 0.47,
+     "workspace": 1,
+     "destructive": 0.75
+    }
+   },
+   "gateway": {
+    "routing": {
+     "originalModelId": "typesafe-ai/jev",
+     "resolvedProvider": "typesafe-ai",
+     "fallbacksAvailable": [],
+     "planningReasoning": "System credentials planned for: typesafe-ai. Total execution order: typesafe-ai(system)",
+     "canonicalSlug": "typesafe-ai/jev",
+     "finalProvider": "typesafe-ai",
+     "modelAttemptCount": 1,
+     "modelAttempts": [
+      {
+       "canonicalSlug": "typesafe-ai/jev",
+       "success": true,
+       "providerAttemptCount": 1,
+       "providerAttempts": [
+        {
+         "provider": "typesafe-ai",
+         "credentialType": "system",
+         "success": true,
+         "startTime": 1789970342845,
+         "endTime": 1789970343066,
+         "statusCode": 200
+        }
+       ]
+      }
+     ],
+     "totalProviderAttemptCount": 1
+    },
+    "cost": "0",
+    "marketCost": "0.000051492",
+    "surchargeCost": "0",
+    "gatewayCost": "0",
+    "generationId": "gen_01M318QRWTYV8H6G2K4Y7YJC5T"
+   }
+  }
+ },
+ "determinism_reps": [
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "volume": 0,
+     "screenshot": 0,
+     "close_window": 0,
+     "toggle_floating": 0,
+     "swap_windows": 0,
+     "launch_app": 0,
+     "focus_window": 0,
+     "none": 0,
+     "switch_workspace": 0,
+     "resize_window": 0,
+     "scroll": 0,
+     "lock_screen": 0,
+     "toggle_fullscreen": 0,
+     "type_text": 0,
+     "move_to_workspace": 1
+    },
+    "confidence": 0.99
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w4": 0,
+     "w1": 0.54,
+     "w5": 0,
+     "w3": 0,
+     "w2": 0.46
+    },
+    "confidence": 0.42
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.22,
+    "probabilities": {
+     "0": 0.79,
+     "1": 0.21,
+     "2": 0,
+     "3": 0
+    },
+    "confidence": 0.78
+   }
+  },
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "volume": 0,
+     "resize_window": 0,
+     "close_window": 0,
+     "launch_app": 0,
+     "swap_windows": 0,
+     "move_to_workspace": 1,
+     "screenshot": 0,
+     "switch_workspace": 0,
+     "none": 0,
+     "scroll": 0,
+     "toggle_floating": 0,
+     "focus_window": 0,
+     "lock_screen": 0,
+     "type_text": 0,
+     "toggle_fullscreen": 0
+    },
+    "confidence": 1
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w3": 0,
+     "w4": 0,
+     "w5": 0,
+     "w1": 0.59,
+     "w2": 0.41
+    },
+    "confidence": 0.48
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.23,
+    "probabilities": {
+     "0": 0.78,
+     "1": 0.22,
+     "2": 0,
+     "3": 0
+    },
+    "confidence": 0.77
+   }
+  },
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "screenshot": 0,
+     "resize_window": 0,
+     "scroll": 0,
+     "launch_app": 0,
+     "none": 0,
+     "lock_screen": 0,
+     "switch_workspace": 0,
+     "toggle_fullscreen": 0,
+     "toggle_floating": 0,
+     "swap_windows": 0,
+     "volume": 0,
+     "close_window": 0,
+     "focus_window": 0,
+     "move_to_workspace": 1,
+     "type_text": 0
+    },
+    "confidence": 1
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w1": 0.56,
+     "w3": 0,
+     "w4": 0,
+     "w2": 0.44,
+     "w5": 0
+    },
+    "confidence": 0.45
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.29,
+    "probabilities": {
+     "0": 0.72,
+     "1": 0.28,
+     "2": 0,
+     "3": 0
+    },
+    "confidence": 0.71
+   }
+  },
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "launch_app": 0,
+     "resize_window": 0,
+     "type_text": 0,
+     "lock_screen": 0,
+     "scroll": 0,
+     "close_window": 0,
+     "toggle_fullscreen": 0,
+     "switch_workspace": 0.01,
+     "none": 0,
+     "move_to_workspace": 0.99,
+     "swap_windows": 0,
+     "toggle_floating": 0,
+     "volume": 0,
+     "focus_window": 0,
+     "screenshot": 0
+    },
+    "confidence": 0.99
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w5": 0,
+     "w2": 0.42,
+     "w1": 0.58,
+     "w3": 0,
+     "w4": 0
+    },
+    "confidence": 0.46
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.25,
+    "probabilities": {
+     "0": 0.76,
+     "1": 0.24,
+     "2": 0,
+     "3": 0
+    },
+    "confidence": 0.75
+   }
+  },
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "switch_workspace": 0,
+     "screenshot": 0,
+     "launch_app": 0,
+     "lock_screen": 0,
+     "volume": 0,
+     "toggle_floating": 0,
+     "none": 0,
+     "toggle_fullscreen": 0,
+     "swap_windows": 0,
+     "scroll": 0,
+     "close_window": 0,
+     "move_to_workspace": 1,
+     "focus_window": 0,
+     "resize_window": 0,
+     "type_text": 0
+    },
+    "confidence": 1
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w1": 0.5,
+     "w3": 0,
+     "w5": 0,
+     "w2": 0.5,
+     "w4": 0
+    },
+    "confidence": 0.37
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.25,
+    "probabilities": {
+     "0": 0.75,
+     "1": 0.24,
+     "2": 0.01,
+     "3": 0
+    },
+    "confidence": 0.75
+   }
+  },
+  {
+   "intent": {
+    "type": "choice",
+    "choice": "move_to_workspace",
+    "probabilities": {
+     "switch_workspace": 0,
+     "toggle_floating": 0,
+     "none": 0,
+     "focus_window": 0,
+     "lock_screen": 0,
+     "close_window": 0,
+     "toggle_fullscreen": 0,
+     "scroll": 0,
+     "launch_app": 0,
+     "resize_window": 0,
+     "volume": 0,
+     "type_text": 0,
+     "swap_windows": 0,
+     "move_to_workspace": 1,
+     "screenshot": 0
+    },
+    "confidence": 1
+   },
+   "target": {
+    "type": "choice",
+    "choice": "w1",
+    "probabilities": {
+     "w3": 0,
+     "w5": 0,
+     "w1": 0.54,
+     "w4": 0,
+     "w2": 0.46
+    },
+    "confidence": 0.41
+   },
+   "workspace": {
+    "type": "choice",
+    "choice": "3",
+    "probabilities": {
+     "1": 0,
+     "2": 0,
+     "3": 1,
+     "4": 0,
+     "5": 0,
+     "6": 0,
+     "7": 0,
+     "8": 0,
+     "9": 0,
+     "10": 0,
+     "none": 0
+    },
+    "confidence": 1
+   },
+   "is_command": {
+    "type": "boolean",
+    "probability": 0.96
+   },
+   "destructive": {
+    "type": "score",
+    "score": 0.31,
+    "probabilities": {
+     "0": 0.7,
+     "1": 0.3,
+     "2": 0,
+     "3": 0
+    },
+    "confidence": 0.69
+   }
+  }
+ ]
+}
