@@ -316,3 +316,24 @@ ADVERSARIAL: list[tuple[str, dict[str, Window], str, str | None, str | None, str
 ]
 
 ALL: list[Case] = CANONICAL + ASR_SURFACE + PARAPHRASE + OUT_OF_DOMAIN + RULES
+
+
+# For these the slot IS the command. Comparing only the intent scored "mute" as a correct
+# answer to "volume up", and a window moved right as a correct answer to "move this left".
+SLOTS: dict[str, dict[str, object]] = {
+    "volume up": {"verb": "up"},
+    "volume down": {"verb": "down"},
+    "louder": {"verb": "up"},
+    "mute": {"verb": "mute"},
+    "set volume to 40 percent": {"verb": "set", "number": 40},
+    "it is too quiet": {"verb": "up"},
+    "that is way too loud": {"verb": "down"},
+    "pause": {"verb": "play_pause"},
+    "next song": {"verb": "next"},
+    "previous track": {"verb": "previous"},
+    "skip this one": {"verb": "next"},
+    "move this left": {"direction": "left"},
+    "move this window to the right": {"direction": "right"},
+    "focus left": {"direction": "left"},
+    "focus the window on the right": {"direction": "right"},
+}

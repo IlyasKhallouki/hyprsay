@@ -190,3 +190,28 @@ def test_a_trial_refuses_the_lua_provider_rather_than_guessing_its_syntax(monkey
     code, started = trial(monkeypatch, socket)
     assert code == 1
     assert socket.keywords == [] and started == []
+
+
+def test_a_window_title_inside_a_request_body_is_not_journalled(monkeypatch, tmp_path):
+    """The titles request is a plain nested dict, and plain dicts were copied verbatim."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("HYPRSAY_JOURNAL", raising=False)
+    monkeypatch.delenv("HYPRSAY_JOURNAL_TITLES", raising=False)
+    exchange = {
+        "requests": [
+            {
+                "name": "r2t",
+                "questions": {
+                    "titled": {
+                        "criteria": {
+                            "t1": {"app": "Firefox", "title": "Q3 salaries - Google Sheets"}
+                        }
+                    }
+                },
+            }
+        ]
+    }
+    journal.record("utterance", exchange=exchange)
+    written = journal.path().read_text()
+    assert "Q3 salaries" not in written
+    assert "Firefox" in written  # the app name is trusted and stays

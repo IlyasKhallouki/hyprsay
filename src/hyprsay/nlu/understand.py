@@ -100,6 +100,35 @@ REQUIRED: dict[Intent, str] = {
 # an utterance that opens with one of these is dictation. If the grammar could not parse
 # it, it still never goes to Jev: what follows the carrier is the user's text.
 TYPING_CARRIERS = frozenset({"type", "say", "dictate", "write"})
+# every way a recognizer writes those verbs. A closed list, not a fuzzy match: similarity
+# scored "rid" at 0.83 against "write", which swallowed "get rid of the music", while the
+# case that actually leaks, "typed" for "type", scored only 0.68. Code calculates.
+DICTATION_OPENERS = frozenset(
+    {
+        "type", "typed", "types", "typing", "typo",
+        "say", "says", "said", "saying", "sey",
+        "write", "writes", "writing", "written", "wrote",
+        # "right" is deliberately absent although it is how a recognizer often writes
+        # "write": it is also the direction word, and treating "move this right" as
+        # dictation would break a core command to guard a rarer phrasing of a rarer one
+        "dictate", "dictated", "dictates", "dictating",
+    }
+)  # fmt: skip
+# how far in to look. "I'll type ..." and "let me say ..." put the verb second or third;
+# past that a carrier is far more likely to be an ordinary word.
+DICTATION_LOOKAHEAD = 3
+
+
+def _sounds_like_dictation(literal: tuple[str, ...] | list[str]) -> bool:
+    """Does this utterance open with a carrier verb, however it came out of the recognizer?
+
+    An exact match on the first token is not enough. "Typed my password is hunter2" and
+    "I'll type my password" both carry text the speaker never meant to send anywhere, and
+    both slip past `literal[0] in TYPING_CARRIERS`.
+    """
+    return any(word in DICTATION_OPENERS for word in list(literal)[:DICTATION_LOOKAHEAD])
+
+
 STARTERS = (Intent.FOCUS_WINDOW, Intent.SWITCH_WORKSPACE, Intent.LAUNCH_APP)
 
 
@@ -462,12 +491,15 @@ class Understander:
     async def _semantic(
         self, heard: _Heard, state: DesktopState, pinned_address: str, need: _Need | None
     ) -> Decision:
-        if need is None and heard.literal and heard.literal[0] in TYPING_CARRIERS:
+        if need is None and _sounds_like_dictation(heard.literal):
             self.last_exchange["path"] = "local"
-            return self._suggest(heard, "that sounded like dictation", Intent.TYPE_TEXT)
+            return self._dictation(heard)
         if len(heard.said) > requests.MAX_UTTERANCE_CHARS:
             self.last_exchange["path"] = "local"
-            return self._suggest(heard, bank.unsupported_message("long_dictation"))
+            # far too long to be a command: hearing it again changes nothing
+            return self._suggest(
+                heard, bank.unsupported_message("long_dictation"), rehearable=False
+            )
         if not self._jev_on():
             return self._degrade(heard, state, need, "Jev is turned off")
 
@@ -609,7 +641,10 @@ class Understander:
             return Decision(Verdict.NOTHING, reason="that was not meant for the computer")
         unsupported: ChoiceAnswer = r1["unsupported_kind"]
         if unsupported.choice != bank.NONE and unsupported.margin >= gates.margin:
-            return self._suggest(heard, bank.unsupported_message(unsupported.choice))
+            # understood perfectly, and it is something hyprsay does not do
+            return self._suggest(
+                heard, bank.unsupported_message(unsupported.choice), rehearable=False
+            )
         intent: ChoiceAnswer = r1["intent"]
         close = [Intent(k) for k, p in intent.ranked if k != bank.NONE and p >= PLAUSIBLE][:3]
         if intent.choice == bank.NONE:
@@ -1012,9 +1047,29 @@ class Understander:
         others = [c for c in candidates if c.window.address != state.active_address]
         return min(others, key=lambda c: c.window.focus_rank) if others else None
 
-    def _suggest(self, heard: _Heard, reason: str, *intents: Intent) -> Decision:
+    def _suggest(
+        self, heard: _Heard, reason: str, *intents: Intent, rehearable: bool = True
+    ) -> Decision:
         return Decision(
-            Verdict.SUGGEST, reason=reason, suggestions=self._examples(*intents), heard=heard.said
+            Verdict.SUGGEST,
+            reason=reason,
+            suggestions=self._examples(*intents),
+            heard=heard.said,
+            rehearable=rehearable,
+        )
+
+    def _dictation(self, heard: _Heard) -> Decision:
+        """Someone is dictating and the grammar could not place it.
+
+        Nothing about this utterance may leave: not the words (the understander stops
+        here), not the audio (`rehearable` stays false), and not the text on the overlay,
+        which is why `heard` is left empty.
+        """
+        return Decision(
+            Verdict.SUGGEST,
+            reason='to type, say "type" and then the words, with the window focused',
+            suggestions=self._examples(Intent.TYPE_TEXT),
+            dictation=True,
         )
 
     def _degrade(
@@ -1039,7 +1094,10 @@ class Understander:
                     reason="the AI gateway rejected the key; only exact commands work",
                     heard=heard.said,
                 )
-            return self._suggest(heard, f"{why}; only exact commands work right now", *STARTERS)
+            # Jev is off or unreachable: the transcript was never the problem
+            return self._suggest(
+                heard, f"{why}; only exact commands work right now", *STARTERS, rehearable=False
+            )
         phrase = slots.window_ref or slots.app_ref or heard.text
         if intent is Intent.LAUNCH_APP:
             near = [a for a, _ in self.lexicon.match_apps(phrase, limit=5) if a.trusted]

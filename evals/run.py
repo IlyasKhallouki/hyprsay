@@ -37,12 +37,21 @@ from hyprsay.model import Decision, Transcript, Verdict  # noqa: E402
 ACTING = {Verdict.ACT, Verdict.ACT_SWAP, Verdict.COUNTDOWN, Verdict.CONFIRM_KEY}
 
 
-def matches(d: Decision, windows, intent: str, target: str | None, workspace: str | None) -> bool:
+def matches(d: Decision, windows, intent, target, workspace, slots=None) -> bool:
     a = d.action
     if a is None or a.intent.value != intent:
         return False
     if workspace is not None and (a.workspace or "") != workspace:
         return False
+    # the slot IS the command for these: muting when the speaker said "louder", or moving
+    # the window left when they said right, used to score as correct because only the
+    # intent was compared
+    for field, want in (slots or {}).items():
+        got = getattr(a, field, None)
+        if hasattr(got, "value"):
+            got = got.value
+        if got != want:
+            return False
     if target is None:
         return True
     if target == "focused":
@@ -53,11 +62,12 @@ def matches(d: Decision, windows, intent: str, target: str | None, workspace: st
     return a.app is not None and a.app.id == target
 
 
-def score(d: Decision, windows, intent, target, workspace, expect) -> str:
+def score(d: Decision, windows, intent, target, workspace, expect, slots=None) -> str:
     acted = d.verdict in ACTING
     if expect == "act":
         if acted:
-            return "correct" if matches(d, windows, intent, target, workspace) else "WRONG ACTION"
+            ok = matches(d, windows, intent, target, workspace, slots)
+            return "correct" if ok else "WRONG ACTION"
         return "asked" if d.verdict is Verdict.HINTS else "missed"
     if acted:
         return "WRONG ACTION"
@@ -130,6 +140,7 @@ async def main() -> int:
 
     samples = []
     for utterance, windows, intent, target, workspace, expect, tag in todo:
+        slots = cases.SLOTS.get(utterance)
         state = cases.desktop(windows)
         for rep in range(args.reps):
             started = time.perf_counter()
@@ -137,7 +148,7 @@ async def main() -> int:
                 d = await understander.understand(
                     Transcript(utterance, backend="eval"), state,
                     pinned_address=state.active_address)  # fmt: skip
-                outcome = score(d, windows, intent, target, workspace, expect)
+                outcome = score(d, windows, intent, target, workspace, expect, slots)
                 got = {"verdict": d.verdict.value, "tier": d.tier, "reason": d.reason,
                        "action": d.action.describe() if d.action else None,
                     # which window, by fixture key: "firefox" alone cannot tell a real
@@ -151,7 +162,7 @@ async def main() -> int:
             except Exception as exc:  # the pipeline promises never to raise: count it if it does
                 outcome, got = "CRASH", {"error": f"{type(exc).__name__}: {exc}"}
             elapsed = round((time.perf_counter() - started) * 1000, 1)
-            want = {"intent": intent, "target": target, "workspace": workspace}
+            want = {"intent": intent, "target": target, "workspace": workspace, **(slots or {})}
             samples.append(
                 {
                     "utterance": utterance,

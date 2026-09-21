@@ -214,14 +214,15 @@ class Engine:
 
         # the local transcript led nowhere: ask the cloud about the SAME audio, once.
         # Cloud models held 8 of 8 on degraded audio where local fell to 6 or 7 (measured).
-        # Only when the speaker clearly meant a command and local failed them: a SUGGEST
-        # (addressed, not understood), or speech that produced no words at all. Never on
-        # NOTHING: that is conversation not meant for the computer, and it must not leave
-        # the machine just because a key was down.
+        # Only what hearing the words again could fix. SUGGEST alone does not mean the
+        # recognizer failed: it is also how "Jev is off", "that sounded like dictation"
+        # and "hyprsay does not do that" come back, and uploading the clip for those
+        # sends audio the speaker had every reason to think stayed here.
         rescue = getattr(self.recognizer, "rescue", None)
-        failed_locally = decision.verdict is Verdict.SUGGEST or not transcript.text.strip()
-        if rescue is not None and failed_locally:
-            await self._show("still_thinking", text=transcript.text)
+        failed_locally = decision.rehearable or (not transcript.text.strip() and spoke)
+        if rescue is not None and failed_locally and not decision.dictation:
+            # no text on the overlay either: it may be the words being dictated
+            await self._show("still_thinking")
             with contextlib.suppress(Exception):
                 second = await rescue(pcm, 16000)
                 if (
@@ -233,7 +234,11 @@ class Engine:
         journal.record(
             "utterance",
             seconds=round(seconds, 2),
-            transcript=transcript,
+            # the words of a dictation are the speaker's, not a command: the journal keeps
+            # their length and a hash, the same as it does for the text that gets typed
+            transcript=replace(transcript, text=journal.redact_text(transcript.text))
+            if decision.dictation
+            else transcript,
             decision=decision,
             ms=round((time.perf_counter() - started) * 1000),
             exchange=getattr(self.understander, "last_exchange", None),

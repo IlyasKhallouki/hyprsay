@@ -275,6 +275,13 @@ class Decision:
     reason: str = ""  # one plain sentence; shown in `inspect` and on REFUSE
     suggestions: tuple[str, ...] = ()  # example phrases for SUGGEST
     heard: str = ""
+    # could hearing the words again help? Only then may the audio be sent to a cloud
+    # recognizer. SUGGEST alone does not mean the recognizer failed: it is also how
+    # "Jev is off", "no such window" and "that sounded like dictation" come back.
+    rehearable: bool = False
+    # the utterance is someone dictating. Its words are theirs, not a command: they
+    # never go to a model, to the HUD, or to the journal in the clear.
+    dictation: bool = False
 
 
 @dataclass(frozen=True)

@@ -255,14 +255,18 @@ class Recorder:
         return len(tail) == need and not any(tail)
 
     def voiced_after(self, seconds: float) -> bool:
-        """Did any voiced frame arrive at or after this offset into the clip?
+        """Was there SPEECH at or after this offset into the clip?
 
         The daemon notes `seconds()` when it snapshots; on key up a False here means the
-        speculative transcript still covers everything that was said.
+        speculative transcript still covers everything that was said. It is also how the
+        daemon decides whether anything was said at all, so the bar is the recorder's own
+        definition of speech rather than a single frame: the key press itself clicks for
+        a frame or two, and one click must not turn a second of an empty room into
+        something worth decoding, let alone uploading.
         """
         first = max(0, int(seconds * 1000 / FRAME_MS))
         with self._lock:
-            return any(self._gate.voiced[first:])
+            return sum(self._gate.voiced[first:]) >= MIN_VOICED_FRAMES
 
     # ----------------------------------------------------------------------- internals
 

@@ -302,7 +302,8 @@ def test_speech_not_meant_for_the_computer_is_never_sent_to_the_cloud():
 def test_an_addressed_but_garbled_command_gets_one_cloud_rescue_of_the_same_audio():
     recognizer = Recognizer("focus fire rocks", rescued="focus firefox")
     decisions = {
-        "focus fire rocks": Decision(Verdict.SUGGEST, reason="not understood"),
+        # what the understander really returns when it could not place the words
+        "focus fire rocks": Decision(Verdict.SUGGEST, reason="not understood", rehearable=True),
         "focus firefox": Decision(Verdict.ACT, FOCUS),
     }
     e, p = engine(decisions, recognizer=recognizer)
@@ -511,3 +512,55 @@ def test_undo_goes_to_the_executor_not_through_a_new_action():
     e, p = engine({"focus firefox": Decision(Verdict.ACT, Action(Intent.UNDO), heard="undo")})
     run(utter(e, p))
     assert p["executor"].undone == 1 and p["executor"].executed == []
+
+
+# ------------------------------------------------------------ what the review found leaking
+
+
+def test_a_misheard_carrier_still_counts_as_dictation_and_no_audio_is_uploaded():
+    # "type my password" heard as "typed my password": the words must not go to a model,
+    # and neither must the recording of them
+    recognizer = Recognizer("typed my password is hunter2", rescued="type my password")
+    decisions = {
+        "typed my password is hunter2": Decision(
+            Verdict.SUGGEST, reason="that sounded like dictation", dictation=True
+        )
+    }
+    e, p = engine(decisions, recognizer=recognizer)
+    run(utter(e, p))
+    assert recognizer.rescues == 0
+    assert all("hunter2" not in str(m) for m in p["hud"].sent)
+
+
+def test_a_suggestion_that_rehearing_cannot_fix_does_not_upload_the_clip():
+    # "Jev is off", "hyprsay does not do that": the recognizer was never the problem
+    recognizer = Recognizer("bring up my notes", rescued="bring up my notes")
+    decisions = {
+        "bring up my notes": Decision(
+            Verdict.SUGGEST, reason="Jev is turned off"
+        )  # rehearable False
+    }
+    e, p = engine(decisions, recognizer=recognizer)
+    run(utter(e, p))
+    assert recognizer.rescues == 0
+
+
+def test_the_overlay_never_shows_the_transcript_while_waiting_on_the_cloud():
+    recognizer = Recognizer("my bank password is swordfish", rescued="focus firefox")
+    decisions = {
+        "my bank password is swordfish": Decision(Verdict.SUGGEST, reason="?", rehearable=True),
+        "focus firefox": Decision(Verdict.ACT, FOCUS),
+    }
+    e, p = engine(decisions, recognizer=recognizer)
+    run(utter(e, p))
+    assert recognizer.rescues == 1
+    assert all("swordfish" not in str(m) for m in p["hud"].sent)
+
+
+def test_a_silent_clip_is_never_uploaded_even_though_the_key_clicked():
+    # one voiced frame from the key press is not speech: an empty transcript with no
+    # real voice behind it must not become an upload of a second of the room
+    recognizer = Recognizer("", rescued="anything")
+    e, p = engine(recorder=Recorder(spoke=False), recognizer=recognizer)
+    run(utter(e, p))
+    assert recognizer.calls == 0 and recognizer.rescues == 0

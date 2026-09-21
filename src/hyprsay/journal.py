@@ -61,7 +61,14 @@ def _plain(value: Any, keep_titles: bool) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, dict):
-        return {str(k): _plain(v, keep_titles) for k, v in value.items()}
+        # the same rule as for dataclass fields. The request bodies the daemon journals
+        # are plain nested dicts, and the titles request carries the one thing this file
+        # promises never to store.
+        return {
+            str(k): _plain(v, keep_titles)
+            for k, v in value.items()
+            if not _omitted(str(k), v, keep_titles)
+        }
     if isinstance(value, list | tuple | set | frozenset):
         return [_plain(v, keep_titles) for v in value]
     if isinstance(value, str | int | float | bool) or value is None:

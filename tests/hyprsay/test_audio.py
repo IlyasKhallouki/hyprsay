@@ -428,3 +428,20 @@ def test_a_missing_wpctl_does_not_break_recording(monkeypatch):
     rec.start()
     factory.stream.feed(tone(0.1))
     assert len(rec.stop()) == int(0.1 * RATE) * 2
+
+
+def test_a_single_click_frame_is_not_speech():
+    """The key press itself clicks for a frame or two. That must not count as talking:
+    the daemon uses this to decide whether there is anything worth decoding or sending."""
+    rec, factory = recorder()
+    rec.start()
+    factory.stream.feed(tone(0.02))  # one 20 ms click
+    factory.stream.feed(hiss(1.2))
+    assert rec.voiced_after(0.0) is False
+
+
+def test_a_real_utterance_is_speech():
+    rec, factory = recorder()
+    rec.start()
+    factory.stream.feed(tone(0.02 * (audio.MIN_VOICED_FRAMES + 3)))
+    assert rec.voiced_after(0.0) is True
