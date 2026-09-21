@@ -82,3 +82,22 @@ def test_tail_filters_by_kind_and_survives_a_corrupt_line():
     journal.record("utterance", n=3)
     assert [e["n"] for e in journal.tail(5, kind="utterance")] == [1, 3]
     assert journal.tail(1)[0]["n"] == 3
+
+
+def test_setup_offers_the_default_key_not_a_hardcoded_one(monkeypatch, capsys):
+    """`setup` built its own arguments and kept offering SUPER+V after the default moved."""
+    import argparse
+    import pathlib
+
+    from hyprsay import cli
+    from hyprsay.activation import DEFAULT_KEY
+
+    shown: list[str] = []
+    monkeypatch.setattr(cli, "_binds", lambda cfg, args: shown.append(args.key) or 0)
+    monkeypatch.setattr(
+        "hyprsay.stt.models.ensure", lambda name, progress=None, **kw: None, raising=False
+    )
+    monkeypatch.setattr(cli.config, "CONFIG_FILE", pathlib.Path("/dev/null"))
+    cli._setup(cli.config.Config(), argparse.Namespace(units=False))
+    assert shown == [""]  # empty asks for the default, which _binds then checks for conflicts
+    assert "V" not in DEFAULT_KEY  # and the default is no longer the clipboard key

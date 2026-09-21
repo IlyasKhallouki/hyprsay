@@ -381,7 +381,7 @@ def _setup(cfg, args) -> int:
         file.write_text(_DEFAULT_CONFIG)
         print(f"wrote {file}")
     print("\nadd these two lines to your Hyprland config:\n")
-    _binds(cfg, argparse.Namespace(key="SUPER, V"))
+    _binds(cfg, argparse.Namespace(key=""))  # empty means the default, and it is checked
     if args.units:
         return _install_units()
     print("\nthen: hyprsay setup --units   (installs and starts the systemd user units)")
