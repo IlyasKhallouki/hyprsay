@@ -651,3 +651,41 @@ def test_a_cancel_before_the_action_starts_still_stops_it():
 
     run(go())
     assert p["executor"].executed == []
+
+
+def test_a_second_press_opens_the_microphone_without_waiting_for_the_first_to_finish():
+    """The whole point of push to talk is that the key works when you press it. The
+    pipeline used to be awaited inline, so a press during the previous decode opened the
+    microphone half a second late and the first word of the next command was lost."""
+    from hyprsay.activation import PttEvent
+
+    order: list[str] = []
+
+    class SlowRecognizer(Recognizer):
+        async def transcribe(self, pcm, sample_rate):
+            if len(pcm) < len(PCM):  # the startup warm-up, not an utterance
+                return await super().transcribe(pcm, sample_rate)
+            order.append("decode-start")
+            await asyncio.sleep(0.2)
+            order.append("decode-end")
+            return await super().transcribe(pcm, sample_rate)
+
+    class Scripted(Ptt):
+        async def events(self):
+            yield PttEvent("down", "key", 0.0)
+            yield PttEvent("up", "key", 0.1)
+            await asyncio.sleep(0.05)  # the first utterance is still decoding
+            yield PttEvent("down", "key", 0.2)
+            await asyncio.sleep(0.4)  # let both finish before the loop ends
+
+    class Watching(Recorder):
+        def start(self):
+            order.append("mic-open")
+            super().start()
+
+    e, p = engine(recognizer=SlowRecognizer(), ptt=Scripted(), recorder=Watching())
+    run(e.run())
+    assert order.count("mic-open") == 2
+    # the second press opened the microphone while the first was still being decoded
+    assert order.index("mic-open", order.index("mic-open") + 1) < order.index("decode-end")
+    assert "decode-end" in order  # and the first utterance still ran to completion

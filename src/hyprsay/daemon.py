@@ -60,6 +60,8 @@ class Engine:
         self._confirm: asyncio.Future | None = None
         self._lock_watch: asyncio.Task | None = None
         self._cancelled = False
+        self._running: set[asyncio.Task] = set()
+        self._pipeline = asyncio.Lock()
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -77,16 +79,40 @@ class Engine:
                     if event.kind == "down":
                         await self._key_down()
                     else:
-                        await self._key_up(event.reason)
+                        # the rest of the utterance (decode, Jev, act) takes half a
+                        # second or more. Awaiting it here meant the next key press
+                        # opened the microphone that much late and the first word of
+                        # the next command was lost, so it runs alongside instead.
+                        self._track(self._key_up(event.reason))
                 except Exception:  # one bad utterance must never kill the daemon
                     log.exception("utterance failed")
                     await self._show("refused", text="internal error, see the log")
         finally:
-            for task in tasks:
+            for task in (*tasks, *self._running):
                 task.cancel()
             self._worker.shutdown(wait=False, cancel_futures=True)
             with contextlib.suppress(Exception):
                 await self.hud.close()
+
+    def _track(self, coro) -> asyncio.Task:
+        """Run an utterance to its end without holding up the next key press."""
+
+        async def guarded() -> None:
+            # one at a time: the executor has a single worker, and two pipelines racing
+            # would interleave their overlay states
+            async with self._pipeline:
+                try:
+                    await coro
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("utterance failed")
+                    await self._show("refused", text="internal error, see the log")
+
+        task = asyncio.create_task(guarded())
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
+        return task
 
     async def _warm_speech(self) -> None:
         """Load the speech model now, not on the first command.
@@ -199,6 +225,8 @@ class Engine:
         # ask BEFORE stopping: stop() wipes the recorder's own buffers
         spoke = self.recorder.voiced_after(0.0)
         pcm = self.recorder.stop()
+        # captured now: a second key press may repin before this utterance is understood
+        pinned = self._pinned
         if reason == "locked" or self.latch.locked():
             await self._show("refused", text="session is locked", ttl_ms=1500)
             return
@@ -216,7 +244,7 @@ class Engine:
         # inside that window, and nothing about this utterance may travel afterwards
         if await self._locked_now():
             return await self._drop_for_lock()
-        decision = await self._understand(transcript)
+        decision = await self._understand(transcript, pinned)
         if await self._locked_now():
             return await self._drop_for_lock()
 
@@ -237,7 +265,7 @@ class Engine:
                     second.text.strip()
                     and second.text.strip().lower() != transcript.text.strip().lower()
                 ):
-                    transcript, decision = second, await self._understand(second)
+                    transcript, decision = second, await self._understand(second, pinned)
 
         if await self._locked_now():
             return await self._drop_for_lock()
@@ -253,7 +281,7 @@ class Engine:
             ms=round((time.perf_counter() - started) * 1000),
             exchange=getattr(self.understander, "last_exchange", None),
         )
-        await self._carry_out(decision)
+        await self._carry_out(decision, pinned)
 
     async def _locked_now(self) -> bool:
         """Ask the latch, off the loop: it may shell out to loginctl."""
@@ -263,15 +291,15 @@ class Engine:
         self._forget_everything("session locked")
         await self._show("refused", text="session is locked", ttl_ms=1500)
 
-    async def _understand(self, transcript: Transcript) -> Decision:
+    async def _understand(self, transcript: Transcript, pinned: str = "") -> Decision:
         picking = self._picking if time.monotonic() < self._picking_until else ()
         return await self.understander.understand(
-            transcript, self.world.state, pinned_address=self._pinned, picking=picking
+            transcript, self.world.state, pinned_address=pinned or self._pinned, picking=picking
         )
 
     # ------------------------------------------------------------------ decisions
 
-    async def _carry_out(self, d: Decision) -> None:
+    async def _carry_out(self, d: Decision, pinned: str = "") -> None:
         self._picking = ()
         action = d.action
         if action is not None and action.intent in (
@@ -284,7 +312,7 @@ class Engine:
             return
 
         if d.verdict is Verdict.ACT and action:
-            await self._act(action, d)
+            await self._act(action, d, pinned=pinned)
         elif d.verdict is Verdict.ACT_SWAP and action:
             # free to reverse: act now, and let a number re-target it (docs/PLAN.md 5.6)
             if await self._act(action, d, badges=d.candidates):
@@ -307,10 +335,13 @@ class Engine:
         self._picking = candidates
         self._picking_until = time.monotonic() + seconds
 
-    async def _act(self, action: Action, d: Decision, badges: tuple[Candidate, ...] = ()) -> bool:
+    async def _act(
+        self, action: Action, d: Decision, badges: tuple[Candidate, ...] = (), *, pinned: str = ""
+    ) -> bool:
         loop = asyncio.get_running_loop()
         outcome: Outcome = await loop.run_in_executor(
-            self._worker, lambda: self.executor.execute(action, pinned_address=self._pinned)
+            self._worker,
+            lambda: self.executor.execute(action, pinned_address=pinned or self._pinned),
         )
         journal.record("action", action=action, ok=outcome.ok, message=outcome.message)
         if not outcome.ok:
