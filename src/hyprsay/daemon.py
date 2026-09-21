@@ -38,6 +38,7 @@ MIN_UTTERANCE_S = 0.25
 # a confirming tap for tier 3 must be this short, so it cannot be a new utterance
 CONFIRM_TAP_S = 0.5
 CONFIRM_WINDOW_S = 4.0
+LOCK_POLL_S = 0.25
 
 
 class Engine:
@@ -57,6 +58,7 @@ class Engine:
         self._pending: asyncio.Task | None = None  # a countdown or a confirm wait
         self._meter: asyncio.Task | None = None
         self._confirm: asyncio.Future | None = None
+        self._lock_watch: asyncio.Task | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -87,15 +89,21 @@ class Engine:
         self.ptt.force_up("locked")
         loop = self._loop
         if loop is not None:
-            loop.call_soon_threadsafe(self._cancel_pending, "session locked")
+            loop.call_soon_threadsafe(self._forget_everything, "session locked")
 
     _loop: asyncio.AbstractEventLoop | None = None
 
-    def _cancel_pending(self, why: str) -> None:
+    def _forget_everything(self, why: str) -> None:
+        self._cancel_pending(why, forget_badges=True)
+
+    def _cancel_pending(self, why: str, *, forget_badges: bool = False) -> None:
         if self._pending and not self._pending.done():
             self._pending.cancel()
             log.info("pending action cancelled: %s", why)
-        self._picking = ()
+        if forget_badges:
+            # NOT on an ordinary key press: the key has to go down to say the number, so
+            # clearing here would make every numbered hint and swap impossible to answer
+            self._picking = ()
 
     # ------------------------------------------------------------------ key down
 
@@ -114,7 +122,8 @@ class Engine:
         self._pinned = self.world.state.active_address
         self._down_at = now
         try:
-            self.recorder.start()
+            # opening the device blocks while PortAudio negotiates; keep the loop free
+            await asyncio.to_thread(self.recorder.start)
         except Exception as exc:
             await self._show("refused", text=f"microphone: {exc}", ttl_ms=3000)
             return
@@ -123,6 +132,23 @@ class Engine:
             asyncio.create_task(self.jev.warm())
         await self._show("hearing", level=0.0)
         self._meter = asyncio.create_task(self._run_meter())
+        self._ensure_lock_watch()
+
+    def _ensure_lock_watch(self) -> None:
+        if self._lock_watch is None or self._lock_watch.done():
+            self._lock_watch = asyncio.create_task(self._watch_lock())
+
+    async def _watch_lock(self) -> None:
+        """Hyprland emits no lock event, and the latch only notices a lock when asked.
+
+        So while there is anything a lock must interrupt (a held key, a countdown, a
+        pending confirmation) ask it a few times a second. The latch fires `_on_lock` on
+        the edge. It can shell out to loginctl, so it runs off the loop.
+        """
+        with contextlib.suppress(asyncio.CancelledError):
+            while self.ptt.held or (self._pending is not None and not self._pending.done()):
+                await asyncio.to_thread(self.latch.locked)
+                await asyncio.sleep(LOCK_POLL_S)
 
     async def _run_meter(self) -> None:
         with contextlib.suppress(asyncio.CancelledError):
@@ -143,12 +169,16 @@ class Engine:
             # only a short, deliberate tap confirms; holding the key is a new utterance
             self._confirm.set_result(held <= CONFIRM_TAP_S)
             return
+        # ask BEFORE stopping: stop() wipes the recorder's own buffers
+        spoke = self.recorder.voiced_after(0.0)
         pcm = self.recorder.stop()
         if reason == "locked" or self.latch.locked():
             await self._show("refused", text="session is locked", ttl_ms=1500)
             return
         seconds = len(pcm) / 2 / 16000
-        if seconds < MIN_UTTERANCE_S:
+        if seconds < MIN_UTTERANCE_S or not spoke:
+            # a stray press, or a held key with nobody talking: nothing to decode, and
+            # above all nothing to send anywhere
             await self._show("hidden")
             return
 
@@ -159,8 +189,13 @@ class Engine:
 
         # the local transcript led nowhere: ask the cloud about the SAME audio, once.
         # Cloud models held 8 of 8 on degraded audio where local fell to 6 or 7 (measured).
+        # Only when the speaker clearly meant a command and local failed them: a SUGGEST
+        # (addressed, not understood), or speech that produced no words at all. Never on
+        # NOTHING: that is conversation not meant for the computer, and it must not leave
+        # the machine just because a key was down.
         rescue = getattr(self.recognizer, "rescue", None)
-        if rescue is not None and decision.verdict in (Verdict.SUGGEST, Verdict.NOTHING):
+        failed_locally = decision.verdict is Verdict.SUGGEST or not transcript.text.strip()
+        if rescue is not None and failed_locally:
             await self._show("still_thinking", text=transcript.text)
             with contextlib.suppress(Exception):
                 second = await rescue(pcm, 16000)
@@ -211,8 +246,10 @@ class Engine:
             await self.hud.send(self.hud.from_decision(d, self.world.state))
         elif d.verdict is Verdict.COUNTDOWN and action:
             self._pending = asyncio.create_task(self._countdown(action, d))
+            self._ensure_lock_watch()
         elif d.verdict is Verdict.CONFIRM_KEY and action:
             self._pending = asyncio.create_task(self._confirm_by_key(action, d))
+            self._ensure_lock_watch()
         elif d.verdict is Verdict.NOTHING:
             await self._show("hidden")
         else:  # REFUSE, SUGGEST
@@ -272,7 +309,7 @@ class Engine:
     async def _meta(self, intent: Intent, d: Decision) -> None:
         loop = asyncio.get_running_loop()
         if intent is Intent.CANCEL:
-            self._cancel_pending("cancel")
+            self._cancel_pending("cancel", forget_badges=True)
             await self._show("hidden")
         elif intent is Intent.HELP:
             await self.hud.send(self.hud.from_decision(d, self.world.state))
