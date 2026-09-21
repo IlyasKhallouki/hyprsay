@@ -416,6 +416,7 @@ def build(cfg: Config) -> Engine:
     from .activation import PushToTalk
     from .audio import Recorder
     from .executor import Executor, boot
+    from .executor import use as executor_registry
     from .hudproto import HudServer
     from .lexicon import Lexicon
     from .lock import Latch
@@ -447,6 +448,10 @@ def build(cfg: Config) -> Engine:
 
     lexicon = Lexicon.scan(cfg)
     latch = Latch(cfg, lambda: world.state, sock.query)
+    acts = Executor(cfg, lambda: world.state, latch, lexicon)
+    # recipes reach the executor through this, so a recipe cannot become a second way to
+    # type that skips the pin, the lock latch and the character cap
+    executor_registry(acts)
     return Engine(
         cfg,
         world=world,
@@ -454,7 +459,7 @@ def build(cfg: Config) -> Engine:
         recorder=Recorder(cfg),
         recognizer=make_recognizer(cfg, key),
         understander=Understander(cfg, lexicon, Grammar(), client),
-        executor=Executor(cfg, lambda: world.state, latch, lexicon),
+        executor=acts,
         latch=latch,
         hud=HudServer(hud=cfg.hud, countdown_s=cfg.safety.countdown_s),
         jev=client,

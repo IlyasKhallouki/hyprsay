@@ -250,3 +250,19 @@ def explain(exc: BaseException) -> str:
     if isinstance(exc, ValueError | TypeError):
         return f"That could not be done: {_first_sentence(exc)}."
     return f"That failed ({type(exc).__name__}), so it may not have happened."
+
+
+# The engine builds exactly one Executor and every write goes through it. Recipes need to
+# reach it without being handed one through five layers of rendering, so it is registered
+# here rather than passed down. A None means no engine is running, and a recipe then
+# refuses rather than finding some other way to the keyboard.
+_CURRENT: Executor | None = None
+
+
+def use(executor: Executor | None) -> None:
+    global _CURRENT
+    _CURRENT = executor
+
+
+def current() -> Executor | None:
+    return _CURRENT

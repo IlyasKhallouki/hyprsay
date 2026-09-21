@@ -26,7 +26,7 @@ from typing import Any
 from hyprsay.jev.types import Boolean, Choice, Question, Score
 from hyprsay.model import JEV_INTENTS, Intent
 
-VERSION = "2026-09-21.3"
+VERSION = "2026-09-21.4"
 
 NOTE = (
     "The utterance is an automatic speech recognition transcript of a short spoken "
@@ -299,3 +299,35 @@ def application(options: dict[str, Any]) -> Choice:
 
 def unsupported_message(kind: str) -> str:
     return UNSUPPORTED[kind][1]
+
+
+# ------------------------------------------------------------------ Rc, compound commands
+
+
+def separates(position_word: str, left: str, right: str) -> Boolean:
+    """Rc, one Boolean per seam `clauses.split_candidates` offered.
+
+    Code cannot tell the " and " in "open bits and bytes" from the " and " in "open
+    firefox and move it to workspace 3": the characters are the same, and only reading
+    both sides tells them apart. So it is asked, one Boolean per candidate, inside the
+    fan-out that was already going out: question count is free, payload is not (PLAN 5.5).
+
+    Nothing new leaves the machine. Both halves are substrings of the utterance the shared
+    state already carries, and the answer can only choose among seams code proposed, so a
+    yes here never reaches anything an utterance did not already say.
+    """
+    return Boolean(
+        {
+            "ask": "Does the word between these two parts separate two different commands?",
+            "word": position_word,
+            "before": left,
+            "after": right,
+        },
+        true="two commands: each part asks for its own action and has its own action "
+        "word, and the second part reads as an instruction by itself even when it leaves "
+        'out what it acts on, as in "open firefox" and "move it to workspace 3"',
+        false="one command: the word is inside the name of an application, a window or a "
+        "workspace, inside the words the speaker is dictating to be typed, or inside one "
+        'description of a single thing, as in "open bits and bytes" or "type hello and '
+        'goodbye"',
+    )
