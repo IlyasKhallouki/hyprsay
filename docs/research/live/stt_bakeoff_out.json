@@ -1,0 +1,2028 @@
+{
+ "meta": {
+  "loadavg_start": [
+   "1.19",
+   "1.41",
+   "1.40"
+  ],
+  "clip_seconds": [
+   1.27,
+   1.12,
+   0.99,
+   1.56,
+   0.85,
+   1.04,
+   0.99,
+   0.86
+  ],
+  "loadavg_end": [
+   "1.47",
+   "1.45",
+   "1.42"
+  ]
+ },
+ "local": {
+  "moonshine-tiny": [
+   {
+    "clip": 0,
+    "ms": 55,
+    "text": "Switch to Workspace 3."
+   },
+   {
+    "clip": 1,
+    "ms": 30,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 28,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 45,
+    "text": "Move window to workspace 2."
+   },
+   {
+    "clip": 4,
+    "ms": 30,
+    "text": "Focus kitty"
+   },
+   {
+    "clip": 5,
+    "ms": 34,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 30,
+    "text": "Open obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 24,
+    "text": "Scroll down."
+   },
+   {
+    "clip": 0,
+    "ms": 40,
+    "text": "Switch to Workspace 3."
+   },
+   {
+    "clip": 1,
+    "ms": 28,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 28,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 48,
+    "text": "Move window to workspace 2."
+   },
+   {
+    "clip": 4,
+    "ms": 31,
+    "text": "Focus kitty"
+   },
+   {
+    "clip": 5,
+    "ms": 33,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 33,
+    "text": "Open obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 23,
+    "text": "Scroll down."
+   },
+   {
+    "clip": 0,
+    "ms": 40,
+    "text": "Switch to Workspace 3."
+   },
+   {
+    "clip": 1,
+    "ms": 27,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 29,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 46,
+    "text": "Move window to workspace 2."
+   },
+   {
+    "clip": 4,
+    "ms": 28,
+    "text": "Focus kitty"
+   },
+   {
+    "clip": 5,
+    "ms": 32,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 30,
+    "text": "Open obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 27,
+    "text": "Scroll down."
+   }
+  ],
+  "parakeet-110m": [
+   {
+    "clip": 0,
+    "ms": 99,
+    "text": "Switch to workspace three."
+   },
+   {
+    "clip": 1,
+    "ms": 88,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 118,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 137,
+    "text": "Move window to workspace two."
+   },
+   {
+    "clip": 4,
+    "ms": 91,
+    "text": "Focus, kitty."
+   },
+   {
+    "clip": 5,
+    "ms": 109,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 93,
+    "text": "Open Obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 72,
+    "text": "Scroll down."
+   },
+   {
+    "clip": 0,
+    "ms": 105,
+    "text": "Switch to workspace three."
+   },
+   {
+    "clip": 1,
+    "ms": 86,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 79,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 137,
+    "text": "Move window to workspace two."
+   },
+   {
+    "clip": 4,
+    "ms": 101,
+    "text": "Focus, kitty."
+   },
+   {
+    "clip": 5,
+    "ms": 97,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 86,
+    "text": "Open Obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 80,
+    "text": "Scroll down."
+   },
+   {
+    "clip": 0,
+    "ms": 112,
+    "text": "Switch to workspace three."
+   },
+   {
+    "clip": 1,
+    "ms": 100,
+    "text": "Open Firefox."
+   },
+   {
+    "clip": 2,
+    "ms": 90,
+    "text": "Close this window."
+   },
+   {
+    "clip": 3,
+    "ms": 128,
+    "text": "Move window to workspace two."
+   },
+   {
+    "clip": 4,
+    "ms": 80,
+    "text": "Focus, kitty."
+   },
+   {
+    "clip": 5,
+    "ms": 93,
+    "text": "Toggle full screen."
+   },
+   {
+    "clip": 6,
+    "ms": 87,
+    "text": "Open Obsidian."
+   },
+   {
+    "clip": 7,
+    "ms": 86,
+    "text": "Scroll down."
+   }
+  ]
+ },
+ "gateway": {
+  "google/gemini-3.5-transcribe": [
+   {
+    "clip": 0,
+    "ms": 3619,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 3102,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 3296,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 3348,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 3584,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 3364,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 3393,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 3228,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 3619,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 2898,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 3016,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 3185,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 2993,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 2552,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 3093,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 3326,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 3076,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 3041,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 2623,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 3174,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 3377,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 3384,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 3020,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 3158,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "openai/whisper-1": [
+   {
+    "clip": 0,
+    "ms": 1339,
+    "text": "Switch to Workspace 3.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 792,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 641,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 1268,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 739,
+    "text": "Focus Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 622,
+    "text": "Toggle Full Screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 1201,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 987,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 1349,
+    "text": "Switch to Workspace 3.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 1815,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 1227,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 897,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 1217,
+    "text": "Focus Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 6121,
+    "text": "Toggle Full Screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 1782,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 1112,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 1582,
+    "text": "Switch to Workspace 3.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 1211,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 871,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 846,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 1127,
+    "text": "Focus Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 946,
+    "text": "Toggle Full Screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 1835,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 655,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "openai/gpt-4o-mini-transcribe": [
+   {
+    "clip": 0,
+    "ms": 643,
+    "text": "Switch to workspace 3.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 665,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 631,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 774,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 607,
+    "text": "Focus Kitty",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 589,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 767,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 799,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 842,
+    "text": "Switch to workspace 3.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 841,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 766,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 867,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 626,
+    "text": "Focus Kitty",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 626,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 627,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 787,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 819,
+    "text": "Switch to workspace 3.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 729,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 643,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 834,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 605,
+    "text": "Focus Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 605,
+    "text": "Toggle full screen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 881,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 613,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "openai/gpt-4o-transcribe": [
+   {
+    "clip": 0,
+    "ms": 1092,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 671,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 786,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 895,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 660,
+    "text": "F\u00f3cas Kitty",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 776,
+    "text": "Toggle fullscreen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 672,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 702,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 772,
+    "text": "Switch to workspace 3.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 922,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 717,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 920,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 619,
+    "text": "Focus Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 713,
+    "text": "Toggle fullscreen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 614,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 720,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 626,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 801,
+    "text": "Open Firefox.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 643,
+    "text": "Close this window.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 900,
+    "text": "Move window to workspace 2.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 680,
+    "text": "Focus Kitty.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 607,
+    "text": "Toggle fullscreen.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 752,
+    "text": "Open Obsidian.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 642,
+    "text": "Scroll down.",
+    "keys": [
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "spacexai/grok-stt": [
+   {
+    "clip": 0,
+    "ms": 671,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 702,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 933,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 716,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 1024,
+    "text": "Focus, kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 696,
+    "text": "Toggle fullscreen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 712,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 640,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 566,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 710,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 949,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 715,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 515,
+    "text": "Focus, kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 489,
+    "text": "Toggle full screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 708,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 704,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 514,
+    "text": "Switch to workspace three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 818,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 576,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 819,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 496,
+    "text": "Focus, kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 527,
+    "text": "Toggle fullscreen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 579,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 506,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "fish-audio/transcribe-1": [
+   {
+    "clip": 0,
+    "ms": 458,
+    "text": "Switch to Workspace Three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 448,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 752,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 645,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 386,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 457,
+    "text": "Toggle full screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 386,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 408,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 469,
+    "text": "Switch to Workspace Three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 447,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 389,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 467,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 475,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 381,
+    "text": "Toggle full screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 436,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 498,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 0,
+    "ms": 525,
+    "text": "Switch to Workspace Three.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 1,
+    "ms": 511,
+    "text": "Open Firefox.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 2,
+    "ms": 512,
+    "text": "Close this window.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 3,
+    "ms": 522,
+    "text": "Move window to workspace two.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 4,
+    "ms": 370,
+    "text": "Focus, Kitty.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 5,
+    "ms": 438,
+    "text": "Toggle full screen.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 6,
+    "ms": 411,
+    "text": "Open Obsidian.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   },
+   {
+    "clip": 7,
+    "ms": 407,
+    "text": "Scroll down.",
+    "keys": [
+     "durationInSeconds",
+     "language",
+     "providerMetadata",
+     "segments",
+     "text",
+     "warnings"
+    ]
+   }
+  ],
+  "google/gemini-3.5-transcribe-live": [
+   {
+    "clip": 0,
+    "ms": 179,
+    "status": 400,
+    "error": "{\"error\":{\"message\":\"Model 'gemini-3.5-transcribe-live' only supports streaming transcription. Use experimental_streamTranscribe, or a unary model such as 'gemini-3.5-transcribe'.\",\"type\":\"AI_InvalidArgumentError\",\"param"
+   }
+  ],
+  "openai/gpt-realtime-whisper": [
+   {
+    "clip": 0,
+    "ms": 189,
+    "status": 400,
+    "error": "{\"error\":{\"message\":\"'non-streaming transcription with gpt-realtime-whisper' functionality not supported.\",\"type\":\"AI_UnsupportedFunctionalityError\",\"param\":{\"error\":\"'non-streaming transcription with gpt-realtime-whispe"
+   }
+  ]
+ }
+}

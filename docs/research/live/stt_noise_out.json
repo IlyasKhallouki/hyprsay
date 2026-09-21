@@ -1,0 +1,210 @@
+{
+ "clean": {
+  "local moonshine-tiny": [
+   "Switch to Workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus kitty",
+   "Toggle full screen.",
+   "Open obsidian.",
+   "Scroll down."
+  ],
+  "local parakeet-110m": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud grok-stt": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud transcribe-1": [
+   "Switch to Workspace Three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, Kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud gpt-4o-mini-transcribe": [
+   "Switch to workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus Kitty",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ]
+ },
+ "noise 10 dB SNR": {
+  "local moonshine-tiny": [
+   "Switch to Workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace too.",
+   "Focus kitty",
+   "Toggle full screen.",
+   "Open obsidian.",
+   "Scroll down"
+  ],
+  "local parakeet-110m": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud grok-stt": [
+   "Switch to Workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud transcribe-1": [
+   "Switch to Workspace Three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, Kitty.",
+   "Toggle full screen.",
+   "Open obsidian.",
+   "Scroll down."
+  ],
+  "cloud gpt-4o-mini-transcribe": [
+   "Switch to workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus Kitty",
+   "Toggle fullscreen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ]
+ },
+ "noise 3 dB SNR": {
+  "local moonshine-tiny": [
+   "Switch to Workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus kitty",
+   "Toggle full screen.",
+   "Open obsidian.",
+   "Scroll down"
+  ],
+  "local parakeet-110m": [
+   "Switch to work space three.",
+   "Open firefox.",
+   "Close this window.",
+   "Move window to work space two.",
+   "Focus, kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud grok-stt": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud transcribe-1": [
+   "Switch to Workspace Three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, Kitty.",
+   "Toggle full screen.",
+   "Open obsidian.",
+   "Scroll down."
+  ],
+  "cloud gpt-4o-mini-transcribe": [
+   "Switch to workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus Kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ]
+ },
+ "bad laptop mic": {
+  "local moonshine-tiny": [
+   "Switch to workspace three.",
+   "Open firefuck.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus kitty",
+   "Toggle folks, Korean.",
+   "Open obsidian.",
+   "Scroll down"
+  ],
+  "local parakeet-110m": [
+   "switch to workspace three.",
+   "Open Firefox.",
+   "close this window.",
+   "Move Window to Workspace two.",
+   "Focus, kitty.",
+   "Taggle full screen.",
+   "Open Obsidian.",
+   "scroll down."
+  ],
+  "cloud grok-stt": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus kitty.",
+   "Toggle both screens.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud transcribe-1": [
+   "Switch to workspace three.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace two.",
+   "Focus, Kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ],
+  "cloud gpt-4o-mini-transcribe": [
+   "Switch to workspace 3.",
+   "Open Firefox.",
+   "Close this window.",
+   "Move window to workspace 2.",
+   "Focus, Kitty.",
+   "Toggle full screen.",
+   "Open Obsidian.",
+   "Scroll down."
+  ]
+ }
+}

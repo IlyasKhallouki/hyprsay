@@ -1,0 +1,326 @@
+{
+ "google/gemini-3.5-transcribe-live": [
+  {
+   "clip": 0,
+   "partials": 3,
+   "open_ms": 296,
+   "stream_start_ms": 378,
+   "first_partial_after_audio_start_ms": 842,
+   "final_after_done_ms": 3321,
+   "text": "Switch to workspace three.",
+   "finish_after_done_ms": 3321
+  },
+  {
+   "clip": 1,
+   "partials": 3,
+   "open_ms": 236,
+   "stream_start_ms": 322,
+   "first_partial_after_audio_start_ms": 682,
+   "final_after_done_ms": 3246,
+   "text": "Open Firefox.",
+   "finish_after_done_ms": 3246
+  },
+  {
+   "clip": 2,
+   "partials": 3,
+   "open_ms": 170,
+   "stream_start_ms": 238,
+   "first_partial_after_audio_start_ms": 697,
+   "final_after_done_ms": 3266,
+   "text": "Close this window.",
+   "finish_after_done_ms": 3266
+  },
+  {
+   "clip": 3,
+   "partials": 3,
+   "open_ms": 417,
+   "stream_start_ms": 496,
+   "first_partial_after_audio_start_ms": 958,
+   "final_after_done_ms": 3333,
+   "text": "Move window to workspace two.",
+   "finish_after_done_ms": 3333
+  },
+  {
+   "clip": 4,
+   "partials": 2,
+   "open_ms": 433,
+   "stream_start_ms": 516,
+   "first_partial_after_audio_start_ms": 777,
+   "final_after_done_ms": 3379,
+   "text": "Focus, kitty.",
+   "finish_after_done_ms": 3379
+  },
+  {
+   "clip": 5,
+   "partials": 1,
+   "open_ms": 203,
+   "stream_start_ms": 277,
+   "first_partial_after_audio_start_ms": 1331,
+   "final_after_done_ms": 3329,
+   "text": "Toggle full screen.",
+   "finish_after_done_ms": 3329
+  },
+  {
+   "clip": 6,
+   "partials": 2,
+   "open_ms": 229,
+   "stream_start_ms": 302,
+   "first_partial_after_audio_start_ms": 764,
+   "final_after_done_ms": 3228,
+   "text": "Open Obsidian.",
+   "finish_after_done_ms": 3228
+  },
+  {
+   "clip": 7,
+   "partials": 1,
+   "open_ms": 192,
+   "stream_start_ms": 266,
+   "first_partial_after_audio_start_ms": 1094,
+   "final_after_done_ms": 3339,
+   "text": "Scroll down.",
+   "finish_after_done_ms": 3339
+  },
+  {
+   "clip": 0,
+   "partials": 3,
+   "open_ms": 309,
+   "stream_start_ms": 389,
+   "first_partial_after_audio_start_ms": 662,
+   "final_after_done_ms": 3247,
+   "text": "Switch to workspace three.",
+   "finish_after_done_ms": 3247
+  },
+  {
+   "clip": 1,
+   "partials": 3,
+   "open_ms": 241,
+   "stream_start_ms": 315,
+   "first_partial_after_audio_start_ms": 777,
+   "final_after_done_ms": 3352,
+   "text": "Open Firefox.",
+   "finish_after_done_ms": 3352
+  },
+  {
+   "clip": 2,
+   "partials": 3,
+   "open_ms": 427,
+   "stream_start_ms": 518,
+   "first_partial_after_audio_start_ms": 687,
+   "final_after_done_ms": 3324,
+   "text": "Close this window.",
+   "finish_after_done_ms": 3324
+  },
+  {
+   "clip": 3,
+   "partials": 4,
+   "open_ms": 337,
+   "stream_start_ms": 419,
+   "first_partial_after_audio_start_ms": 754,
+   "final_after_done_ms": 3405,
+   "text": "Move window to workspace two.",
+   "finish_after_done_ms": 3405
+  },
+  {
+   "clip": 4,
+   "partials": 2,
+   "open_ms": 200,
+   "stream_start_ms": 305,
+   "first_partial_after_audio_start_ms": 698,
+   "final_after_done_ms": 3258,
+   "text": "Focus, kitty.",
+   "finish_after_done_ms": 3258
+  },
+  {
+   "clip": 5,
+   "partials": 1,
+   "open_ms": 289,
+   "stream_start_ms": 367,
+   "first_partial_after_audio_start_ms": 1261,
+   "final_after_done_ms": 3300,
+   "text": "Toggle full screen.",
+   "finish_after_done_ms": 3300
+  },
+  {
+   "clip": 6,
+   "partials": 3,
+   "open_ms": 328,
+   "stream_start_ms": 406,
+   "first_partial_after_audio_start_ms": 757,
+   "final_after_done_ms": 3300,
+   "text": "Open Obsidian.",
+   "finish_after_done_ms": 3300
+  },
+  {
+   "clip": 7,
+   "partials": 1,
+   "open_ms": 190,
+   "stream_start_ms": 269,
+   "first_partial_after_audio_start_ms": 1221,
+   "final_after_done_ms": 3371,
+   "text": "Scroll down.",
+   "finish_after_done_ms": 3371
+  }
+ ],
+ "spacexai/grok-stt": [
+  {
+   "clip": 0,
+   "partials": 1,
+   "open_ms": 210,
+   "stream_start_ms": 690,
+   "first_partial_after_audio_start_ms": 1633,
+   "final_after_done_ms": 352,
+   "text": "Switch to workspace three.",
+   "finish_after_done_ms": 352
+  },
+  {
+   "clip": 1,
+   "partials": 1,
+   "open_ms": 225,
+   "stream_start_ms": 743,
+   "first_partial_after_audio_start_ms": 1671,
+   "final_after_done_ms": 530,
+   "text": "Open Firefox.",
+   "finish_after_done_ms": 531
+  },
+  {
+   "clip": 2,
+   "partials": 1,
+   "open_ms": 419,
+   "stream_start_ms": 914,
+   "first_partial_after_audio_start_ms": 1843,
+   "final_after_done_ms": 842,
+   "text": "Close this window.",
+   "finish_after_done_ms": 842
+  },
+  {
+   "clip": 3,
+   "partials": 1,
+   "open_ms": 225,
+   "stream_start_ms": 712,
+   "first_partial_after_audio_start_ms": 1965,
+   "final_after_done_ms": 384,
+   "text": "Move window to workspace two.",
+   "finish_after_done_ms": 384
+  },
+  {
+   "clip": 4,
+   "partials": 1,
+   "open_ms": 190,
+   "stream_start_ms": 683,
+   "first_partial_after_audio_start_ms": 1454,
+   "final_after_done_ms": 592,
+   "text": "Focus, kitty.",
+   "finish_after_done_ms": 592
+  },
+  {
+   "clip": 5,
+   "partials": 1,
+   "open_ms": 432,
+   "stream_start_ms": 935,
+   "first_partial_after_audio_start_ms": 1535,
+   "final_after_done_ms": 494,
+   "text": "Toggle full screen.",
+   "finish_after_done_ms": 494
+  },
+  {
+   "clip": 6,
+   "partials": 1,
+   "open_ms": 215,
+   "stream_start_ms": 714,
+   "first_partial_after_audio_start_ms": 1646,
+   "final_after_done_ms": 646,
+   "text": "Open Obsidian.",
+   "finish_after_done_ms": 646
+  },
+  {
+   "clip": 7,
+   "partials": 1,
+   "open_ms": 337,
+   "stream_start_ms": 842,
+   "first_partial_after_audio_start_ms": 1205,
+   "final_after_done_ms": 344,
+   "text": "Scroll down.",
+   "finish_after_done_ms": 345
+  },
+  {
+   "clip": 0,
+   "partials": 1,
+   "open_ms": 194,
+   "stream_start_ms": 690,
+   "first_partial_after_audio_start_ms": 1672,
+   "final_after_done_ms": 391,
+   "text": "Switch to workspace three.",
+   "finish_after_done_ms": 391
+  },
+  {
+   "clip": 1,
+   "partials": 1,
+   "open_ms": 180,
+   "stream_start_ms": 643,
+   "first_partial_after_audio_start_ms": 1504,
+   "final_after_done_ms": 362,
+   "text": "Open Firefox.",
+   "finish_after_done_ms": 362
+  },
+  {
+   "clip": 2,
+   "partials": 1,
+   "open_ms": 508,
+   "stream_start_ms": 1014,
+   "first_partial_after_audio_start_ms": 1454,
+   "final_after_done_ms": 454,
+   "text": "Close this window.",
+   "finish_after_done_ms": 454
+  },
+  {
+   "clip": 3,
+   "partials": 1,
+   "open_ms": 434,
+   "stream_start_ms": 933,
+   "first_partial_after_audio_start_ms": 2047,
+   "final_after_done_ms": 466,
+   "text": "Move window to workspace two.",
+   "finish_after_done_ms": 466
+  },
+  {
+   "clip": 4,
+   "partials": 1,
+   "open_ms": 203,
+   "stream_start_ms": 701,
+   "first_partial_after_audio_start_ms": 1254,
+   "final_after_done_ms": 394,
+   "text": "Focus, kitty.",
+   "finish_after_done_ms": 394
+  },
+  {
+   "clip": 5,
+   "partials": 1,
+   "open_ms": 191,
+   "stream_start_ms": 678,
+   "first_partial_after_audio_start_ms": 1471,
+   "final_after_done_ms": 430,
+   "text": "Toggle full screen.",
+   "finish_after_done_ms": 430
+  },
+  {
+   "clip": 6,
+   "partials": 1,
+   "open_ms": 209,
+   "stream_start_ms": 692,
+   "first_partial_after_audio_start_ms": 1394,
+   "final_after_done_ms": 394,
+   "text": "Open Obsidian.",
+   "finish_after_done_ms": 394
+  },
+  {
+   "clip": 7,
+   "partials": 1,
+   "open_ms": 238,
+   "stream_start_ms": 750,
+   "first_partial_after_audio_start_ms": 1482,
+   "final_after_done_ms": 621,
+   "text": "Scroll down.",
+   "finish_after_done_ms": 621
+  }
+ ]
+}
