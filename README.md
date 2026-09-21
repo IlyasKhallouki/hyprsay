@@ -105,7 +105,15 @@ uv run hyprsay setup        # speech model (about 130 MB), default config, your 
 uv run hyprsay doctor       # what works, what is missing
 ```
 
-Add the two lines `hyprsay binds` prints to your Hyprland config (default `SUPER` + backtick; it warns if that key is already bound), then:
+Then try it without changing anything permanent:
+
+```sh
+uv run hyprsay try      # temporary key binding, engine and overlay. Ctrl-C puts it all back
+```
+
+Hold `SUPER` and the backtick key, say "workspace three", let go. When you want it always
+running, add the two lines `hyprsay binds` prints to your Hyprland config and install the
+services:
 
 ```sh
 uv run hyprsay setup --units    # installs and starts the systemd user units

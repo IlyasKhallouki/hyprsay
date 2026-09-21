@@ -1,5 +1,7 @@
 """hyprsay on the command line.
 
+hyprsay try                 everything at once, for a trial: a temporary key binding, the
+                            engine and the overlay. Ctrl-C puts your session back
 hyprsay run                 the engine (normally started by the systemd user unit)
 hyprsay say "open firefox"  run a typed sentence through the real pipeline; dry run
                             unless --act. The way to test understanding without a mic.
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -31,6 +34,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"hyprsay {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="run the engine")
+    trial = sub.add_parser("try", help="engine, overlay and a temporary bind, until Ctrl-C")
+    trial.add_argument("--key", default="", help="MODS, KEY in Hyprland form")
     say = sub.add_parser("say", help="understand a typed sentence against the live desktop")
     say.add_argument("text")
     say.add_argument("--act", action="store_true", help="carry the decision out (default: dry run)")
@@ -63,6 +68,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     handler = {
         "run": _run,
+        "try": _try,
         "say": _say,
         "replay": _replay,
         "record": _record,
@@ -79,6 +85,69 @@ def _run(cfg, args) -> int:
     from . import daemon
 
     return daemon.main(cfg)
+
+
+def _try(cfg, args) -> int:
+    """Engine, overlay and a temporary key binding, undone on the way out.
+
+    A first run should not require editing a config file that a mistake would leave
+    broken. `hyprctl keyword bind` lasts until the compositor reloads, so a trial can be
+    handed back exactly as it was found.
+    """
+    import signal
+    import subprocess
+
+    from . import daemon
+    from .activation import DEFAULT_KEY, bind_lines, conflicts
+    from .world import HyprSocket, HyprSocketError, snapshot
+
+    sock = HyprSocket()
+    key = args.key or DEFAULT_KEY
+    try:
+        state = snapshot(sock)
+        clashes = conflicts(key, sock.query("binds"))
+    except (HyprSocketError, OSError, ValueError) as exc:
+        print(f"hyprsay: cannot reach Hyprland: {exc}", file=sys.stderr)
+        return 1
+    if clashes:
+        print(f"hyprsay: {key} is already bound to {clashes[0]}. Choose another with --key.",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    if state.provider != "hyprlang":
+        print(f"hyprsay: the {state.provider} config provider is not supported yet",
+              file=sys.stderr)  # fmt: skip
+        return 1
+
+    lines = bind_lines(state.provider, key, transport=cfg.ptt.transport)
+    bound: list[str] = []
+    hud: subprocess.Popen | None = None
+    try:
+        for line in lines:
+            keyword, _, rest = line.partition(" = ")
+            sock.request(f"keyword {keyword} {rest}")
+            bound.append(key)
+        hud_script = Path(__file__).resolve().parents[2] / "hud" / "hyprsay_hud.py"
+        if hud_script.exists():
+            hud = subprocess.Popen(
+                ["/usr/bin/python3", str(hud_script)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        held = key.replace(",", " +").strip()
+        print(f"hold {held} and say something. Ctrl-C to stop.\n")
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        return daemon.main(cfg)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        if hud is not None:
+            hud.terminate()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                hud.wait(timeout=3)
+        for _ in bound:
+            with contextlib.suppress(Exception):
+                sock.request(f"keyword unbind {key}")
+        print("\nyour session is back as it was: the temporary binding is gone.")
 
 
 # ------------------------------------------------------------------------------ say

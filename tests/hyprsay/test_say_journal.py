@@ -101,3 +101,92 @@ def test_setup_offers_the_default_key_not_a_hardcoded_one(monkeypatch, capsys):
     cli._setup(cli.config.Config(), argparse.Namespace(units=False))
     assert shown == [""]  # empty asks for the default, which _binds then checks for conflicts
     assert "V" not in DEFAULT_KEY  # and the default is no longer the clipboard key
+
+
+# --------------------------------------------------------------------------- hyprsay try
+
+
+class TrialSocket:
+    """A compositor that records the keyword commands it is sent."""
+
+    def __init__(self, binds=(), provider="hyprlang"):
+        self.sent: list[str] = []
+        self._binds = list(binds)
+        self.provider = provider
+
+    def request(self, command):
+        self.sent.append(command)
+        return "ok"
+
+    def query(self, command):
+        return self._binds if command == "binds" else []
+
+    @property
+    def keywords(self):
+        return [c for c in self.sent if c.startswith("keyword")]
+
+
+def trial(monkeypatch, socket, *, daemon_result=0, daemon_raises=None, key=""):
+    """Run cli._try with the compositor, the HUD and the daemon replaced."""
+    import argparse
+
+    from hyprsay import cli, daemon, world
+    from hyprsay.model import DesktopState
+
+    monkeypatch.setattr(world, "HyprSocket", lambda *a, **k: socket)
+    monkeypatch.setattr(world, "snapshot", lambda s: DesktopState(provider=socket.provider))
+    started: list[list[str]] = []
+
+    class Hud:
+        def __init__(self, argv, **kwargs):
+            started.append(argv)
+            self.terminated = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr("subprocess.Popen", Hud)
+
+    def run(cfg):
+        if daemon_raises is not None:
+            raise daemon_raises
+        return daemon_result
+
+    monkeypatch.setattr(daemon, "main", run)
+    code = cli._try(cli.config.Config(), argparse.Namespace(key=key))
+    return code, started
+
+
+def test_a_trial_installs_both_bindings_and_removes_them_on_the_way_out(monkeypatch):
+    socket = TrialSocket()
+    code, started = trial(monkeypatch, socket)
+    assert code == 0
+    assert socket.keywords[0].startswith("keyword bind SUPER, grave, event, hyprsay:down")
+    assert socket.keywords[1].startswith("keyword bindr SUPER, grave, event, hyprsay:up")
+    assert socket.keywords[-1] == "keyword unbind SUPER, grave"
+    assert started and started[0][0] == "/usr/bin/python3"
+
+
+def test_a_trial_puts_the_session_back_even_when_the_engine_crashes(monkeypatch):
+    socket = TrialSocket()
+    with pytest.raises(RuntimeError):
+        trial(monkeypatch, socket, daemon_raises=RuntimeError("boom"))
+    assert any(c.startswith("keyword unbind") for c in socket.keywords)
+
+
+def test_a_trial_refuses_a_key_that_is_already_bound_and_touches_nothing(monkeypatch):
+    taken = [{"modmask": 64, "key": "grave", "description": "terminal"}]
+    socket = TrialSocket(binds=taken)
+    code, started = trial(monkeypatch, socket)
+    assert code == 1
+    assert socket.keywords == [] and started == []
+
+
+def test_a_trial_refuses_the_lua_provider_rather_than_guessing_its_syntax(monkeypatch):
+    socket = TrialSocket(provider="lua")
+    code, started = trial(monkeypatch, socket)
+    assert code == 1
+    assert socket.keywords == [] and started == []
