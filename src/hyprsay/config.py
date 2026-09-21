@@ -22,8 +22,10 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True)
 class PTT:
-    # "event": bind/bindr -> `event` dispatcher -> socket2 custom>> (zero dependencies)
-    # "global": hyprland_global_shortcuts_v1 (in-process, not forgeable through socket2)
+    # "event": bind/bindr -> `event` dispatcher -> socket2 custom>> (zero dependencies).
+    # The global-shortcuts transport (hyprland_global_shortcuts_v1, not forgeable through
+    # socket2) is implemented in activation.py and tested, but nothing constructs it yet,
+    # so it is not offered here: choosing it would leave the daemon hearing nothing.
     transport: str = "event"
     max_hold_s: float = 15.0
     # tap once to start, tap again to stop, instead of holding
@@ -131,7 +133,7 @@ class Config:
 
 
 _CHOICES = {
-    ("ptt", "transport"): {"event", "global"},
+    ("ptt", "transport"): {"event"},
     ("stt", "backend"): {"hybrid", "local", "cloud"},
     ("stt", "local_model"): {"parakeet-110m", "moonshine-tiny"},
     ("jev", "route"): {"typesafe", "evaluate"},

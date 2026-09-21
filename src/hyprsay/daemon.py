@@ -59,6 +59,7 @@ class Engine:
         self._meter: asyncio.Task | None = None
         self._confirm: asyncio.Future | None = None
         self._lock_watch: asyncio.Task | None = None
+        self._cancelled = False
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -125,6 +126,7 @@ class Engine:
         if self._pending and not self._pending.done():
             self._pending.cancel()
             log.info("pending action cancelled: %s", why)
+        self._cancelled = True
         if forget_badges:
             # NOT on an ordinary key press: the key has to go down to say the number, so
             # clearing here would make every numbered hint and swap impossible to answer
@@ -210,7 +212,13 @@ class Engine:
         await self._show("thinking")
         started = time.perf_counter()
         transcript = await self.recognizer.transcribe(pcm, 16000)
+        # decoding takes a sixth of a second and Jev another third: the screen can lock
+        # inside that window, and nothing about this utterance may travel afterwards
+        if await self._locked_now():
+            return await self._drop_for_lock()
         decision = await self._understand(transcript)
+        if await self._locked_now():
+            return await self._drop_for_lock()
 
         # the local transcript led nowhere: ask the cloud about the SAME audio, once.
         # Cloud models held 8 of 8 on degraded audio where local fell to 6 or 7 (measured).
@@ -231,6 +239,8 @@ class Engine:
                 ):
                     transcript, decision = second, await self._understand(second)
 
+        if await self._locked_now():
+            return await self._drop_for_lock()
         journal.record(
             "utterance",
             seconds=round(seconds, 2),
@@ -244,6 +254,14 @@ class Engine:
             exchange=getattr(self.understander, "last_exchange", None),
         )
         await self._carry_out(decision)
+
+    async def _locked_now(self) -> bool:
+        """Ask the latch, off the loop: it may shell out to loginctl."""
+        return await asyncio.to_thread(self.latch.locked)
+
+    async def _drop_for_lock(self) -> None:
+        self._forget_everything("session locked")
+        await self._show("refused", text="session is locked", ttl_ms=1500)
 
     async def _understand(self, transcript: Transcript) -> Decision:
         picking = self._picking if time.monotonic() < self._picking_until else ()
@@ -304,19 +322,26 @@ class Engine:
 
     async def _countdown(self, action: Action, d: Decision) -> None:
         """Tier 2. Any key press during the countdown cancels it (see _key_down)."""
-        total = self.cfg.safety.countdown_s
-        await self.hud.send(
-            {**self.hud.from_decision(d, self.world.state), "countdown_ms": int(total * 1000)}
-        )
+        self._cancelled = False
+        await self.hud.send(self.hud.from_decision(d, self.world.state))
         try:
-            await asyncio.sleep(total)
+            await asyncio.sleep(self.cfg.safety.countdown_s)
         except asyncio.CancelledError:
             await self._show("refused", text="cancelled", ttl_ms=1200)
             raise
-        # the executor checks the lock again; this avoids even showing a success chip
-        if self.latch.locked():
+        if await self._locked_now() or self._cancelled:
             return
-        await self._act(action, d)
+        # past this point the window really does close, so a cancel that arrives now is
+        # too late to stop it. Shield the call rather than let the cancellation unwind
+        # silently: the user must be told what happened, and the journal must have it.
+        running = asyncio.ensure_future(self._act(action, d))
+        try:
+            await asyncio.shield(running)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await running
+            await self._show("heard", text="too late to cancel", chip=action.describe())
+            raise
 
     async def _confirm_by_key(self, action: Action, d: Decision) -> None:
         """Tier 3. A spoken 'confirm' would share the channel it authenticates, so the
@@ -400,7 +425,7 @@ def build(cfg: Config) -> Engine:
         understander=Understander(cfg, lexicon, Grammar(), client),
         executor=Executor(cfg, lambda: world.state, latch, lexicon),
         latch=latch,
-        hud=HudServer(),
+        hud=HudServer(hud=cfg.hud, countdown_s=cfg.safety.countdown_s),
         jev=client,
     )
 

@@ -151,13 +151,14 @@ packaging/     systemd user units, AUR recipe, example binds in both dialects
 
 ### 5.1 Activation
 
-Default **transport B**: the engine registers `hyprsay:ptt` through
+Implemented but NOT yet wired into the engine, so `config.toml` refuses it for now:
+**transport B**, where the engine registers `hyprsay:ptt` through
 `hyprland_global_shortcuts_manager_v1` (advertised by the live compositor [O]; hypruse's
 `wire.py` already binds registry globals) and the user adds `bind = SUPER, V, global, hyprsay:ptt`.
 Press and release arrive in-process: no process spawn (a Python cold start is 95 to 240 ms [V])
 and nothing another local client can forge through socket2.
 
-Fallback transport A: `bind ... event, hyprsay:down` and `bindr ... event, hyprsay:up`, read
+The transport in use is A: `bind ... event, hyprsay:down` and `bindr ... event, hyprsay:up`, read
 from socket2 as `custom>>`. Zero dependencies, with two documented weaknesses: any client that
 can reach `.socket.sock` can emit the event, and the release bind never fires if the session
 locks mid-hold [S]. P0 exercises both live; `bindr` has never been run on this machine.

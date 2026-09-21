@@ -6,6 +6,8 @@ utterance cannot take the daemon down. No microphone, no network, no compositor.
 """
 
 import asyncio
+import contextlib
+import time
 from dataclasses import replace
 
 import pytest
@@ -564,3 +566,88 @@ def test_a_silent_clip_is_never_uploaded_even_though_the_key_clicked():
     e, p = engine(recorder=Recorder(spoke=False), recognizer=recognizer)
     run(utter(e, p))
     assert recognizer.calls == 0 and recognizer.rescues == 0
+
+
+def test_a_lock_during_decoding_drops_the_utterance_before_it_is_understood():
+    class Locking(Recognizer):
+        def __init__(self, latch):
+            super().__init__()
+            self.latch = latch
+
+        async def transcribe(self, pcm, sample_rate):
+            self.latch.value = True  # the screen locks while the model is working
+            return await super().transcribe(pcm, sample_rate)
+
+    latch = Latch()
+    e, p = engine(recognizer=Locking(latch), latch=latch)
+    run(utter(e, p))
+    assert p["understander"].seen == []  # never reached the model
+    assert p["executor"].executed == []
+    assert p["hud"].sent[-1]["state"] == "refused"
+
+
+def test_a_lock_after_understanding_still_stops_the_action():
+    class LockOnUnderstand(Understander):
+        def __init__(self, decisions, latch):
+            super().__init__(decisions)
+            self.latch = latch
+
+        async def understand(self, transcript, state, **kwargs):
+            decision = await super().understand(transcript, state, **kwargs)
+            self.latch.value = True
+            return decision
+
+    latch = Latch()
+    e, p = engine(
+        understander=LockOnUnderstand({"focus firefox": Decision(Verdict.ACT, FOCUS)}, latch),
+        latch=latch,
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == []
+
+
+class SlowExecutor(Executor):
+    """Closing a window takes real time, so a cancel can land while it is happening."""
+
+    def execute(self, action, *, pinned_address=""):
+        time.sleep(0.15)
+        return super().execute(action, pinned_address=pinned_address)
+
+
+def test_a_cancel_that_lands_while_the_action_runs_says_it_was_too_late():
+    # the window really does close: swallowing the cancellation would leave the user
+    # believing they stopped it
+    e, p = engine(
+        {"focus firefox": Decision(Verdict.COUNTDOWN, CLOSE, tier=2)},
+        cfg=fast(0.01),
+        executor=SlowExecutor(),
+    )
+
+    async def go():
+        await utter(e, p)
+        await asyncio.sleep(0.06)  # the countdown has expired; the close is under way
+        e._cancel_pending("key pressed")
+        with contextlib.suppress(asyncio.CancelledError):
+            await e._pending
+
+    run(go())
+    assert p["executor"].executed == [CLOSE]  # it happened
+    assert any("too late" in str(m.get("text", "")) for m in p["hud"].sent)  # and was said
+
+
+def test_a_cancel_before_the_action_starts_still_stops_it():
+    e, p = engine(
+        {"focus firefox": Decision(Verdict.COUNTDOWN, CLOSE, tier=2)},
+        cfg=fast(0.4),
+        executor=SlowExecutor(),
+    )
+
+    async def go():
+        await utter(e, p)
+        await asyncio.sleep(0.02)  # well inside the countdown
+        e._cancel_pending("key pressed")
+        with contextlib.suppress(asyncio.CancelledError):
+            await e._pending
+
+    run(go())
+    assert p["executor"].executed == []

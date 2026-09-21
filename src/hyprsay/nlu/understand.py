@@ -453,7 +453,7 @@ class Understander:
             Action(Intent.LAUNCH_APP, app=app),
             (candidate,),
             tier=1,
-            reason=f"no {app.name} window is open; say 1 to launch it",
+            reason=f'no {app.name} window is open; say "open {app.name.lower()}" to start it',
             suggestions=(f"open {app.name.lower()}",),
             heard=heard.said,
         )
