@@ -41,7 +41,8 @@ The brief called Jev "deterministic" and "hyperfast". Neither survived measureme
 | Eight identical questions inside one request disagree with each other (median spread 0.08), but averaging them cut stdev only 0.059 to 0.040 (n=19, indicative). Noise is partly shared per request. Averaging **across** requests was never tested. | [M] | In-request ensembling is weak. Cross-request ensembling is a P0 experiment. |
 | Tokens are predictable: `250 + 0.424*state_chars + 0.339*question_chars - 11.7*n_questions`, worst error 2.9 percent over 8 requests. | [M] | The client refuses oversized requests before sending. |
 | Streaming recognition is not viable on this CPU (i5-8350U, no GPU). One-shot decode with Moonshine Tiny: median 120 ms (researcher) and 166 ms (checker, range 123 to 372) for clips of 0.85 to 1.56 s, real-time factor about 0.12 to 0.17, on a machine loaded to 16 to 27. Parakeet 110M slowed 3.2x under load. | [R][V], 8 synthetic clips | Buffer and decode once. Decode time scales with utterance length. Rerun idle with a real microphone. |
-| Best independent figure for a gateway speech model is 458 ms median, measured direct to provider. No live gateway speech call was made. | [V] desk research | Speech to text stays local. |
+| Speech to text, measured on the **idle** machine, eight 0.85 to 1.56 s command clips, n=24 each: local Moonshine Tiny 30 ms p50, local Parakeet 110M 93 ms; through the gateway fish transcribe-1 452 ms, gpt-4o-mini-transcribe 697, grok-stt 699 (442 ms from key release when streamed), gpt-4o-transcribe 715, whisper-1 1164 (max 6121), gemini-3.5-transcribe 3180, and gemini-3.5-transcribe-live 3322 ms from key release even when streamed. The earlier 120 to 170 ms local figure came from a loaded machine and was pessimistic. | [M] `stt_bakeoff_out.json`, `stt_streaming_out.json` | Local is 15 to 100 times faster. Gemini and Whisper are not viable for commands. |
+| On degraded audio (8 commands per condition) the cloud models fish and gpt-4o-mini got 8 of 8 in every condition; local fell to 6 or 7 of 8 on a simulated bad laptop mic. All of Parakeet's misses and all but one of Moonshine's were of the kind the normalizer repairs ("workspace too", "work space three", "Taggle", "firefuck"). Synthetic voice only; the owner's accent is still untested. | [M] `stt_noise_out.json`, indicative | **Hybrid by default**: local Parakeet 110M first; when the transcript yields no confident decision, the same buffered clip goes to a gateway model and the command is retried once. `stt.backend = cloud` is a config line. |
 | `hyprctl` as a subprocess costs 6 to 22 ms; the same request over Hyprland's socket 0.1 to 0.3 ms. | [R][V] | Replace hypruse's transport with a raw socket client. |
 | Hyprland does not gate IPC dispatch on the session lock. Ordinary binds are skipped while locked (`KeybindManager.cpp:649`), so a release bind never fires if the lock lands mid-hold. socket2 has no session-lock event. `hyprland_lock_notifier_v1` is registered. | [S] Hyprland 0.56.2 | The lock needs a pushed latch, checked repeatedly, and a maximum hold. |
 | All 22 trust-guard call sites, and `launch`, `use_bind`, `keyboard`, `hypr`, live in hypruse's `server.py`. `input.py` calls no guard. `guard_password_field` fails open by design. | [S] fork source | "Drop the MCP surface" must not mean dropping `server.py`. |
@@ -150,20 +151,25 @@ packaging/     systemd user units, AUR recipe, example binds in both dialects
 
 ### 5.1 Activation
 
-Default **transport B**: the engine registers `hyprsay:ptt` through
+Implemented but NOT yet wired into the engine, so `config.toml` refuses it for now:
+**transport B**, where the engine registers `hyprsay:ptt` through
 `hyprland_global_shortcuts_manager_v1` (advertised by the live compositor [O]; hypruse's
 `wire.py` already binds registry globals) and the user adds `bind = SUPER, V, global, hyprsay:ptt`.
 Press and release arrive in-process: no process spawn (a Python cold start is 95 to 240 ms [V])
 and nothing another local client can forge through socket2.
 
-Fallback transport A: `bind ... event, hyprsay:down` and `bindr ... event, hyprsay:up`, read
+The transport in use is A: `bind ... event, hyprsay:down` and `bindr ... event, hyprsay:up`, read
 from socket2 as `custom>>`. Zero dependencies, with two documented weaknesses: any client that
 can reach `.socket.sock` can emit the event, and the release bind never fires if the session
 locks mid-hold [S]. P0 exercises both live; `bindr` has never been run on this machine.
 
 Both transports enforce a maximum hold (default 15 s) and require a fresh down and up pair per
-utterance. Key down prewarms the Jev connection: a cold first call took about 1.2 s [O], and
-speech outlasts a handshake, so no keepalive pings are needed.
+utterance. Key down prewarms the Jev connection with one unauthenticated GET. Measured on new
+connections, interleaved, n=10 each: with no prewarm the first evaluation takes 526 ms p50
+(399 to 832); after the GET it takes 325 ms (259 to 605), the same as steady state; adding a
+small authenticated call on top buys nothing (338 ms) [M]. The GET itself takes about 250 ms,
+less than anyone spends speaking, so no keepalive pings are needed. What is still unknown is
+how long an idle connection survives (section 11).
 
 ### 5.2 Capture and speech to text
 
@@ -360,7 +366,9 @@ toolkit combination was run live on this session [V]. Load `libgtk4-layer-shell.
 - The utterance itself is sensitive and is sent on every semantic command. `inspect --last`
   prints exactly what went out. `providerOptions.gateway.zeroDataRetention` is requested once P0
   confirms route B accepts it; the gateway's own catalog lists Jev as `zdr: all`, `no_training: all` [D].
-- Audio never leaves the machine in v1. The key is read from `AI_GATEWAY_API_KEY` or
+- Audio stays on the machine, with one exception that is on by default: in `hybrid` mode, when
+  the local transcript yields no confident decision, that one clip goes to a gateway speech model.
+  `stt.backend = "local"` removes the exception. See `docs/PRIVACY.md`. The key is read from `AI_GATEWAY_API_KEY` or
   `~/.config/hyprsay/ai-gateway.key` (0600) and never reaches a log, a repr or an exception.
 - Voice is an unauthenticated channel. Push to talk is the main mitigation; tiers, the trusted
   anchor rule and the physical-key confirm are the rest. `docs/PRIVACY.md` is written in P0 with

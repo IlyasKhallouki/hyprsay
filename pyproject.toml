@@ -20,7 +20,17 @@ classifiers = [
     "Topic :: Desktop Environment :: Window Managers",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["mcp>=1.2,<2"]
+dependencies = [
+    "mcp>=1.2,<2",
+    # hyprsay: the Jev transport, audio capture, and the local recognizer
+    "httpx[http2]>=0.27",
+    "numpy>=2",
+    "sounddevice>=0.5",
+    "sherpa-onnx>=1.13",
+    # carries libonnxruntime.so; sherpa-onnx imports without it but cannot load
+    "sherpa-onnx-core>=1.13",
+    "websockets>=13",
+]
 
 [project.urls]
 Homepage = "https://github.com/IlyasKhallouki/hypruse"
@@ -28,6 +38,7 @@ Issues = "https://github.com/IlyasKhallouki/hypruse/issues"
 
 [project.scripts]
 hypruse = "hypruse.cli:main"
+hyprsay = "hyprsay.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -48,9 +59,7 @@ include = [
 ]
 
 [dependency-groups]
-# httpx is the Jev client's transport; it moves to the runtime dependencies when
-# the package is renamed in P1
-dev = ["pytest>=8", "ruff>=0.6", "httpx[http2]>=0.27"]
+dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.ruff]
 line-length = 100

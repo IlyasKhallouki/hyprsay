@@ -1,0 +1,477 @@
+"""The engine: key down, speak, key up, and the thing happens.
+
+One asyncio loop owns the conversation with the user. Everything slow or blocking is
+pushed off it: the recognizer decodes in a thread, Jev is awaited, and every write to
+the desktop runs on ONE worker thread because the inherited hypruse core keeps
+process-global state.
+
+The order of checks is the safety design, not an implementation detail:
+
+    key down   -> locked? refuse. Pin the focused window. Open the mic. Warm Jev.
+    key up     -> locked? drop the audio. Decode. Understand. (Cloud rescue, once.)
+    decision   -> the verdict says how much ceremony the action needs
+    act        -> the executor re-checks the lock and the target against FRESH state
+
+A session lock at any point drops the utterance, cancels any countdown, closes the
+microphone and zeroes the buffer. Hyprland skips ordinary binds while locked, so the
+key-up never arrives in that case; the lock latch forces it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import signal
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+
+from . import journal
+from .config import Config
+from .model import Action, Candidate, Decision, Intent, Outcome, Transcript, Verdict
+
+log = logging.getLogger("hyprsay")
+
+# shorter than this is a stray tap, not speech
+MIN_UTTERANCE_S = 0.25
+# a confirming tap for tier 3 must be this short, so it cannot be a new utterance
+CONFIRM_TAP_S = 0.5
+CONFIRM_WINDOW_S = 4.0
+LOCK_POLL_S = 0.25
+
+
+class Engine:
+    def __init__(self, cfg: Config, *, world, ptt, recorder, recognizer, understander, executor,
+                 latch, hud, jev=None) -> None:  # fmt: skip
+        self.cfg = cfg
+        self.world, self.ptt, self.recorder = world, ptt, recorder
+        self.recognizer, self.understander = recognizer, understander
+        self.executor, self.latch, self.hud, self.jev = executor, latch, hud, jev
+        # one thread: the inherited core is not safe to call concurrently
+        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hyprsay-act")
+        self._pinned = ""
+        self._down_at = 0.0
+        # badges on screen: the next utterance may be a bare number
+        self._picking: tuple[Candidate, ...] = ()
+        self._picking_until = 0.0
+        self._pending: asyncio.Task | None = None  # a countdown or a confirm wait
+        self._meter: asyncio.Task | None = None
+        self._confirm: asyncio.Future | None = None
+        self._lock_watch: asyncio.Task | None = None
+        self._cancelled = False
+        self._running: set[asyncio.Task] = set()
+        self._pipeline = asyncio.Lock()
+
+    # ------------------------------------------------------------------ lifecycle
+
+    async def run(self) -> None:
+        self.latch.on_lock(self._on_lock)
+        self.world.on_custom(self.ptt.feed_custom)
+        tasks = [
+            asyncio.create_task(self.world.run()),
+            asyncio.create_task(self.hud.start()),
+            asyncio.create_task(self._warm_speech()),
+        ]
+        try:
+            async for event in self.ptt.events():
+                try:
+                    if event.kind == "down":
+                        await self._key_down()
+                    else:
+                        # the rest of the utterance (decode, Jev, act) takes half a
+                        # second or more. Awaiting it here meant the next key press
+                        # opened the microphone that much late and the first word of
+                        # the next command was lost, so it runs alongside instead.
+                        self._track(self._key_up(event.reason))
+                except Exception:  # one bad utterance must never kill the daemon
+                    log.exception("utterance failed")
+                    await self._show("refused", text="internal error, see the log")
+        finally:
+            for task in (*tasks, *self._running):
+                task.cancel()
+            self._worker.shutdown(wait=False, cancel_futures=True)
+            with contextlib.suppress(Exception):
+                await self.hud.close()
+
+    def _track(self, coro) -> asyncio.Task:
+        """Run an utterance to its end without holding up the next key press."""
+
+        async def guarded() -> None:
+            # one at a time: the executor has a single worker, and two pipelines racing
+            # would interleave their overlay states
+            async with self._pipeline:
+                try:
+                    await coro
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("utterance failed")
+                    await self._show("refused", text="internal error, see the log")
+
+        task = asyncio.create_task(guarded())
+        self._running.add(task)
+        task.add_done_callback(self._running.discard)
+        return task
+
+    async def _warm_speech(self) -> None:
+        """Load the speech model now, not on the first command.
+
+        Found on the live system: the model loaded lazily inside the first decode, so the
+        first thing anyone said waited 2 to 6 s, and a SIGTERM during that load hung the
+        shutdown. One throwaway inference follows the load because the first real decode
+        is the slow one too (450 ms measured, against about 165 ms after it).
+        """
+        warm = getattr(self.recognizer, "warm", None)
+        if warm is None:
+            return
+        started = time.perf_counter()
+        try:
+            await warm()
+            await self.recognizer.transcribe(b"\0\0" * 3200, 16000)
+        except Exception as exc:
+            log.warning("speech model is not ready: %s", exc)
+            await self._show("refused", text=f"speech model: {exc}", ttl_ms=6000)
+            return
+        log.info("speech model ready in %.1f s", time.perf_counter() - started)
+
+    def _on_lock(self) -> None:
+        """The session locked. Runs from whatever thread noticed; touch nothing async here."""
+        self.recorder.abort()
+        self.ptt.force_up("locked")
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(self._forget_everything, "session locked")
+
+    _loop: asyncio.AbstractEventLoop | None = None
+
+    def _forget_everything(self, why: str) -> None:
+        self._cancel_pending(why, forget_badges=True)
+
+    def _cancel_pending(self, why: str, *, forget_badges: bool = False) -> None:
+        if self._pending and not self._pending.done():
+            self._pending.cancel()
+            log.info("pending action cancelled: %s", why)
+        self._cancelled = True
+        if forget_badges:
+            # NOT on an ordinary key press: the key has to go down to say the number, so
+            # clearing here would make every numbered hint and swap impossible to answer
+            self._picking = ()
+
+    # ------------------------------------------------------------------ key down
+
+    async def _key_down(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        now = time.monotonic()
+        # a key press while a tier 3 action waits for its confirming tap
+        if self._confirm is not None and not self._confirm.done():
+            self._down_at = now
+            return
+        # any new press cancels a running countdown: that IS the cancel gesture
+        self._cancel_pending("key pressed")
+        if self.latch.locked():
+            await self._show("refused", text="session is locked", ttl_ms=1500)
+            return
+        self._pinned = self.world.state.active_address
+        self._down_at = now
+        try:
+            # opening the device blocks while PortAudio negotiates; keep the loop free
+            await asyncio.to_thread(self.recorder.start)
+        except Exception as exc:
+            await self._show("refused", text=f"microphone: {exc}", ttl_ms=3000)
+            return
+        if self.jev is not None:
+            # speech outlasts a handshake: 526 ms -> 325 ms on the first call (measured)
+            asyncio.create_task(self.jev.warm())
+        await self._show("hearing", level=0.0)
+        self._meter = asyncio.create_task(self._run_meter())
+        self._ensure_lock_watch()
+
+    def _ensure_lock_watch(self) -> None:
+        if self._lock_watch is None or self._lock_watch.done():
+            self._lock_watch = asyncio.create_task(self._watch_lock())
+
+    async def _watch_lock(self) -> None:
+        """Hyprland emits no lock event, and the latch only notices a lock when asked.
+
+        So while there is anything a lock must interrupt (a held key, a countdown, a
+        pending confirmation) ask it a few times a second. The latch fires `_on_lock` on
+        the edge. It can shell out to loginctl, so it runs off the loop.
+        """
+        with contextlib.suppress(asyncio.CancelledError):
+            while self.ptt.held or (self._pending is not None and not self._pending.done()):
+                await asyncio.to_thread(self.latch.locked)
+                await asyncio.sleep(LOCK_POLL_S)
+
+    async def _run_meter(self) -> None:
+        with contextlib.suppress(asyncio.CancelledError):
+            while True:
+                await asyncio.sleep(1 / 30)
+                await self.hud.send(
+                    {"t": "state", "state": "hearing", "level": self.recorder.level()}
+                )
+
+    # ------------------------------------------------------------------ key up
+
+    async def _key_up(self, reason: str) -> None:
+        if self._meter:
+            self._meter.cancel()
+            self._meter = None
+        held = time.monotonic() - self._down_at
+        if self._confirm is not None and not self._confirm.done():
+            # only a short, deliberate tap confirms; holding the key is a new utterance
+            self._confirm.set_result(held <= CONFIRM_TAP_S)
+            return
+        # ask BEFORE stopping: stop() wipes the recorder's own buffers
+        spoke = self.recorder.voiced_after(0.0)
+        pcm = self.recorder.stop()
+        # captured now: a second key press may repin before this utterance is understood
+        pinned = self._pinned
+        if reason == "locked" or self.latch.locked():
+            await self._show("refused", text="session is locked", ttl_ms=1500)
+            return
+        seconds = len(pcm) / 2 / 16000
+        if seconds < MIN_UTTERANCE_S or not spoke:
+            # a stray press, or a held key with nobody talking: nothing to decode, and
+            # above all nothing to send anywhere
+            await self._show("hidden")
+            return
+
+        await self._show("thinking")
+        started = time.perf_counter()
+        transcript = await self.recognizer.transcribe(pcm, 16000)
+        # decoding takes a sixth of a second and Jev another third: the screen can lock
+        # inside that window, and nothing about this utterance may travel afterwards
+        if await self._locked_now():
+            return await self._drop_for_lock()
+        decision = await self._understand(transcript, pinned)
+        if await self._locked_now():
+            return await self._drop_for_lock()
+
+        # the local transcript led nowhere: ask the cloud about the SAME audio, once.
+        # Cloud models held 8 of 8 on degraded audio where local fell to 6 or 7 (measured).
+        # Only what hearing the words again could fix. SUGGEST alone does not mean the
+        # recognizer failed: it is also how "Jev is off", "that sounded like dictation"
+        # and "hyprsay does not do that" come back, and uploading the clip for those
+        # sends audio the speaker had every reason to think stayed here.
+        rescue = getattr(self.recognizer, "rescue", None)
+        failed_locally = decision.rehearable or (not transcript.text.strip() and spoke)
+        if rescue is not None and failed_locally and not decision.dictation:
+            # no text on the overlay either: it may be the words being dictated
+            await self._show("still_thinking")
+            with contextlib.suppress(Exception):
+                second = await rescue(pcm, 16000)
+                if (
+                    second.text.strip()
+                    and second.text.strip().lower() != transcript.text.strip().lower()
+                ):
+                    transcript, decision = second, await self._understand(second, pinned)
+
+        if await self._locked_now():
+            return await self._drop_for_lock()
+        journal.record(
+            "utterance",
+            seconds=round(seconds, 2),
+            # the words of a dictation are the speaker's, not a command: the journal keeps
+            # their length and a hash, the same as it does for the text that gets typed
+            transcript=replace(transcript, text=journal.redact_text(transcript.text))
+            if decision.dictation
+            else transcript,
+            decision=decision,
+            ms=round((time.perf_counter() - started) * 1000),
+            exchange=getattr(self.understander, "last_exchange", None),
+        )
+        await self._carry_out(decision, pinned)
+
+    async def _locked_now(self) -> bool:
+        """Ask the latch, off the loop: it may shell out to loginctl."""
+        return await asyncio.to_thread(self.latch.locked)
+
+    async def _drop_for_lock(self) -> None:
+        self._forget_everything("session locked")
+        await self._show("refused", text="session is locked", ttl_ms=1500)
+
+    async def _understand(self, transcript: Transcript, pinned: str = "") -> Decision:
+        picking = self._picking if time.monotonic() < self._picking_until else ()
+        return await self.understander.understand(
+            transcript, self.world.state, pinned_address=pinned or self._pinned, picking=picking
+        )
+
+    # ------------------------------------------------------------------ decisions
+
+    async def _carry_out(self, d: Decision, pinned: str = "") -> None:
+        self._picking = ()
+        action = d.action
+        if action is not None and action.intent in (
+            Intent.UNDO,
+            Intent.AGAIN,
+            Intent.CANCEL,
+            Intent.HELP,
+        ):
+            await self._meta(action.intent, d)
+            return
+
+        if d.verdict is Verdict.ACT and action:
+            await self._act(action, d, pinned=pinned)
+        elif d.verdict is Verdict.ACT_SWAP and action:
+            # free to reverse: act now, and let a number re-target it (docs/PLAN.md 5.6)
+            if await self._act(action, d, badges=d.candidates):
+                self._arm_picking(d.candidates, self.cfg.hud.swap_timeout_s)
+        elif d.verdict is Verdict.HINTS:
+            self._arm_picking(d.candidates, self.cfg.hud.hint_timeout_s)
+            await self.hud.send(self.hud.from_decision(d, self.world.state))
+        elif d.verdict is Verdict.COUNTDOWN and action:
+            self._pending = asyncio.create_task(self._countdown(action, d))
+            self._ensure_lock_watch()
+        elif d.verdict is Verdict.CONFIRM_KEY and action:
+            self._pending = asyncio.create_task(self._confirm_by_key(action, d))
+            self._ensure_lock_watch()
+        elif d.verdict is Verdict.NOTHING:
+            await self._show("hidden")
+        else:  # REFUSE, SUGGEST
+            await self.hud.send(self.hud.from_decision(d, self.world.state))
+
+    def _arm_picking(self, candidates: tuple[Candidate, ...], seconds: float) -> None:
+        self._picking = candidates
+        self._picking_until = time.monotonic() + seconds
+
+    async def _act(
+        self, action: Action, d: Decision, badges: tuple[Candidate, ...] = (), *, pinned: str = ""
+    ) -> bool:
+        loop = asyncio.get_running_loop()
+        outcome: Outcome = await loop.run_in_executor(
+            self._worker,
+            lambda: self.executor.execute(action, pinned_address=pinned or self._pinned),
+        )
+        journal.record("action", action=action, ok=outcome.ok, message=outcome.message)
+        if not outcome.ok:
+            await self._show("refused", text=outcome.message, ttl_ms=2500)
+            return False
+        shown = replace(d, verdict=Verdict.ACT_SWAP if badges else Verdict.ACT)
+        await self.hud.send(self.hud.from_decision(shown, self.world.state))
+        return True
+
+    async def _countdown(self, action: Action, d: Decision) -> None:
+        """Tier 2. Any key press during the countdown cancels it (see _key_down)."""
+        self._cancelled = False
+        await self.hud.send(self.hud.from_decision(d, self.world.state))
+        try:
+            await asyncio.sleep(self.cfg.safety.countdown_s)
+        except asyncio.CancelledError:
+            await self._show("refused", text="cancelled", ttl_ms=1200)
+            raise
+        if await self._locked_now() or self._cancelled:
+            return
+        # past this point the window really does close, so a cancel that arrives now is
+        # too late to stop it. Shield the call rather than let the cancellation unwind
+        # silently: the user must be told what happened, and the journal must have it.
+        running = asyncio.ensure_future(self._act(action, d))
+        try:
+            await asyncio.shield(running)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await running
+            await self._show("heard", text="too late to cancel", chip=action.describe())
+            raise
+
+    async def _confirm_by_key(self, action: Action, d: Decision) -> None:
+        """Tier 3. A spoken 'confirm' would share the channel it authenticates, so the
+        confirmation is a short physical tap of the push-to-talk key."""
+        self._confirm = asyncio.get_running_loop().create_future()
+        await self.hud.send(
+            {**self.hud.from_decision(d, self.world.state), "text": "tap the key to confirm"}
+        )
+        try:
+            confirmed = await asyncio.wait_for(self._confirm, CONFIRM_WINDOW_S)
+        except (TimeoutError, asyncio.CancelledError):
+            confirmed = False
+        finally:
+            self._confirm = None
+        if confirmed and not self.latch.locked():
+            await self._act(action, d)
+        else:
+            await self._show("refused", text="not confirmed", ttl_ms=1200)
+
+    async def _meta(self, intent: Intent, d: Decision) -> None:
+        loop = asyncio.get_running_loop()
+        if intent is Intent.CANCEL:
+            self._cancel_pending("cancel", forget_badges=True)
+            await self._show("hidden")
+        elif intent is Intent.HELP:
+            await self.hud.send(self.hud.from_decision(d, self.world.state))
+        else:
+            call = self.executor.undo if intent is Intent.UNDO else self.executor.again
+            outcome: Outcome = await loop.run_in_executor(self._worker, call)
+            state = "heard" if outcome.ok else "refused"
+            await self._show(state, text=d.heard, chip=outcome.message or intent.value, ttl_ms=1500)
+
+    async def _show(self, state: str, **fields) -> None:
+        await self.hud.send({"t": "state", "state": state, **fields})
+
+
+def build(cfg: Config) -> Engine:
+    """Wire the real parts together. Imports are local so `hyprsay doctor` can report a
+    missing piece instead of the whole CLI failing to import."""
+    from . import jev as jev_pkg
+    from .activation import PushToTalk
+    from .audio import Recorder
+    from .executor import Executor, boot
+    from .hudproto import HudServer
+    from .lexicon import Lexicon
+    from .lock import Latch
+    from .nlu.grammar import Grammar
+    from .nlu.understand import Understander
+    from .stt.hybrid import make_recognizer
+    from .world import HyprSocket, WorldModel, use_socket_transport
+
+    boot()
+    sock = HyprSocket()
+    use_socket_transport(sock)  # 6 to 22 ms per hyprctl spawn becomes 0.1 to 0.3 ms
+    world = WorldModel(sock)
+
+    key = ""
+    client = None
+    try:
+        key = jev_pkg.load_key()
+    except jev_pkg.JevAuthError as exc:
+        log.warning("no gateway key, running grammar-only and local speech only: %s", exc)
+    if key and cfg.jev.enabled:
+        client = jev_pkg.JevClient(
+            key,
+            route=cfg.jev.route,
+            model=cfg.jev.model,
+            deadline=cfg.jev.deadline_s,
+            token_cap=cfg.jev.token_cap,
+            zero_data_retention=cfg.jev.zero_data_retention,
+        )
+
+    lexicon = Lexicon.scan(cfg)
+    latch = Latch(cfg, lambda: world.state, sock.query)
+    return Engine(
+        cfg,
+        world=world,
+        ptt=PushToTalk(cfg),
+        recorder=Recorder(cfg),
+        recognizer=make_recognizer(cfg, key),
+        understander=Understander(cfg, lexicon, Grammar(), client),
+        executor=Executor(cfg, lambda: world.state, latch, lexicon),
+        latch=latch,
+        hud=HudServer(hud=cfg.hud, countdown_s=cfg.safety.countdown_s),
+        jev=client,
+    )
+
+
+def main(cfg: Config) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    engine = build(cfg)
+
+    async def serve() -> None:
+        loop = asyncio.get_running_loop()
+        task = asyncio.current_task()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, task.cancel)
+        with contextlib.suppress(asyncio.CancelledError):
+            await engine.run()
+
+    asyncio.run(serve())
+    return 0
