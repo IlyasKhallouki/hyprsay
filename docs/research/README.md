@@ -18,6 +18,7 @@ The plan of record is `../PLAN.md`; where a report and the plan disagree, the pl
 | `hypruse-map.md` | the hypruse codebase as a library | checker agent, trust high |
 | `prior-art.md` | voice control UX lessons | not independently checked |
 | `critic.md` | cross-lane contradictions, gaps, risks | n/a |
+| `plan-review.json` | four-lens adversarial review of PLAN.md v1: 4 blockers, 21 majors, 12 minors | the 4 blockers were confirmed against source before being accepted; see PLAN.md section 14 |
 
 Checker verdicts are appended to each checked report under `## Verification`.
 `summaries.json` holds each lane's summary, recommendation and the checker's corrections.
