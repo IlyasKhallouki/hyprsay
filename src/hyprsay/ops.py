@@ -36,6 +36,8 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 
+from hyprsay import controls, inapp, recipes
+from hyprsay.config import Config
 from hyprsay.model import Action, DesktopState, Direction, Intent, Window
 from hypruse import hyprctl, journal, safety, server, trust
 
@@ -429,6 +431,138 @@ def _type_text(action: Action, _before: DesktopState) -> str:
     return _dry(result) or f"Typed {len(text)} characters into {window.cls}."
 
 
+# ------------------------------------------------------------------- reaching inside
+
+
+def _engine() -> tuple[Config, object | None]:
+    """The running engine's configuration and lexicon, or fail-closed stand-ins.
+
+    Read the way `recipes._through_executor` reads it rather than threaded down through
+    five layers, because the operation table is a mapping of plain functions. With no
+    engine there is no lexicon, every window's kind reads as unknown, and the refusal
+    below therefore refuses: the strict direction.
+    """
+    from hyprsay.executor import current
+
+    engine = current()
+    if engine is None:
+        return Config(), None
+    return engine.cfg, engine.lexicon
+
+
+def _authorize_gesture(
+    window: Window, before: DesktopState, gesture: str = inapp.CHORD, keys: str = ""
+) -> str:
+    """Refuse a gesture the fresh desktop forbids, and return the window's kind.
+
+    The understander already ran `inapp.refusal` against the window it could see. It
+    runs again here because this is the first moment a chained clause knows its target
+    at all, and because the inherited pointer call only NOTES a launcher covering the
+    point it aims at: this is the only thing that stops a scroll reaching rofi.
+    """
+    cfg, lexicon = _engine()
+    kind = lexicon.kind_of(window) if lexicon is not None else ""
+    refusal = inapp.refusal(window, kind, before, cfg, gesture, keys)
+    if refusal:
+        # word for word, not recapitalized: the sentence may quote a layer namespace,
+        # which is a string another program chose
+        raise OpError(refusal)
+    return kind
+
+
+def _scroll(action: Action, before: DesktopState) -> str:
+    window = _require_window(action)
+    _address(window)
+    _authorize_gesture(window, before, inapp.SCROLL)
+    if action.direction is None:
+        raise OpError("No direction was named to scroll in.")
+    return inapp.perform(inapp.scroll(action.direction, action.amount, window.address), window)
+
+
+def _press_chord(action: Action, before: DesktopState) -> str:
+    window = _require_window(action)
+    _address(window)
+    chord = _CHORD_SPELLING.get(action.verb or "", action.verb or "")
+    # the chord name matters here: a tier 0 chord moves a view and can cause nothing, so
+    # it is allowed where a scroll is, and refusing it at this last step after the
+    # understander allowed it would be a refusal the user could never predict
+    _authorize_gesture(window, before, inapp.CHORD, chord)
+    return inapp.perform(inapp.press(chord, window.address), window)
+
+
+def _run_recipe(action: Action, before: DesktopState) -> str:
+    """One named key sequence from `recipes.RECIPES`, rendered by code and performed.
+
+    The recipe is looked up again here, against the window as it is now: a name the
+    understander read against a browser must not run against whatever holds that address
+    at the moment of the write.
+    """
+    window = _require_window(action)
+    _address(window)
+    kind = _authorize_gesture(window, before)
+    recipe = _recipe_for(window, kind, action.verb or "")
+    refusal = recipes.refusal_for(recipe, window, kind)
+    if refusal:
+        raise OpError(refusal)
+    if journal.dry_run():
+        return _would(f"run the {recipe.name.replace('_', ' ')} sequence in {window.cls}")
+    safety.touch("run_recipe")
+    try:
+        recipes.execute(_spelled(recipes.render(recipe, action.text, window)), window)
+    except recipes.RecipeError as exc:
+        raise OpError(str(exc)) from exc
+    return f"{recipe.description[:1].upper()}{recipe.description[1:]}."
+
+
+# `recipes` writes "enter"; `inapp`'s closed chord table spells the same physical key
+# "Return", the XKB keysym name, and refuses every name it does not hold, so a recipe
+# that ends in Enter could not be delivered at all. Neither file is ours to change, so
+# the spelling is translated here, and ONLY the spelling: a name that is not the very
+# same key is not in this map and `inapp.press` still refuses it.
+_CHORD_SPELLING: dict[str, str] = {"enter": "Return"}
+
+
+def _spelled(steps: list[recipes.Step]) -> list[recipes.Step]:
+    return [
+        replace(step, keys=_CHORD_SPELLING[step.keys])
+        if step.kind is recipes.StepKind.PRESS and step.keys in _CHORD_SPELLING
+        else step
+        for step in steps
+    ]
+
+
+def _recipe_for(window: Window, kind: str, name: str):
+    found = next((r for r in recipes.for_window(window, kind) if r.name == name), None)
+    if found is None:
+        raise OpError(f"{window.cls or 'That window'} has no {name.replace('_', ' ')}.")
+    return found
+
+
+def _click_control(action: Action, before: DesktopState) -> str:
+    """Click the control the understander named, re-found in the tree as it is now.
+
+    The controls are read again rather than carried along: `Action` has no room for one,
+    the reading is cached for tens of seconds so this is nearly always free, and the name
+    the understander authorized has to still be the best match or nothing is clicked. An
+    untrusted name may not change under us between the countdown and the click.
+    """
+    window = _require_window(action)
+    _address(window)
+    _authorize_gesture(window, before)
+    name = action.verb or ""
+    try:
+        found = controls.controls_for(window)
+    except controls.ControlsError as exc:
+        raise OpError(str(exc)) from exc
+    ranked = controls.best_match(action.text or "", found)
+    if not ranked or ranked[0][0].name != name:
+        raise OpError("The controls changed since you spoke, so nothing was clicked.")
+    try:
+        return controls.click(ranked[0][0], window)
+    except controls.ControlsError as exc:
+        raise OpError(str(exc)) from exc
+
+
 def _lock_screen(_action: Action, _before: DesktopState) -> str:
     # "auto" resolves the graphical session even for a daemon that belongs to none
     argv = ["loginctl", "lock-session", os.environ.get("XDG_SESSION_ID") or "auto"]
@@ -503,6 +637,40 @@ def _opposite_volume(action: Action, _before: DesktopState) -> Action | None:
     return None
 
 
+def _scroll_back(action: Action, _before: DesktopState) -> Action | None:
+    # the same notches the other way, which is what makes a scroll free to reverse
+    return replace(action, direction=_OPPOSITE[action.direction]) if action.direction else None
+
+
+def _chord_back(action: Action, _before: DesktopState) -> Action | None:
+    """The chord that puts the view back, where `inapp` says one exists.
+
+    Nothing is invented here: Home has no undo, and "new tab" is not undone by ctrl+w,
+    because closing a tab is a tier 2 act and an undo may never cost more than the thing
+    it undoes.
+    """
+    gesture = inapp.inverse(inapp.press(action.verb, "")) if action.verb else None
+    return replace(action, verb=gesture.keys) if gesture is not None else None
+
+
+# The recipes whose opposite is another recipe and nothing worse. Everything else has
+# none: a search, a navigation and a find leave the page somewhere code cannot name, and
+# a closed tab is exactly the case `inapp.INVERSE_CHORDS` refuses to pretend about.
+_RECIPE_BACK: dict[str, str] = {
+    "back": "forward",
+    "forward": "back",
+    "next_tab": "previous_tab",
+    "previous_tab": "next_tab",
+    "zoom_in": "zoom_out",
+    "zoom_out": "zoom_in",
+}
+
+
+def _recipe_back(action: Action, _before: DesktopState) -> Action | None:
+    name = _RECIPE_BACK.get(action.verb or "")
+    return replace(action, verb=name, text=None) if name else None
+
+
 def _opposite_media(action: Action, _before: DesktopState) -> Action | None:
     # "previous" usually restarts the track, so "next" would not undo it
     return {"play_pause": action, "next": replace(action, verb="previous")}.get(action.verb or "")
@@ -527,5 +695,16 @@ OPERATIONS: dict[Intent, Operation] = {
         Operation(Intent.MEDIA, _media, _opposite_media),
         Operation(Intent.TYPE_TEXT, _type_text, _none, needs_window=True, repeatable=False),
         Operation(Intent.LOCK_SCREEN, _lock_screen, _none, repeatable=False),
+        Operation(Intent.SCROLL, _scroll, _scroll_back, needs_window=True),
+        Operation(Intent.PRESS_CHORD, _press_chord, _chord_back, needs_window=True),
+        # "again" re-runs the last action WITHOUT re-tiering it, and a recipe may be
+        # tier 2 (it types, it closes a tab, it saves over a file), so it is not repeated
+        Operation(
+            Intent.RUN_RECIPE, _run_recipe, _recipe_back, needs_window=True, repeatable=False
+        ),  # fmt: skip
+        # a click can send a message or spend money and has no inverse at all
+        Operation(
+            Intent.CLICK_CONTROL, _click_control, _none, needs_window=True, repeatable=False
+        ),  # fmt: skip
     )
 }

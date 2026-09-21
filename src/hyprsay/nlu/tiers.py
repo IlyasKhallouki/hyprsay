@@ -18,6 +18,12 @@ flipped 4 times in 30 identical requests on a near-tie), and a recognizer can tu
 anything into anything. "close" spoken and recognized as "close" is evidence from the
 speaker; `intent = close_window` at P=0.8 is an opinion.
 
+Reaching inside a window (a wheel notch, a named chord, a recipe, a click) is tiered by
+the module that owns the gesture, never by a second table here. `tier` delegates to
+`inapp.chord_tier`, `recipes.tier_for` and `controls.click_tier`, and a recipe that types
+is raised to whatever typing costs on that window, because a recipe that types is exactly
+as dangerous as typing.
+
 Typing is the dangerous operation (PLAN 5.6 and section 14): the first review found that
 a hostile window could take focus and receive dictated text, and that shells execute on
 more than Enter. So the target is pinned to the window focused at key DOWN, terminals,
@@ -166,12 +172,75 @@ def tier(intent: Intent, action: Action | None, state: DesktopState, cfg: Config
         return 1 if action is not None and _stays_in_view(action, state) else 2
     if intent is Intent.TYPE_TEXT:
         return 1 if action is not None and _type_allowlisted(action.window, cfg) else 2
+    if intent in IN_APP:
+        return _in_app_tier(intent, action, state, cfg)
     if intent in TIER1:
         return 1
     if intent in TIER2:
         return 2
     # lock, and anything this table has never heard of: the strictest tier
     return 3
+
+
+# What it costs to reach inside a window is decided by the module that owns the gesture,
+# never by a second table here: `inapp` for wheel notches and chords, `recipes` for a
+# named key sequence, `controls` for a click. The imports are local because all three
+# import this module for the refusal rules, and a module-level import back would be a
+# cycle that fails on whichever side Python loads first.
+IN_APP = frozenset({Intent.SCROLL, Intent.PRESS_CHORD, Intent.RUN_RECIPE, Intent.CLICK_CONTROL})
+
+
+def _in_app_tier(intent: Intent, action: Action | None, state: DesktopState, cfg: Config) -> int:
+    if action is None:
+        return 3
+    if intent is Intent.SCROLL:
+        from hyprsay import inapp
+
+        if action.direction is None:
+            return 3
+        return inapp.scroll(action.direction, action.amount).tier
+    if intent is Intent.PRESS_CHORD:
+        from hyprsay import inapp
+
+        return inapp.chord_tier(action.verb or "")
+    if intent is Intent.RUN_RECIPE:
+        return _recipe_tier(action, state, cfg)
+    return _click_tier(action)
+
+
+def _recipe_tier(action: Action, state: DesktopState, cfg: Config) -> int:
+    """`Recipe.tier` raised to the typing tier when the recipe types (`recipes.tier_for`).
+
+    The recipe table is keyed by app KIND and an `Action` has no room to carry one, so a
+    name that appears in more than one table is read at its STRICTEST tier: the same
+    direction this function takes for an intent it has never heard of.
+    """
+    from hyprsay import recipes
+
+    named = [
+        recipe
+        for table in recipes.RECIPES.values()
+        for recipe in table.values()
+        if recipe.name == (action.verb or "")
+    ]
+    if not named:
+        return 3
+    typing = tier(Intent.TYPE_TEXT, Action(Intent.TYPE_TEXT, window=action.window), state, cfg)
+    return max(recipes.tier_for(recipe, typing) for recipe in named)
+
+
+def _click_tier(action: Action) -> int:
+    """`controls.click_tier`, which reads nothing but the control's name.
+
+    The name is what the Action carries in `verb`, because a `Control` does not fit in
+    one and the tier must stay a function of the action alone.
+    """
+    from hyprsay import controls
+
+    name = action.verb or ""
+    if not name:
+        return 3
+    return controls.click_tier(controls.Control("", name, "", True, (0, 0, 0, 0), ""))
 
 
 def _type_allowlisted(window: Window | None, cfg: Config) -> bool:

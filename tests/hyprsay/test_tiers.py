@@ -8,6 +8,7 @@ from hyprsay.config import Config, Safety
 from hyprsay.model import (
     Action,
     DesktopState,
+    Direction,
     Intent,
     Layer,
     Monitor,
@@ -274,3 +275,65 @@ def test_invisible_format_characters_are_stripped_from_typed_text():
 
 def test_typed_text_is_capped():
     assert len(tiers.clean_typed_text("a" * 500, 200)) == 200
+
+
+# --------------------------------------------------------------- reaching inside a window
+
+
+def test_a_scroll_costs_what_the_gesture_module_says_it_costs():
+    # inapp owns it: a scroll is free to reverse, so it is tier 0 in every direction
+    for direction in Direction:
+        action = Action(Intent.SCROLL, window=win(), direction=direction)
+        assert tiers.tier(Intent.SCROLL, action, DESKTOP, CFG) == 0
+
+
+def test_a_scroll_with_no_direction_is_not_a_cheap_action():
+    assert tiers.tier(Intent.SCROLL, Action(Intent.SCROLL, window=win()), DESKTOP, CFG) == 3
+
+
+@pytest.mark.parametrize(
+    ("keys", "level"),
+    [("Page_Down", 0), ("Home", 0), ("ctrl+l", 1), ("ctrl+t", 1), ("ctrl+w", 2), ("ctrl+s", 2)],
+)
+def test_a_chord_costs_what_the_chord_table_says_it_costs(keys, level):
+    action = Action(Intent.PRESS_CHORD, window=win(), verb=keys)
+    assert tiers.tier(Intent.PRESS_CHORD, action, DESKTOP, CFG) == level
+
+
+def test_a_chord_nobody_has_heard_of_is_session_level_not_free():
+    action = Action(Intent.PRESS_CHORD, window=win(), verb="ctrl+alt+Delete")
+    assert tiers.tier(Intent.PRESS_CHORD, action, DESKTOP, CFG) == 3
+
+
+def test_a_recipe_that_types_is_raised_to_whatever_typing_costs_on_that_window():
+    # recipes.tier_for: a recipe that types is exactly as dangerous as typing, and typing
+    # into an app the user has not allowlisted is tier 2
+    window = win("firefox")
+    action = Action(Intent.RUN_RECIPE, window=window, verb="search_web", text="cats")
+    assert tiers.tier(Intent.RUN_RECIPE, action, DESKTOP, CFG) == 2
+    allowed = replace(CFG, safety=Safety(type_allow_classes=("firefox",)))
+    assert tiers.tier(Intent.RUN_RECIPE, action, DESKTOP, allowed) == 1
+
+
+def test_a_recipe_that_presses_no_key_keeps_its_own_tier():
+    action = Action(Intent.RUN_RECIPE, window=win(), verb="next_tab")
+    assert tiers.tier(Intent.RUN_RECIPE, action, DESKTOP, CFG) == 0
+    closing = Action(Intent.RUN_RECIPE, window=win(), verb="close_tab")
+    assert tiers.tier(Intent.RUN_RECIPE, closing, DESKTOP, CFG) == 2
+
+
+def test_a_recipe_name_nothing_in_the_table_has_is_session_level():
+    action = Action(Intent.RUN_RECIPE, window=win(), verb="rm_minus_rf")
+    assert tiers.tier(Intent.RUN_RECIPE, action, DESKTOP, CFG) == 3
+
+
+def test_a_click_is_never_free_to_reverse_and_a_destructive_name_earns_a_countdown():
+    ordinary = Action(Intent.CLICK_CONTROL, window=win(), verb="Reload", text="reload")
+    assert tiers.tier(Intent.CLICK_CONTROL, ordinary, DESKTOP, CFG) == 1
+    dangerous = Action(Intent.CLICK_CONTROL, window=win(), verb="Delete", text="delete")
+    assert tiers.tier(Intent.CLICK_CONTROL, dangerous, DESKTOP, CFG) == 2
+
+
+def test_an_in_app_intent_with_no_action_at_all_is_session_level():
+    for intent in sorted(tiers.IN_APP):
+        assert tiers.tier(intent, None, DESKTOP, CFG) == 3

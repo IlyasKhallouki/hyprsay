@@ -27,7 +27,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from . import journal
+from . import journal, ops
 from .config import Config
 from .model import Action, Candidate, Decision, Intent, Outcome, Transcript, Verdict
 
@@ -299,8 +299,50 @@ class Engine:
 
     # ------------------------------------------------------------------ decisions
 
-    async def _carry_out(self, d: Decision, pinned: str = "") -> None:
+    async def _carry_out(self, d: Decision, pinned: str | None = None) -> None:
         self._picking = ()
+        if d.rest:
+            await self._chain(d, pinned)
+            return
+        await self._one(d, pinned)
+
+    async def _chain(self, first: Decision, pinned: str | None) -> None:
+        """One clause at a time, on the one worker, stopping the moment one does not act.
+
+        A later clause is an order that assumes the earlier one happened: "open firefox
+        and move it to workspace 3" has nothing to move if the launch was refused. So a
+        refusal, a question, a cancelled countdown or an unconfirmed key ends the chain,
+        and the overlay says which part stopped it and what had already run. Running on
+        and hoping would aim the rest of the utterance at whatever the desktop happens to
+        look like, which is exactly the failure v1 had, only faster.
+        """
+        clauses = (first, *first.rest)
+        done: list[str] = []
+        for index, clause in enumerate(clauses):
+            # the screen can lock between two clauses as easily as during one
+            if index and await self._locked_now():
+                await self._drop_for_lock()
+                return
+            if not await self._one(clause, pinned, chained=True):
+                await self._stopped(index, len(clauses), clause, done)
+                return
+            done.append(_chip(clause))
+        await self._show("heard", text=first.heard, chip="; ".join(done), ttl_ms=2500)
+
+    async def _stopped(self, index: int, total: int, clause: Decision, done: list[str]) -> None:
+        ran = f"already did {', '.join(done)}" if done else "nothing was done"
+        why = clause.reason or clause.verdict.value
+        await self._show(
+            "refused", text=f"stopped at part {index + 1} of {total}: {why}; {ran}", ttl_ms=4000
+        )
+
+    async def _one(self, d: Decision, pinned: str | None, *, chained: bool = False) -> bool:
+        """Carry out one decision, and say whether it acted on the desktop.
+
+        `chained` turns off the badges. A number answered mid-chain could only finish the
+        clause it belongs to and would leave the rest of the utterance unsaid, which is
+        the half-done outcome the chain exists to avoid.
+        """
         action = d.action
         if action is not None and action.intent in (
             Intent.UNDO,
@@ -308,40 +350,76 @@ class Engine:
             Intent.CANCEL,
             Intent.HELP,
         ):
-            await self._meta(action.intent, d)
-            return
+            return await self._meta(action.intent, d)
 
         if d.verdict is Verdict.ACT and action:
-            await self._act(action, d, pinned=pinned)
-        elif d.verdict is Verdict.ACT_SWAP and action:
+            return await self._act(action, d, pinned=self._pin(action, pinned))
+        if d.verdict is Verdict.ACT_SWAP and action:
             # free to reverse: act now, and let a number re-target it (docs/PLAN.md 5.6)
-            if await self._act(action, d, badges=d.candidates):
+            badges = () if chained else d.candidates
+            if not await self._act(action, d, badges=badges, pinned=self._pin(action, pinned)):
+                return False
+            if badges:
                 self._arm_picking(d.candidates, self.cfg.hud.swap_timeout_s)
-        elif d.verdict is Verdict.HINTS:
-            self._arm_picking(d.candidates, self.cfg.hud.hint_timeout_s)
-            await self.hud.send(self.hud.from_decision(d, self.world.state))
-        elif d.verdict is Verdict.COUNTDOWN and action:
-            self._pending = asyncio.create_task(self._countdown(action, d))
-            self._ensure_lock_watch()
-        elif d.verdict is Verdict.CONFIRM_KEY and action:
-            self._pending = asyncio.create_task(self._confirm_by_key(action, d))
-            self._ensure_lock_watch()
-        elif d.verdict is Verdict.NOTHING:
+            return True
+        if d.verdict is Verdict.HINTS:
+            if not chained:
+                self._arm_picking(d.candidates, self.cfg.hud.hint_timeout_s)
+                await self.hud.send(self.hud.from_decision(d, self.world.state))
+            return False
+        if d.verdict is Verdict.COUNTDOWN and action:
+            return await self._ceremony(
+                self._countdown(action, d, self._pin(action, pinned)), chained
+            )
+        if d.verdict is Verdict.CONFIRM_KEY and action:
+            return await self._ceremony(self._confirm_by_key(action, d), chained)
+        if d.verdict is Verdict.NOTHING:
             await self._show("hidden")
-        else:  # REFUSE, SUGGEST
+            return False
+        if not chained:  # REFUSE, SUGGEST
             await self.hud.send(self.hud.from_decision(d, self.world.state))
+        return False
+
+    async def _ceremony(self, coro, chained: bool) -> bool:
+        """A countdown or a confirming tap runs as `self._pending`, so a key press cancels
+        it. Only a chain waits for the answer, because the clause after it may not start
+        until this one has really happened. On its own the utterance is finished here, and
+        waiting would hold the pipeline shut while the next key press wants it.
+        """
+        self._pending = asyncio.create_task(coro)
+        self._ensure_lock_watch()
+        if not chained:
+            return True
+        try:
+            return bool(await self._pending)
+        except asyncio.CancelledError:
+            return False
+
+    def _pin(self, action: Action, pinned: str | None) -> str | None:
+        """A clause whose target is blank means "whatever the clause before it left in
+        front of me", so it must NOT be pinned to the window focused at key down."""
+        needs = ops.OPERATIONS.get(action.intent)
+        if action.window is None and needs is not None and needs.needs_window:
+            return ""
+        return pinned
 
     def _arm_picking(self, candidates: tuple[Candidate, ...], seconds: float) -> None:
         self._picking = candidates
         self._picking_until = time.monotonic() + seconds
 
     async def _act(
-        self, action: Action, d: Decision, badges: tuple[Candidate, ...] = (), *, pinned: str = ""
+        self,
+        action: Action,
+        d: Decision,
+        badges: tuple[Candidate, ...] = (),
+        *,
+        pinned: str | None = None,
     ) -> bool:
         loop = asyncio.get_running_loop()
+        target = self._pinned if pinned is None else pinned
         outcome: Outcome = await loop.run_in_executor(
             self._worker,
-            lambda: self.executor.execute(action, pinned_address=pinned or self._pinned),
+            lambda: self.executor.execute(action, pinned_address=target),
         )
         journal.record("action", action=action, ok=outcome.ok, message=outcome.message)
         if not outcome.ok:
@@ -351,7 +429,7 @@ class Engine:
         await self.hud.send(self.hud.from_decision(shown, self.world.state))
         return True
 
-    async def _countdown(self, action: Action, d: Decision) -> None:
+    async def _countdown(self, action: Action, d: Decision, pinned: str | None = None) -> bool:
         """Tier 2. Any key press during the countdown cancels it (see _key_down)."""
         self._cancelled = False
         await self.hud.send(self.hud.from_decision(d, self.world.state))
@@ -361,20 +439,20 @@ class Engine:
             await self._show("refused", text="cancelled", ttl_ms=1200)
             raise
         if await self._locked_now() or self._cancelled:
-            return
+            return False
         # past this point the window really does close, so a cancel that arrives now is
         # too late to stop it. Shield the call rather than let the cancellation unwind
         # silently: the user must be told what happened, and the journal must have it.
-        running = asyncio.ensure_future(self._act(action, d))
+        running = asyncio.ensure_future(self._act(action, d, pinned=pinned))
         try:
-            await asyncio.shield(running)
+            return await asyncio.shield(running)
         except asyncio.CancelledError:
             with contextlib.suppress(Exception):
                 await running
             await self._show("heard", text="too late to cancel", chip=action.describe())
             raise
 
-    async def _confirm_by_key(self, action: Action, d: Decision) -> None:
+    async def _confirm_by_key(self, action: Action, d: Decision) -> bool:
         """Tier 3. A spoken 'confirm' would share the channel it authenticates, so the
         confirmation is a short physical tap of the push-to-talk key."""
         self._confirm = asyncio.get_running_loop().create_future()
@@ -388,30 +466,42 @@ class Engine:
         finally:
             self._confirm = None
         if confirmed and not self.latch.locked():
-            await self._act(action, d)
-        else:
-            await self._show("refused", text="not confirmed", ttl_ms=1200)
+            return await self._act(action, d)
+        await self._show("refused", text="not confirmed", ttl_ms=1200)
+        return False
 
-    async def _meta(self, intent: Intent, d: Decision) -> None:
+    async def _meta(self, intent: Intent, d: Decision) -> bool:
+        """Undo, again, cancel and help. Returns whether the desktop changed, which is
+        what a later clause in a chain is allowed to build on: cancel and help change
+        nothing, so a clause that assumed they did must not run."""
         loop = asyncio.get_running_loop()
         if intent is Intent.CANCEL:
             self._cancel_pending("cancel", forget_badges=True)
             await self._show("hidden")
-        elif intent is Intent.HELP:
+            return False
+        if intent is Intent.HELP:
             await self.hud.send(self.hud.from_decision(d, self.world.state))
-        else:
-            call = self.executor.undo if intent is Intent.UNDO else self.executor.again
-            outcome: Outcome = await loop.run_in_executor(self._worker, call)
-            state = "heard" if outcome.ok else "refused"
-            await self._show(state, text=d.heard, chip=outcome.message or intent.value, ttl_ms=1500)
+            return False
+        call = self.executor.undo if intent is Intent.UNDO else self.executor.again
+        outcome: Outcome = await loop.run_in_executor(self._worker, call)
+        state = "heard" if outcome.ok else "refused"
+        await self._show(state, text=d.heard, chip=outcome.message or intent.value, ttl_ms=1500)
+        return outcome.ok
 
     async def _show(self, state: str, **fields) -> None:
         await self.hud.send({"t": "state", "state": state, **fields})
 
 
+def _chip(decision: Decision) -> str:
+    """What one clause did, for the line that says what already ran. Never its text: a
+    recipe's spoken span is the speaker's words, exactly as dictation is."""
+    return decision.action.describe() if decision.action is not None else decision.verdict.value
+
+
 def build(cfg: Config) -> Engine:
     """Wire the real parts together. Imports are local so `hyprsay doctor` can report a
     missing piece instead of the whole CLI failing to import."""
+    from . import a11ybus
     from . import jev as jev_pkg
     from .activation import PushToTalk
     from .audio import Recorder
@@ -428,6 +518,9 @@ def build(cfg: Config) -> Engine:
     boot()
     sock = HyprSocket()
     use_socket_transport(sock)  # 6 to 22 ms per hyprctl spawn becomes 0.1 to 0.3 ms
+    # and the same swap under the accessibility tree: reading one 48 control window was
+    # 14.5 s through spawned busctl calls and is 1.8 s over one held connection
+    a11ybus.use_fast_transport()
     world = WorldModel(sock)
 
     key = ""

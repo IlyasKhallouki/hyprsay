@@ -197,6 +197,42 @@ UTTERANCES = [
     ("next track", Intent.MEDIA, Slots(verb="next")),
     ("skip", Intent.MEDIA, Slots(verb="next")),
     ("previous track", Intent.MEDIA, Slots(verb="previous")),
+    # ----------------------------------------------------------- in-app reach
+    ("scroll down", Intent.SCROLL, Slots(direction=Direction.DOWN)),
+    ("Scroll down.", Intent.SCROLL, Slots(direction=Direction.DOWN)),
+    ("scroll up a lot", Intent.SCROLL, Slots(direction=Direction.UP, amount=3)),
+    ("scroll the page down", Intent.SCROLL, Slots(direction=Direction.DOWN)),
+    ("page down", Intent.PRESS_CHORD, Slots(verb="Page_Down")),
+    ("page up", Intent.PRESS_CHORD, Slots(verb="Page_Up")),
+    ("top", Intent.PRESS_CHORD, Slots(verb="Home")),
+    ("go to the top", Intent.PRESS_CHORD, Slots(verb="Home")),
+    ("bottom", Intent.PRESS_CHORD, Slots(verb="End")),
+    # a tab or a page step is one chord, so it is named from `inapp.CHORD_TIERS`
+    ("new tab", Intent.PRESS_CHORD, Slots(verb="ctrl+t")),
+    ("close tab", Intent.PRESS_CHORD, Slots(verb="ctrl+w")),
+    ("next tab", Intent.PRESS_CHORD, Slots(verb="ctrl+Tab")),
+    ("previous tab", Intent.PRESS_CHORD, Slots(verb="ctrl+shift+Tab")),
+    ("back", Intent.PRESS_CHORD, Slots(verb="alt+Left")),
+    ("forward", Intent.PRESS_CHORD, Slots(verb="alt+Right")),
+    ("reload", Intent.PRESS_CHORD, Slots(verb="ctrl+r")),
+    ("reload this page", Intent.PRESS_CHORD, Slots(verb="ctrl+r")),
+    ("find hyprland", Intent.RUN_RECIPE, Slots(verb="find", text="hyprland")),
+    (
+        "search the web for lofi beats",
+        Intent.RUN_RECIPE,
+        Slots(verb="search_web", text="lofi beats"),
+    ),
+    ("look up ltt", Intent.RUN_RECIPE, Slots(verb="search_web", text="ltt")),
+    (
+        "search youtube for lofi",
+        Intent.RUN_RECIPE,
+        Slots(verb="search_youtube", text="lofi"),
+    ),
+    ("navigate to youtube", Intent.RUN_RECIPE, Slots(verb="go_to_url", text="youtube")),
+    # the normalizer splits "youtube.com" in two; the RAW transcript keeps the dot
+    ("go to youtube.com", Intent.RUN_RECIPE, Slots(verb="go_to_url", text="youtube.com")),
+    ("click send", Intent.CLICK_CONTROL, Slots(text="send")),
+    ("click the send button", Intent.CLICK_CONTROL, Slots(text="the send button")),
     # ----------------------------------------------------------- session words
     ("lock the screen", Intent.LOCK_SCREEN, Slots()),
     ("lock screen", Intent.LOCK_SCREEN, Slots()),
@@ -274,7 +310,9 @@ SPOKEN = [
     (Intent.FOCUS_WINDOW, Slots(window_ref="kitty")),
     (Intent.FULLSCREEN, THIS),
     (Intent.LAUNCH_APP, Slots(app_ref="obsidian")),
-    None,  # "scroll down" is not something hyprsay does
+    # the eighth clip was recorded when scrolling was not something hyprsay did. It is
+    # now, and all twenty transcripts of it say "scroll down"
+    (Intent.SCROLL, Slots(direction=Direction.DOWN)),
 ]
 # nothing of the command survived in these; the right answer is to ask someone else
 HOPELESS = {"Toggle folks, Korean.", "Toggle both screens."}
@@ -493,7 +531,6 @@ def test_a_bare_number_means_nothing_when_no_badges_are_showing(raw):
     [
         "i think the workspace idea is good",
         "can you believe that",
-        "Scroll down.",
         "what time is it",
         "i want to send an email to john",
         "play that song i like from last summer",

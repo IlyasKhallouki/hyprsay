@@ -29,6 +29,12 @@ Three rules are about safety, not language:
 - While badges are showing (`picking=True`) a bare number means a badge, and only
   pick, cancel and undo are live. Anything else said in that window is not a command.
 
+In-app reach uses the same slots rather than new ones: `SCROLL` carries `direction` and
+`amount`, `PRESS_CHORD` carries the chord's name from `inapp.CHORD_TIERS` in `verb`,
+`RUN_RECIPE` carries the recipe's name from `recipes.RECIPES` in `verb`, `CLICK_CONTROL`
+carries the spoken name of the control in `text`, and the two that take words take them
+in `text`, cut from the raw transcript by `_spoken`.
+
 Slot conventions the model leaves open: resize uses `verb` "grow" or "shrink", and
 `direction` as the axis (RIGHT is width, DOWN is height, None is both), the signs
 Hyprland's resizeactive uses. Volume up or down may carry `number` ("up by 10") or
@@ -43,7 +49,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from hyprsay.model import Direction, Intent, Parse, Slots
@@ -141,8 +147,27 @@ _DEICTIC = re.compile(
 )
 _AFTER_CARRIER = " \t\r\n,:;.-"
 
-# the verb of these must be literally in the transcript, never supplied by a variant
-_LITERAL_VERB = frozenset({Intent.CLOSE_WINDOW, Intent.TYPE_TEXT, Intent.LOCK_SCREEN})
+# The normalizer drops the dot of "youtube.com", so an address is recognized by its
+# ending instead. The list is short and deliberately holds no word that is also ordinary
+# English ("me", "us", "it", "in", "app" were all left out): a false match here would
+# send "go to the app" down the navigation rule instead of the focus rule.
+_TLD = r"(?:com|org|net|io|dev|tv|edu|gov|ai)"
+# and the label before it may not be a determiner, for the same reason
+_NOT_A_LABEL = r"(?!(?:the|a|an|my|your|this|that|next|previous|other)\b)"
+
+# the verb of these must be literally in the transcript, never supplied by a variant.
+# A recipe types, a click cannot be undone, and one of the chords closes a tab, so
+# none of them is ever reached through the normalizer's guess at a misheard word.
+_LITERAL_VERB = frozenset(
+    {
+        Intent.CLOSE_WINDOW,
+        Intent.TYPE_TEXT,
+        Intent.LOCK_SCREEN,
+        Intent.PRESS_CHORD,
+        Intent.RUN_RECIPE,
+        Intent.CLICK_CONTROL,
+    }
+)
 _LIVE_WHILE_PICKING = frozenset({Intent.PICK, Intent.CANCEL, Intent.UNDO})
 
 Build = Callable[[dict[str, str]], Slots | None]
@@ -486,6 +511,145 @@ _RULES: tuple[_Rule, ...] = (
         "shrink this a lot",
         "grow the terminal all the way",
     ),
+    # ----------------------------------------------------------------- in-app reach
+    # Grammar only, never offered to Jev (model.JEV_INTENTS). Every one of these names
+    # its gesture exactly, and the modules that own them refuse anything they do not
+    # know: `inapp` a chord that is not in its table, `recipes` a recipe the window's
+    # kind does not offer, `controls` a name nobody said.
+    _rule(
+        Intent.SCROLL,
+        rf"(?:(?P<amt>{_AMT}) )?scroll(?:ing)?(?: (?:the )?(?:page|view|window|list))?"
+        rf"(?: (?:to|towards)(?: the)?)? {_DIR}(?: (?P<amt2>{_AMT}))?",
+        _slots(),
+        "scroll down",
+        "scroll up a lot",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:one )?page down|down (?:a|one) page",
+        _slots(verb="Page_Down"),
+        "page down",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:one )?page up|up (?:a|one) page",
+        _slots(verb="Page_Up"),
+        "page up",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:(?:go|jump|scroll|take me) )?(?:to )?the top(?: of (?:the )?(?:page|list|document))?"
+        r"|top",
+        _slots(verb="Home"),
+        "top",
+        "go to the top",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:(?:go|jump|scroll|take me) )?(?:to )?the bottom"
+        r"(?: of (?:the )?(?:page|list|document))?|bottom",
+        _slots(verb="End"),
+        "bottom",
+        "go to the bottom",
+    ),
+    # Tabs and page navigation are single chords, so they go through `inapp`'s own
+    # closed table rather than through a recipe: that table was written for exactly
+    # these keys, and it is the one that refuses anything it has not reviewed.
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:open |make |start )?(?:a )?new tab",
+        _slots(verb="ctrl+t"),
+        "new tab",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"close(?: (?:this|the|that|current))? tab",
+        _slots(verb="ctrl+w"),
+        "close tab",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:(?:go|switch|move) to |show )?(?:the )?next tab",
+        _slots(verb="ctrl+Tab"),
+        "next tab",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:(?:go|switch|move) to |show )?(?:the )?(?:previous|prev|last) tab",
+        _slots(verb="ctrl+shift+Tab"),
+        "previous tab",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"back|back (?:a|one) page|previous page",
+        _slots(verb="alt+Left"),
+        "back",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"forwards?|forward (?:a|one) page|next page",
+        _slots(verb="alt+Right"),
+        "forward",
+    ),
+    _rule(
+        Intent.PRESS_CHORD,
+        r"(?:reload|refresh)(?: (?:this|the) page| this| it)?",
+        _slots(verb="ctrl+r"),
+        "reload",
+    ),
+    # `said` is cut from the RAW transcript, exactly as dictated text is: what a recipe
+    # types and what names a control are the speaker's words, not a repair of them.
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:search|look) (?:on )?youtube for (?P<said>{_REF})",
+        _slots(verb="search_youtube"),
+        "search youtube for lofi",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:search|look) (?:on )?wikipedia for (?P<said>{_REF})",
+        _slots(verb="search_wikipedia"),
+        "search wikipedia for hyprland",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:search (?:the )?(?:web|internet)(?: for)?|google|look up|search for)"
+        rf" (?P<said>{_REF})",
+        _slots(verb="search_web"),
+        "search the web for hyprland",
+        "look up ltt",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"find (?P<said>{_REF})",
+        _slots(verb="find"),
+        "find hyprland",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:navigate|browse) to (?P<said>{_REF})",
+        _slots(verb="go_to_url"),
+        "navigate to youtube",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:go|head|take me) to (?P<said>{_NOT_A_LABEL}\S+(?: \S+){{0,2}} {_TLD})",
+        _slots(verb="go_to_url"),
+        "go to youtube.com",
+    ),
+    _rule(
+        Intent.RUN_RECIPE,
+        rf"(?:open|visit) (?P<said>{_NOT_A_LABEL}\S+(?: \S+){{0,2}} {_TLD})",
+        _slots(verb="go_to_url"),
+        "open youtube.com",
+    ),
+    _rule(
+        Intent.CLICK_CONTROL,
+        rf"(?:click|press|tap)(?: on)? (?P<said>{_REF})",
+        _slots(),
+        "click send",
+        "click the send button",
+    ),
     # ----------------------------------------------------------------- close, launch, focus
     _rule(
         Intent.CLOSE_WINDOW,
@@ -501,6 +665,17 @@ _RULES: tuple[_Rule, ...] = (
         rf"{_LAUNCH} (?P<ref>{_REF_LAZY}) (?:on|in) (?:the )?{_WS} (?:number )?(?P<n>{_N})",
         _slots("app"),
         "open firefox on workspace 3",
+    ),
+    # "empty" is Hyprland's own selector for the first workspace with nothing on it. The
+    # rule exists because without it the words are simply eaten: `_REF` swallows "in a
+    # new workspace" into the application's name and the resolver then matches on the
+    # first word and throws the rest away, which is the whole complaint this work started
+    # from ("open zapzap in a new workspace" opened zapzap, where it already was).
+    _rule(
+        Intent.LAUNCH_APP,
+        rf"{_LAUNCH} (?P<ref>{_REF_LAZY}) (?:on|in) an? (?:new|fresh|empty) {_WS}",
+        _slots("app", workspace="empty"),
+        "open firefox in a new workspace",
     ),
     _rule(
         Intent.LAUNCH_APP,
@@ -531,6 +706,37 @@ _PICK = _rule(
     "number two",
     "the second one",
 )
+
+
+def _spoken(norm: Normalized, text: str, at: int) -> str:
+    """The words from offset `at` of `text` onward, cut from the RAW transcript.
+
+    The rule dictated text follows, applied to the span a recipe types and to the name a
+    click is aimed at (docs/PLAN.md 5.6): the normalizer lowercases, drops "please" and
+    turns "youtube.com" into two words, and none of that may reach what gets typed or
+    what a control is matched against.
+
+    Token offsets carry it. `Normalized.text` is its tokens joined by single spaces, so
+    the number of words before `at` is the index of the token the span starts at, and
+    that holds for a variant too, since a variant replaces one word and leaves the count
+    alone. A `Normalized` built by hand has no offsets, and then the raw text is searched
+    for the word itself.
+    """
+    index = len(text[:at].split())
+    words = norm.text.split()
+    start: int | None = None
+    if index < len(norm.tokens):
+        start = getattr(norm.tokens[index], "start", None)
+    if start is None and index < len(words):
+        found = re.search(rf"\b{re.escape(words[index])}", norm.raw, re.IGNORECASE)
+        start = found.start() if found else None
+    if start is None:
+        return ""
+    said = norm.raw[start:].lstrip(_AFTER_CARRIER).rstrip()
+    # every recognizer ends an utterance with a full stop the speaker never said
+    if said.endswith(".") and not said.endswith(".."):
+        said = said[:-1].rstrip()
+    return said
 
 
 def _dictated(norm: Normalized) -> Slots | None:
@@ -583,6 +789,9 @@ class Grammar:
                 continue
             said = {k: v for k, v in match.groupdict().items() if v is not None}
             slots = _dictated(norm) if rule.intent is Intent.TYPE_TEXT else rule.build(said)
+            if slots is not None and "said" in said:
+                spoken = _spoken(norm, text, match.start("said"))
+                slots = replace(slots, text=spoken) if spoken else None
             if slots is None:
                 continue
             if not literal and rule.intent in _LITERAL_VERB:

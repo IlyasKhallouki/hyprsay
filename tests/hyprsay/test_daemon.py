@@ -123,14 +123,18 @@ class Understander:
 
 
 class Executor:
-    def __init__(self, outcome=None):
+    def __init__(self, outcome=None, outcomes=None):
         self.outcome = outcome or Outcome(True, "Done.")
+        # per intent, for a chain where one clause must fail and the others must not
+        self.outcomes = outcomes or {}
         self.executed: list[Action] = []
+        self.pins: list[str] = []
         self.undone = 0
 
     def execute(self, action, *, pinned_address=""):
         self.executed.append(action)
-        return self.outcome
+        self.pins.append(pinned_address)
+        return self.outcomes.get(action.intent, self.outcome)
 
     def undo(self):
         self.undone += 1
@@ -689,3 +693,171 @@ def test_a_second_press_opens_the_microphone_without_waiting_for_the_first_to_fi
     # the second press opened the microphone while the first was still being decoded
     assert order.index("mic-open", order.index("mic-open") + 1) < order.index("decode-end")
     assert "decode-end" in order  # and the first utterance still ran to completion
+
+
+# ------------------------------------------------------- one utterance, several commands
+
+LAUNCH = Action(Intent.LAUNCH_APP)
+MOVE = Action(Intent.MOVE_TO_WORKSPACE, workspace="3")
+MUTE = Action(Intent.VOLUME, verb="mute")
+SCROLL = Action(Intent.SCROLL, direction=None)
+
+
+def chain(*decisions, cfg=None, **parts):
+    """One utterance whose first decision carries the rest."""
+    first, rest = decisions[0], decisions[1:]
+    return engine({"focus firefox": replace(first, rest=rest)}, cfg=cfg, **parts)
+
+
+def test_a_chain_runs_its_clauses_in_the_order_they_were_spoken():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH, heard="open firefox"),
+        Decision(Verdict.ACT, MOVE),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH, MOVE, MUTE]
+
+
+def test_a_chain_stops_the_moment_a_clause_is_refused():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.REFUSE, reason="that window is gone"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH]
+
+
+def test_a_chain_stops_when_a_clause_only_asks_and_does_not_leave_badges_up():
+    """A number answered now could only finish the clause it belongs to, and the rest of
+    the utterance would be lost: that is the half-done outcome the chain exists to stop."""
+    rivals = (Candidate("a", window=WINDOW), Candidate("b", window=OTHER))
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.HINTS, MOVE, rivals, tier=1, reason="several windows fit"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH]
+    assert e._picking == ()
+
+
+def test_a_chain_that_stopped_says_which_part_stopped_it_and_what_already_ran():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.REFUSE, reason="that window is gone"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    said = p["hud"].sent[-1]["text"]
+    assert "part 2 of 3" in said
+    assert "that window is gone" in said
+    assert "already did" in said and "launch app" in said
+
+
+def test_a_chain_whose_first_clause_fails_says_nothing_was_done():
+    e, p = chain(
+        Decision(Verdict.REFUSE, reason="session is locked"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == []
+    assert "nothing was done" in p["hud"].sent[-1]["text"]
+
+
+def test_a_clause_the_executor_refuses_stops_the_rest_of_the_chain():
+    executor = Executor(outcomes={Intent.MOVE_TO_WORKSPACE: Outcome(False, "the window changed")})
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.ACT, MOVE),
+        Decision(Verdict.ACT, MUTE),
+        executor=executor,
+    )
+    run(utter(e, p))
+    assert executor.executed == [LAUNCH, MOVE]
+
+
+def test_the_lock_is_asked_again_between_two_clauses():
+    class LockAfterFirst(Executor):
+        def __init__(self, latch):
+            super().__init__()
+            self.latch = latch
+
+        def execute(self, action, *, pinned_address=""):
+            self.latch.value = True  # the screen locks while the first clause runs
+            return super().execute(action, pinned_address=pinned_address)
+
+    latch = Latch()
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.ACT, MUTE),
+        executor=LockAfterFirst(latch),
+        latch=latch,
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH]
+    assert p["hud"].sent[-1]["text"] == "session is locked"
+
+
+def test_a_clause_with_a_blank_target_is_not_pinned_to_the_window_at_key_down():
+    """It means "whatever the clause before it left in front of me". Pinning it to key
+    down would aim a scroll at the terminal the key was held over."""
+    e, p = chain(Decision(Verdict.ACT, LAUNCH), Decision(Verdict.ACT, SCROLL))
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH, SCROLL]
+    assert p["executor"].pins == ["0x1", ""]
+
+
+def test_a_clause_that_names_its_own_window_keeps_the_pinned_address():
+    typed = Action(Intent.TYPE_TEXT, window=WINDOW, text="hello")
+    e, p = chain(Decision(Verdict.ACT, FOCUS), Decision(Verdict.ACT, typed))
+    run(utter(e, p))
+    assert p["executor"].pins == ["0x1", "0x1"]
+
+
+def test_a_countdown_inside_a_chain_is_waited_for_before_the_next_clause():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.COUNTDOWN, CLOSE, tier=2),
+        Decision(Verdict.ACT, MUTE),
+        cfg=fast(),
+    )
+    run(utter(e, p))
+    assert p["executor"].executed == [LAUNCH, CLOSE, MUTE]
+
+
+def test_a_countdown_cancelled_mid_chain_stops_everything_after_it():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.COUNTDOWN, CLOSE, tier=2),
+        Decision(Verdict.ACT, MUTE),
+        cfg=fast(0.5),
+    )
+
+    async def go():
+        task = asyncio.ensure_future(utter(e, p))
+        await asyncio.sleep(0.05)
+        await e._key_down()  # the cancel gesture
+        await task
+
+    run(go())
+    assert p["executor"].executed == [LAUNCH]
+
+
+def test_a_chain_that_ran_through_says_what_every_part_did():
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH, heard="open firefox and mute"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    run(utter(e, p))
+    chip = p["hud"].sent[-1]["chip"]
+    assert "launch app" in chip and "volume mute" in chip
+
+
+def test_a_single_decision_still_behaves_exactly_as_it_did_before():
+    e, p = engine({"focus firefox": Decision(Verdict.ACT, FOCUS)})
+    run(utter(e, p))
+    assert p["executor"].executed == [FOCUS]
+    assert p["executor"].pins == ["0x1"]
+    assert p["hud"].states[-1] == "act"

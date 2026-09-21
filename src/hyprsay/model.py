@@ -134,6 +134,13 @@ class Intent(StrEnum):
     MEDIA = "media"
     TYPE_TEXT = "type_text"  # grammar only, never offered to Jev
     LOCK_SCREEN = "lock_screen"  # grammar only, never offered to Jev
+    # reaching INSIDE a window. Grammar only, for the same reason typing is: Jev must
+    # never be handed a list of chords, recipes or control names to pick from, so none of
+    # these is in JEV_INTENTS and none has an entry in the question bank.
+    SCROLL = "scroll"
+    PRESS_CHORD = "press_chord"
+    RUN_RECIPE = "run_recipe"
+    CLICK_CONTROL = "click_control"
     UNDO = "undo"
     AGAIN = "again"
     CANCEL = "cancel"
@@ -282,6 +289,10 @@ class Decision:
     # the utterance is someone dictating. Its words are theirs, not a command: they
     # never go to a model, to the HUD, or to the journal in the clear.
     dictation: bool = False
+    # the clauses that follow this one, when one utterance held several commands
+    # (`nlu/clauses.py`). Each is an ordinary Decision, judged on its own; the daemon
+    # runs them in order and stops at the first that does not act.
+    rest: tuple[Decision, ...] = ()
 
 
 @dataclass(frozen=True)

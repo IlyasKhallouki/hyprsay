@@ -240,14 +240,36 @@ def inverse(gesture: Gesture) -> Gesture | None:
 # ---------------------------------------------------------------------------- refusal
 
 
-def refusal(window: Window | None, kind: str, state: DesktopState, cfg: Config) -> str:
+def refusal(
+    window: Window | None,
+    kind: str,
+    state: DesktopState,
+    cfg: Config,
+    gesture: str = CHORD,
+    keys: str = "",
+) -> str:
     """Why no gesture may be sent to this window, or "" when one may.
 
-    The rule is the typing rule, called rather than copied: the surfaces that must never
-    receive dictated text must never receive keystrokes or wheel notches either. The
-    sentence that comes back therefore speaks of typing, and is not reworded here, because
-    a second copy of the wording is a second thing to keep true.
+    For a chord the rule is the typing rule, called rather than copied: a shell runs what
+    it receives, and a chord into a terminal is as dangerous as text.
+
+    A wheel notch is not. Scrolling a terminal moves its scrollback and nothing else, and
+    refusing it with the typing sentence ("a shell runs what it receives") was both wrong
+    and confusing: the one place people scroll most is the window with the long output.
+    So a scroll is refused only where a wheel event would land somewhere other than the
+    window it was authorized against, which is what a grabbing layer does.
     """
+    # Page Down, Home and End are the keyboard's version of the wheel: they move a view
+    # and can cause nothing, which is what tier 0 means in CHORD_TIERS. Refusing them
+    # where a scroll is allowed would be a distinction only this file can see.
+    navigating = gesture == SCROLL or (keys and CHORD_TIERS.get(keys) == 0)
+    if navigating:
+        grabbing = tiers.grabbing_layer(state, cfg)
+        if grabbing:
+            return f"{grabbing} has the screen, so the wheel would not reach that window"
+        if window is None:
+            return "there is no window to scroll"
+        return ""
     return tiers.typing_refusal(window, kind, state, cfg)
 
 

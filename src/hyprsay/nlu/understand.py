@@ -43,14 +43,16 @@ cancellable COUNTDOWN. A number chooses a target; it does not waive a tier.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from hyprsay import controls, inapp, recipes
 from hyprsay.config import Config
 from hyprsay.jev.client import JevAuthError, JevTimeout
-from hyprsay.jev.types import BooleanAnswer, ChoiceAnswer, Evaluation, ScoreAnswer
+from hyprsay.jev.types import BooleanAnswer, ChoiceAnswer, Evaluation, Question, ScoreAnswer
 from hyprsay.model import (
     Action,
     App,
@@ -66,13 +68,16 @@ from hyprsay.model import (
     Verdict,
     Window,
 )
-from hyprsay.nlu import bank, requests, resolve, tiers
+from hyprsay.nlu import bank, clauses, requests, resolve, tiers
 from hyprsay.nlu.resolve import MAX_HINTS, LexiconLike, Resolution
 from hyprsay.nlu.tiers import Evidence
 
 # "did you mean" floor for intents (PLAN section 6), reused as the floor under which a
 # window or app is not a plausible alternative worth a swap badge
 PLAUSIBLE = 0.15
+# question id prefix for the one Boolean per seam that `nlu/clauses.py` proposed
+SEPARATES = "separates_"
+_WORD = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*")
 
 WINDOW_OPS = frozenset(
     {
@@ -89,6 +94,9 @@ NO_TARGET = frozenset(
 )
 BARE = frozenset({Intent.HELP, Intent.UNDO, Intent.AGAIN, Intent.CANCEL})
 WHILE_PICKING = frozenset({Intent.PICK, Intent.CANCEL, Intent.UNDO})
+# every intent whose Action must carry a window (`ops.Operation.needs_window`). A blank
+# one on these means the target is settled against fresh state when the action runs.
+NEEDS_WINDOW = WINDOW_OPS | tiers.IN_APP | {Intent.FOCUS_WINDOW, Intent.TYPE_TEXT}
 REQUIRED: dict[Intent, str] = {
     Intent.SWITCH_WORKSPACE: "workspace",
     Intent.MOVE_TO_WORKSPACE: "workspace",
@@ -130,6 +138,88 @@ def _sounds_like_dictation(literal: tuple[str, ...] | list[str]) -> bool:
 
 
 STARTERS = (Intent.FOCUS_WINDOW, Intent.SWITCH_WORKSPACE, Intent.LAUNCH_APP)
+# the verdicts that mean this clause will change the desktop, which is what the clause
+# after it is allowed to assume
+ACTING = frozenset({Verdict.ACT, Verdict.ACT_SWAP, Verdict.COUNTDOWN, Verdict.CONFIRM_KEY})
+
+
+@dataclass(frozen=True)
+class _Seams:
+    """Where one utterance might stop being one command, and the text those offsets index.
+
+    `text` is what `nlu/clauses.py` was asked about and what `at` counts characters in.
+    `source` is the same string in its own casing, which is what a clause is actually cut
+    from and handed to the normalizer.
+    """
+
+    at: tuple[int, ...] = ()
+    text: str = ""
+    source: str = ""
+    # whether a fan-out has already carried the questions about them. Nothing is refused
+    # for being "more than one command" on a seam nobody was able to judge.
+    asked: bool = False
+
+    def said(self, clause: clauses.Clause) -> str:
+        return self.source[clause.start : clause.end]
+
+
+def _swallowed(parse: Parse, seams: _Seams) -> bool:
+    """Did one grammar slot eat what might be a second command?
+
+    A referring phrase matches up to six words, so "focus spotify and close it" parses as
+    a focus whose target is "spotify and close it"; the lexicon then resolves that on the
+    word "spotify" alone and throws the rest away. The parse consumed every character and
+    obeyed a quarter of them, which is v1's bug wearing a full match. So when code has
+    proposed a seam and a slot holds more than one word, the seams are asked about rather
+    than trusted to the fast path.
+
+    One word cannot hide a clause, which is what keeps "Focus, Kitty." (a real recognizer
+    output, comma and all) on the path that never touches the network.
+    """
+    if not seams.at:
+        return False
+    spoken = parse.slots.window_ref or parse.slots.app_ref or ""
+    return len(spoken.split()) > 1 or bool(parse.slots.text)
+
+
+# the frozen "nothing proposed cutting this" holder, so it is built once
+NO_SEAMS = _Seams()
+
+
+def _seams(norm: Any) -> _Seams:
+    """The seams code offers for this utterance, proposed over the RAW transcript.
+
+    Over the raw and not the normalized text, for one measured reason: the normalizer
+    drops punctuation, and the comma is the only seam in the owner's own utterance,
+    "open chrome, navigate to youtube and look up ltt". Lower cased because a recognizer
+    capitalizes the word after a full stop while `clauses.CONNECTIVES` are written in
+    lower case, so "Open firefox. Then close kitty." would otherwise read as one command.
+
+    Lowering changes the length of a string in a few scripts, and these offsets have to
+    index the raw text, so a text that changed length falls back to the normalized form.
+    """
+    raw = getattr(norm, "raw", "") or ""
+    lowered = raw.lower()
+    text, source = (lowered, raw) if len(lowered) == len(raw) else (norm.text, norm.text)
+    return _Seams(tuple(clauses.split_candidates(text)), text, source)
+
+
+@dataclass(frozen=True)
+class _Chain:
+    """What a clause in a compound utterance inherits from the clause before it.
+
+    `refers_back` is this clause's own word ("it", "that", "there"); the rest is what the
+    clause before it acted on. "this" and "here" are deliberately not back references
+    (nlu/clauses.py), so a clause that points with them still means the window pinned at
+    key down, and clause 0 is never given one of these at all.
+    """
+
+    refers_back: bool = False
+    window: Window | None = None
+    workspace: str | None = None
+    # the clause before opened an application. Its window does not exist yet, so nothing
+    # here can name it and the target is settled when the clause runs instead.
+    launched: bool = False
 
 
 @dataclass(frozen=True)
@@ -229,18 +319,41 @@ class Understander:
         if picking:
             self.last_exchange["path"] = "picking"
             return self._pick(norm, _heard(norm, None), picking, state)
+        # Code proposes the seams, Jev judges them (nlu/clauses.py). An utterance with no
+        # connective in it proposes none, and then this is v1's path character for
+        # character, which is why nothing without an "and" in it can regress.
+        return await self._clause(norm, state, pinned_address, seams=_seams(norm))
 
+    async def _clause(
+        self,
+        norm: Any,
+        state: DesktopState,
+        pinned_address: str,
+        *,
+        seams: _Seams = NO_SEAMS,
+        chain: _Chain | None = None,
+    ) -> Decision:
+        """One command's worth of an utterance: the whole of it, or one clause of it."""
         # the grammar tries the utterance and then each variant itself (grammar.py)
         parse = self.grammar.parse(norm, picking=False)
         heard = _heard(norm, parse)
         need: _Need | None = None
         if parse is not None and parse.intent is not Intent.NONE:
+            if _swallowed(parse, seams) and self._jev_on():
+                # the parse matched every word, but one slot ate a seam, so the words
+                # after it would be resolved away rather than obeyed. Ask before acting.
+                taken = self._separating(await self._ask(self._seam_fan(heard, seams)), seams)
+                seams = replace(seams, asked=True)
+                if taken:
+                    chained = await self._chained(seams, state, pinned_address, taken)
+                    if chained is not None:
+                        return chained
             self.last_exchange["path"] = "grammar"
-            outcome = self._from_grammar(parse, heard, state, pinned_address)
+            outcome = await self._from_grammar(parse, heard, state, pinned_address, chain)
             if isinstance(outcome, Decision):
-                return outcome
+                return self._partial(seams, heard, outcome) or outcome
             need = outcome
-        return await self._semantic(heard, state, pinned_address, need)
+        return await self._semantic(heard, state, pinned_address, need, seams=seams, chain=chain)
 
     # ----------------------------------------------------------------------- language
 
@@ -296,10 +409,17 @@ class Understander:
 
     # ----------------------------------------------------------------------- grammar path
 
-    def _from_grammar(
-        self, parse: Parse, heard: _Heard, state: DesktopState, pinned_address: str
+    async def _from_grammar(
+        self,
+        parse: Parse,
+        heard: _Heard,
+        state: DesktopState,
+        pinned_address: str,
+        chain: _Chain | None = None,
     ) -> Decision | _Need:
         intent, slots = parse.intent, parse.slots
+        if intent in tiers.IN_APP:
+            return await self._in_app(parse, heard, state, pinned_address, chain)
         if intent is Intent.TYPE_TEXT or slots.text is not None:
             return self._typing(parse, state, pinned_address)
         if intent is Intent.PICK:
@@ -310,6 +430,15 @@ class Understander:
             # lock and anything session-level land here: tier 3, grammar only
             evidence = Evidence(source="grammar", corroborated=True, explicit_target=True)
             return self._finish(Action(intent), evidence, (), heard, state)
+        if (
+            chain is not None
+            and chain.refers_back
+            and chain.workspace
+            and REQUIRED.get(intent) == "workspace"
+            and slots.workspace is None
+        ):
+            # "there" is the place the clause before this one acted on
+            slots = replace(slots, workspace=chain.workspace)
         missing = self._missing(intent, slots)
         if missing:
             return self._suggest(heard, f"say which {missing}", intent)
@@ -323,8 +452,210 @@ class Understander:
         if not phrase:
             if intent is Intent.FOCUS_WINDOW:
                 return self._suggest(heard, "say which window", intent)
-            return self._pointed(template, heard, state, pinned_address, said=True)
+            bound = self._bound(template, heard, state, chain)
+            return bound or self._pointed(template, heard, state, pinned_address, said=True)
         return self._window_locally(parse, phrase, template, heard, state)
+
+    # ----------------------------------------------------------------------- back references
+
+    def _bound(
+        self, template: Action, heard: _Heard, state: DesktopState, chain: _Chain | None
+    ) -> Decision | None:
+        """Aim a clause at what the clause before it acted on, or None when it did not
+        say to.
+
+        "open firefox and move IT to workspace 3" moves firefox, not whatever happened to
+        be focused when the key went down. Clause 0 never gets here, and neither does a
+        clause that pointed with "this" or "here", so v1's deixis is untouched.
+        """
+        if chain is None or not chain.refers_back:
+            return None
+        evidence = Evidence(
+            source="grammar",
+            corroborated=True,
+            explicit_target=True,
+            verb_said=tiers.verb_said(template.intent, heard.literal),
+        )
+        if chain.window is not None:
+            window = state.by_address(chain.window.address) or chain.window
+            candidate = resolve.window_candidate(self.lexicon, heard.text, window, 1.0)
+            return self._finish(
+                replace(template, window=window), evidence, (candidate,), heard, state
+            )
+        if not chain.launched:
+            return None
+        # The clause before opened an application, so there is no window to name yet. The
+        # target is therefore left blank on purpose: the executor resolves a blank target
+        # against FRESH state at the moment of the write (executor._check_window), and by
+        # then the launch has waited for its window (ops.LAUNCH_WAIT_S).
+        return self._finish(template, evidence, (), heard, state)
+
+    # ----------------------------------------------------------------------- in-app reach
+
+    async def _in_app(
+        self,
+        parse: Parse,
+        heard: _Heard,
+        state: DesktopState,
+        pinned_address: str,
+        chain: _Chain | None,
+    ) -> Decision:
+        """Reaching INSIDE one window: a wheel notch, a chord, a recipe or a click.
+
+        None of these is in `model.JEV_INTENTS`, so none can arrive from a model: each
+        was matched by an exact grammar phrase naming the gesture. The target is the
+        window the speaker is looking at, or, in a chain, the one the clause before acted
+        on, so "open chrome, navigate to youtube" reaches chrome and not the terminal the
+        key was held over.
+        """
+        window, deferred = self._in_app_target(state, pinned_address, chain)
+        if window is None and not deferred:
+            return Decision(
+                Verdict.REFUSE, reason="the window you were pointing at is gone", heard=heard.said
+            )
+        kind = self.lexicon.kind_of(window) if window is not None else ""
+        if window is not None:
+            # the only thing that stops a gesture reaching a launcher, a lock prompt, an
+            # authentication dialog or a shell: the inherited pointer call merely NOTES a
+            # covering layer, and a wheel notch is not milder than a keystroke where tmux
+            # and vim read the wheel as keys
+            gesture = inapp.SCROLL if parse.intent is Intent.SCROLL else inapp.CHORD
+            chord = parse.slots.verb or "" if parse.intent is Intent.PRESS_CHORD else ""
+            refusal = inapp.refusal(window, kind, state, self.cfg, gesture, chord)
+            if refusal:
+                return Decision(Verdict.REFUSE, tier=2, reason=refusal, heard=heard.said)
+        if parse.intent is Intent.CLICK_CONTROL:
+            return await self._click(parse, heard, state, window)
+        if parse.intent is Intent.RUN_RECIPE:
+            return self._recipe(parse, heard, state, window, kind)
+        return self._gesture(parse, heard, state, window)
+
+    def _in_app_target(
+        self, state: DesktopState, pinned_address: str, chain: _Chain | None
+    ) -> tuple[Window | None, bool]:
+        """The window to reach into, and whether it is settled at run time instead."""
+        if chain is not None:
+            if chain.window is not None:
+                return state.by_address(chain.window.address) or chain.window, False
+            if chain.launched:
+                return None, True
+        return _pinned(state, pinned_address), False
+
+    def _gesture(
+        self, parse: Parse, heard: _Heard, state: DesktopState, window: Window | None
+    ) -> Decision:
+        address = window.address if window is not None else ""
+        try:
+            # built here only so a direction or a chord this cannot send is refused in
+            # words now rather than failing at delivery; `ops` builds the one it performs
+            if parse.intent is Intent.SCROLL:
+                inapp.scroll(parse.slots.direction, parse.slots.amount, address)
+            else:
+                inapp.press(parse.slots.verb or "", address)
+        except inapp.GestureError as exc:
+            return Decision(Verdict.REFUSE, reason=str(exc), heard=heard.said)
+        action = Action(
+            parse.intent,
+            window=window,
+            direction=parse.slots.direction,
+            amount=parse.slots.amount,
+            verb=parse.slots.verb,
+        )
+        # the phrase the grammar matched IS the literally spoken gesture, exactly as a
+        # carrier phrase is for typing
+        evidence = Evidence(
+            source="grammar", corroborated=True, verb_said=True, explicit_target=True
+        )
+        return self._finish(action, evidence, (), heard, state)
+
+    def _recipe(
+        self,
+        parse: Parse,
+        heard: _Heard,
+        state: DesktopState,
+        window: Window | None,
+        kind: str,
+    ) -> Decision:
+        name = parse.slots.verb or ""
+        if window is None:
+            return self._deferred_recipe(name, parse.slots.text, heard, state)
+        offered = {recipe.name: recipe for recipe in recipes.for_window(window, kind)}
+        recipe = offered.get(name)
+        if recipe is None:
+            what = window.cls or "that window"
+            return Decision(
+                Verdict.REFUSE,
+                reason=f"{what} has no {name.replace('_', ' ')}",
+                heard=heard.said,
+            )
+        refusal = recipes.refusal_for(recipe, window, kind)
+        if refusal:
+            return Decision(Verdict.REFUSE, tier=2, reason=refusal, heard=heard.said)
+        try:
+            # rendered now and thrown away, so "that sounded like a phrase rather than an
+            # address" is said before any key goes out. `ops` renders the one it performs.
+            recipes.render(recipe, parse.slots.text, window)
+        except recipes.RecipeError as exc:
+            return Decision(Verdict.REFUSE, reason=str(exc), heard=heard.said)
+        action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name, text=parse.slots.text)
+        return self._finish(action, _recipe_evidence(recipe, heard), (), heard, state)
+
+    def _deferred_recipe(
+        self, name: str, text: str | None, heard: _Heard, state: DesktopState
+    ) -> Decision:
+        """A recipe in a clause that follows a launch: the window is not open yet.
+
+        What it may do is still decided here, from the recipe's own tier; which window it
+        runs against, and whether that window's kind offers it at all, is settled by
+        `ops._run_recipe` against fresh state.
+        """
+        recipe = next(
+            (r for table in recipes.RECIPES.values() for r in table.values() if r.name == name),
+            None,
+        )
+        if recipe is None:
+            return Decision(
+                Verdict.REFUSE, reason=f"there is no {name.replace('_', ' ')}", heard=heard.said
+            )
+        action = Action(Intent.RUN_RECIPE, verb=name, text=text)
+        return self._finish(action, _recipe_evidence(recipe, heard), (), heard, state)
+
+    async def _click(
+        self, parse: Parse, heard: _Heard, state: DesktopState, window: Window | None
+    ) -> Decision:
+        """The one place the accessibility tree is read, and only because the utterance
+        asked to click: a speculative walk cost 16.2 seconds live on a real window."""
+        if window is None:
+            return Decision(
+                Verdict.REFUSE,
+                reason="what can be clicked is read from a window that is already open, "
+                "so say that on its own once it is",
+                heard=heard.said,
+            )
+        try:
+            # a D-Bus walk, so never on the loop: it may take a second and a half before
+            # it gives up, and the next key press must still open the microphone on time
+            found = await asyncio.to_thread(controls.controls_for, window)
+        except controls.ControlsError as exc:
+            # a bus that will not start, a Chrome without its flag, a walk still running:
+            # each is one sentence naming its own repair, and none means "no such button"
+            return Decision(Verdict.REFUSE, reason=str(exc), heard=heard.said)
+        ranked = controls.best_match(parse.slots.text or "", found)
+        if not ranked:
+            return self._suggest(
+                heard, "nothing in that window is called that", Intent.CLICK_CONTROL
+            )
+        control = ranked[0][0]
+        action = Action(
+            Intent.CLICK_CONTROL, window=window, verb=control.name, text=parse.slots.text
+        )
+        # the click verb was literally said, and the control was chosen only by words the
+        # speaker used: `best_match` scores against nothing else, so the window's own text
+        # cannot supply the evidence that selects it (controls.py, docs/PLAN.md 5.6)
+        evidence = Evidence(
+            source="grammar", corroborated=True, verb_said=True, explicit_target=True
+        )
+        return self._finish(action, evidence, (), heard, state)
 
     def _missing(self, intent: Intent, slots: Slots) -> str:
         name = REQUIRED.get(intent, "")
@@ -340,7 +671,9 @@ class Understander:
             return _Need(parse, "app", found)
         if found.status == "ambiguous":
             return self._hints(template, found.candidates, "several apps match", heard, state)
-        return self._launch(found.app, found.candidates, Evidence(source="grammar"), heard, state)
+        return self._launch(
+            found.app, found.candidates, Evidence(source="grammar"), heard, state, template
+        )
 
     def _launch(
         self,
@@ -349,6 +682,7 @@ class Understander:
         evidence: Evidence,
         heard: _Heard,
         state: DesktopState,
+        template: Action | None = None,
     ) -> Decision:
         if not app.trusted:
             return Decision(
@@ -364,7 +698,13 @@ class Understander:
             explicit_target=True,
             plausible=len(candidates),
         )
-        return self._finish(Action(Intent.LAUNCH_APP, app=app), evidence, candidates, heard, state)
+        # the template carries the workspace the speaker asked for ("open firefox on
+        # workspace 3"). Building a bare Action here threw it away and opened the
+        # application where it already was, which is what "open zapzap in a new
+        # workspace" did.
+        base = template if template is not None else Action(Intent.LAUNCH_APP)
+        action = replace(base, intent=Intent.LAUNCH_APP, app=app, window=None)
+        return self._finish(action, evidence, candidates, heard, state)
 
     def _window_locally(
         self, parse: Parse, phrase: str, template: Action, heard: _Heard, state: Any
@@ -489,7 +829,14 @@ class Understander:
         return self.cfg.jev.enabled and self.evaluator is not None
 
     async def _semantic(
-        self, heard: _Heard, state: DesktopState, pinned_address: str, need: _Need | None
+        self,
+        heard: _Heard,
+        state: DesktopState,
+        pinned_address: str,
+        need: _Need | None,
+        *,
+        seams: _Seams = NO_SEAMS,
+        chain: _Chain | None = None,
     ) -> Decision:
         if need is None and _sounds_like_dictation(heard.literal):
             self.last_exchange["path"] = "local"
@@ -501,11 +848,19 @@ class Understander:
                 heard, bank.unsupported_message("long_dictation"), rehearable=False
             )
         if not self._jev_on():
+            # nobody can judge the seams, so the utterance stays whole: exactly v1
             return self._degrade(heard, state, need, "Jev is turned off")
 
         self.last_exchange["path"] = "jev"
-        fan, local_app = self._fan_out(heard, state, need)
+        fan, local_app = self._fan_out(heard, state, need, seams)
         answers = await self._ask(fan)
+        taken = [] if seams.asked else self._separating(answers, seams)
+        if seams.at:
+            seams = replace(seams, asked=True)
+        if taken:
+            chained = await self._chained(seams, state, pinned_address, taken)
+            if chained is not None:
+                return chained
         if need is not None:
             reading = _Reading(need.parse.intent, need.parse.slots, [], grammar=True)
         else:
@@ -514,12 +869,127 @@ class Understander:
                 return reading
             if isinstance(reading, Exception):
                 return self._degrade(heard, state, None, _plain(reading), reading)
-        return self._resolve_remote(
-            reading, fan, answers, local_app, heard, state, pinned_address, need
+        decision = self._resolve_remote(
+            reading, fan, answers, local_app, heard, state, pinned_address, need, chain
         )
+        if seams.at and not taken:
+            return self._partial(seams, heard, decision) or decision
+        return decision
+
+    # -------------------------------------------------------------- compound utterances
+
+    def _seam_questions(self, seams: _Seams) -> dict[str, Question]:
+        """One Boolean per seam code offered, for the request that was going out anyway.
+
+        Question count is free and payload is not (PLAN 5.5), so asking costs nothing.
+        What the halves may SAY is another matter: `clauses.split_candidates` refuses to
+        offer a seam inside a dictated tail, but such a tail can still sit on the far
+        side of one it did offer, as in "close this and type my password". Those words
+        are the speaker's, not a command, and they never reach a model (PLAN 5.6 and
+        section 7), so every half is cut at its carrier verb before it is sent.
+        """
+        built: dict[str, Question] = {}
+        for index, at in enumerate(seams.at):
+            cut = clauses.clauses_for(seams.text, [at])
+            if len(cut) != 2:
+                continue
+            left, right = cut
+            word = seams.text[left.end : right.start].strip(" ,") or "and"
+            built[f"{SEPARATES}{index}"] = bank.separates(
+                word, _before_dictation(seams.said(left)), _before_dictation(seams.said(right))
+            )
+        return built
+
+    def _seam_fan(self, heard: _Heard, seams: _Seams) -> requests.FanOut:
+        """A request carrying nothing but the seam Booleans, for a parse the grammar
+        already settled: there is nothing else worth asking about it."""
+        base = requests.utterance_state(heard.said, heard.variants)
+        built = requests.split("r1", base, self._seam_questions(seams), self.cfg.jev.token_cap)
+        fan = requests.FanOut(tuple(built))
+        self.last_exchange["requests"] = [r.as_sent() for r in fan.requests]
+        return fan
+
+    def _separating(self, answers: _Answers, seams: _Seams) -> list[int]:
+        """The seams the answers said really separate two commands.
+
+        The gate is `gates.spoken`, the knob for Booleans about the UTTERANCE rather than
+        about one window. A seam nobody answered about is not taken: a failed request
+        leaves the utterance whole, which is v1's behaviour and the safe one.
+        """
+        floor = self.cfg.gates.spoken
+        taken: list[int] = []
+        for index, at in enumerate(seams.at):
+            answer = answers.r1.get(f"{SEPARATES}{index}")
+            if isinstance(answer, BooleanAnswer) and answer.probability >= floor:
+                taken.append(at)
+        return taken
+
+    async def _chained(
+        self, seams: _Seams, state: DesktopState, pinned_address: str, taken: list[int]
+    ) -> Decision | None:
+        """Every clause understood on its own, the first one carrying the rest.
+
+        Each clause is judged against the desktop as the clause before it leaves it, and
+        its `verb_said` is read from its OWN words, so a launch can never carry a close.
+        """
+        cut = clauses.clauses_for(seams.text, taken)
+        if len(cut) < 2:
+            return None
+        decisions: list[Decision] = []
+        carried = _Chain()
+        for clause in cut:
+            # each clause is normalized on its own, so its tokens carry offsets into its
+            # own words: dictated text and a recipe's spoken span are still cut from what
+            # the recognizer wrote, and number repair now sees each clause's real end
+            sub = self._normalize(seams.said(clause))
+            if not sub.text.strip():
+                continue
+            chain = None if clause.index == 0 else replace(carried, refers_back=clause.refers_back)
+            decision = await self._clause(sub, state, pinned_address, chain=chain)
+            decisions.append(decision)
+            carried = _carried(decision)
+            state = _projected(state, decision)
+        if len(decisions) < 2:
+            return None
+        self.last_exchange["path"] = "chain"
+        self.last_exchange["clauses"] = [seams.said(clause) for clause in cut]
+        return replace(decisions[0], rest=tuple(decisions[1:]))
+
+    def _partial(self, seams: _Seams, heard: _Heard, decision: Decision) -> Decision | None:
+        """Words left over after a seam nobody cut, on an utterance about to be acted on.
+
+        The answers said this is one command. If what follows one of the seams reads as a
+        command all by itself, then acting would carry out the front of the utterance and
+        drop the rest, which is worse than refusing: doing a third of what was asked is
+        the bug this whole file exists to fix.
+
+        Only a seam that was really judged counts. With Jev off nobody could say, and
+        guessing the other way would turn ordinary commands into questions.
+        """
+        if not seams.asked or decision.verdict not in ACTING:
+            return None
+        for at in seams.at:
+            cut = clauses.clauses_for(seams.text, [at])
+            if len(cut) != 2:
+                continue
+            tail = self.grammar.parse(self._normalize(seams.said(cut[1])), picking=False)
+            if tail is not None and tail.intent is not Intent.NONE:
+                self.last_exchange["path"] = "partial"
+                return self._suggest(
+                    heard,
+                    "that sounded like more than one command, so nothing was done; "
+                    "say them one at a time",
+                    tail.intent,
+                    rehearable=False,
+                )
+        return None
 
     def _fan_out(
-        self, heard: _Heard, state: DesktopState, need: _Need | None
+        self,
+        heard: _Heard,
+        state: DesktopState,
+        need: _Need | None,
+        seams: _Seams = NO_SEAMS,
     ) -> tuple[requests.FanOut, App | None]:
         cap = self.cfg.jev.token_cap
         base = requests.utterance_state(heard.said, heard.variants)
@@ -528,8 +998,13 @@ class Understander:
         titled: dict[str, Window] = {}
         apps: dict[str, App] = {}
         dropped_windows = dropped_apps = 0
+        # the seam questions ride in the R1 family whether or not R1's own questions are
+        # being asked, so `_merge` files their answers in the same place
+        asked = self._seam_questions(seams) if seams.at and not seams.asked else {}
         if need is None:
-            built += requests.split("r1", base, bank.utterance_questions(), cap)
+            built += requests.split("r1", base, {**bank.utterance_questions(), **asked}, cap)
+        elif asked:
+            built += requests.split("r1", base, asked, cap)
         if need is None or need.wants == "window":
             made, windows, dropped_windows = requests.window_requests(
                 base, state.windows, self._describe, cap
@@ -718,6 +1193,7 @@ class Understander:
         state: DesktopState,
         pinned_address: str,
         need: _Need | None,
+        chain: _Chain | None = None,
     ) -> Decision:
         intent = reading.intent
         template = _template(intent, reading.slots)
@@ -728,7 +1204,7 @@ class Understander:
             return self._finish(template, evidence, (), heard, state)
         if intent is Intent.LAUNCH_APP:
             return self._launch_remote(
-                reading, fan, answers, local_app, evidence, heard, state, need
+                reading, fan, answers, local_app, evidence, heard, state, need, template
             )
         if intent in WINDOW_OPS and not reading.grammar:
             names = answers.r1["names_window"].probability
@@ -739,6 +1215,9 @@ class Understander:
                 # window pinned at key down: deixis is never an option beside real windows
                 reading.reads.append(max(deictic, 1.0 - names))
                 self._note(reading)
+                bound = self._bound(template, heard, state, chain)
+                if bound is not None:
+                    return bound
                 return self._pointed(
                     template,
                     heard,
@@ -927,11 +1406,12 @@ class Understander:
         heard: _Heard,
         state: DesktopState,
         need: _Need | None,
+        template: Action | None = None,
     ) -> Decision:
         if local_app is not None:
             self._note(reading)
             candidate = resolve.app_candidate(self.lexicon, heard.text, local_app, 1.0)
-            return self._launch(local_app, (candidate,), evidence, heard, state)
+            return self._launch(local_app, (candidate,), evidence, heard, state, template)
         failure = answers.failure("r3")
         if failure is not None:
             return self._degrade(heard, state, need, _plain(failure), failure, reading)
@@ -945,7 +1425,7 @@ class Understander:
             resolve.app_candidate(self.lexicon, heard.text, a, p) for a, p in ranked[:MAX_HINTS]
         )
         evidence = replace(evidence, wide_margin=ranked[0][1] - runner_up >= self.cfg.gates.margin)
-        return self._launch(ranked[0][0], candidates, evidence, heard, state)
+        return self._launch(ranked[0][0], candidates, evidence, heard, state, template)
 
     # ----------------------------------------------------------------------- outcomes
 
@@ -1148,6 +1628,75 @@ class _Reading:
     # the probabilities the chosen intent actually read; their minimum is the confidence
     reads: list[float]
     grammar: bool = False
+
+
+def _before_dictation(text: str) -> str:
+    """The words up to and including a carrier verb, and nothing that follows it.
+
+    The carrier itself stays: "type" with nothing after it is exactly what tells a reader
+    that this half is an instruction of its own. What the speaker meant to have typed is
+    what may not go anywhere, so it is cut here and not shortened, redacted or hashed.
+    """
+    for match in _WORD.finditer(text):
+        if match.group().lower() in DICTATION_OPENERS:
+            return text[: match.end()]
+    return text
+
+
+def _recipe_evidence(recipe: recipes.Recipe, heard: _Heard) -> Evidence:
+    """A recipe never comes from a model, so the tier 2 verb rule reads differently here.
+
+    `recipes.SPOKEN_VERBS` names the word that has to be in the utterance for the recipes
+    whose own tier is 2, and that is checked against this clause's own words. Where the
+    table names no word, the exact grammar phrase that selected the recipe IS the
+    literally spoken verb, the same reading `_typing` makes of a carrier phrase: no model
+    was asked, and no other phrase could have reached this recipe.
+    """
+    said = recipes.verb_said(recipe, heard.literal) or recipe.name not in recipes.SPOKEN_VERBS
+    return Evidence(source="grammar", corroborated=True, verb_said=said, explicit_target=True)
+
+
+def _carried(decision: Decision) -> _Chain:
+    """What the next clause may point back at. A clause that did not act leaves nothing."""
+    action = decision.action
+    if action is None or decision.verdict not in ACTING:
+        return _Chain()
+    # A launch has no window yet, and neither has a clause that was itself aimed at
+    # whatever that launch opened. Either way the chain is working inside a window only
+    # the executor will know, so everything after it is settled at run time too.
+    pending = action.intent is Intent.LAUNCH_APP or (
+        action.window is None and action.intent in NEEDS_WINDOW
+    )
+    return _Chain(window=action.window, workspace=action.workspace, launched=pending)
+
+
+def _projected(state: DesktopState, decision: Decision) -> DesktopState:
+    """The desktop as the clause before leaves it, as far as code can honestly know.
+
+    Only what the compositor is certain to do is written down: a focus moves the active
+    address, a workspace switch moves the active workspace, a move takes the window with
+    it. That is what the next clause is tiered against, so "move it to 3 and make it
+    fullscreen" is not judged as if the window were still where it started.
+
+    Nothing is invented about a launch. The window it opens does not exist in any
+    snapshot, and pretending otherwise would put a made-up address in an Action.
+    """
+    action = decision.action
+    if action is None or decision.verdict not in ACTING:
+        return state
+    if action.intent is Intent.FOCUS_WINDOW and action.window is not None:
+        return replace(state, active_address=action.window.address)
+    workspace = action.workspace or ""
+    if action.intent is Intent.SWITCH_WORKSPACE and workspace.isdigit():
+        return replace(state, active_workspace_id=int(workspace))
+    moving = action.intent is Intent.MOVE_TO_WORKSPACE and action.window is not None
+    if moving and workspace.isdigit():
+        moved = replace(action.window, workspace_id=int(workspace), workspace_name=workspace)
+        return replace(
+            state,
+            windows=tuple(moved if w.address == moved.address else w for w in state.windows),
+        )
+    return state
 
 
 def _movable(template: Action, windows: list[Window], state: DesktopState) -> list[Window] | None:

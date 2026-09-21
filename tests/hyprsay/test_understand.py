@@ -1347,3 +1347,431 @@ def test_with_the_real_modules_an_unparsed_reference_goes_to_jev_and_is_corrobor
     assert decision.verdict is Verdict.ACT
     assert decision.action.window == MUSIC
     assert {"intent", "window", "is_w4"} <= jev.asked
+
+
+# ------------------------------------------------------- one utterance, several commands
+
+SEPARATED = {**ADDRESSED, "separates_0": 0.95, "separates_1": 0.95}
+TOGETHER = {**ADDRESSED, "separates_0": 0.02, "separates_1": 0.02}
+
+
+def launch(ref) -> Parse:
+    return Parse(Intent.LAUNCH_APP, Slots(app_ref=ref))
+
+
+def test_an_utterance_with_no_connective_is_never_asked_whether_it_is_two_commands():
+    u, jev = build(ADDRESSED, parses={"focus firefox": focus("firefox")})
+    say(u, "focus firefox")
+    assert not any(qid.startswith("separates") for qid in jev.asked)
+
+
+def test_a_seam_code_proposed_is_asked_about_inside_the_request_already_going_out():
+    u, jev = build(SEPARATED, parses={"focus firefox": focus("firefox")})
+    say(u, "focus firefox and close kitty")
+    state, questions = jev.request_with("separates_0")
+    assert "separates_0" in questions
+    # nothing new leaves: both halves are already in the utterance the state carries
+    assert questions["separates_0"].instructions["before"] == "focus firefox"
+    assert questions["separates_0"].instructions["after"] == "close kitty"
+    assert questions["separates_0"].instructions["word"] == "and"
+
+
+def test_two_commands_in_one_utterance_come_back_as_one_decision_carrying_the_rest():
+    parses = {"focus firefox": focus("firefox"), "close kitty": Parse(
+        Intent.CLOSE_WINDOW, Slots(window_ref="kitty"))}  # fmt: skip
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "focus firefox and close kitty")
+    assert decision.action.intent is Intent.FOCUS_WINDOW
+    assert [d.action.intent for d in decision.rest] == [Intent.CLOSE_WINDOW]
+    assert u.last_exchange["clauses"] == ["focus firefox", "close kitty"]
+
+
+def test_three_clauses_come_back_in_the_order_they_were_spoken():
+    parses = {
+        "open firefox": launch("firefox"),
+        "close kitty": Parse(Intent.CLOSE_WINDOW, Slots(window_ref="kitty")),
+        "mute": Parse(Intent.VOLUME, Slots(verb="mute")),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "open firefox and close kitty and mute")
+    assert [d.action.intent for d in (decision, *decision.rest)] == [
+        Intent.LAUNCH_APP,
+        Intent.CLOSE_WINDOW,
+        Intent.VOLUME,
+    ]
+
+
+def test_a_seam_the_answers_declined_leaves_the_utterance_whole():
+    # the connective is inside one name, which is the case no rule over the words alone
+    # can tell from a real seam, and the only thing that can is the answer
+    u, _ = build(TOGETHER, parses={"open firefox and friends": launch("firefox and friends")})
+    decision = say(u, "open firefox and friends")
+    assert decision.rest == ()
+    assert decision.action.app is FIREFOX
+
+
+def test_a_clause_that_says_it_points_back_means_what_the_clause_before_acted_on():
+    parses = {
+        "focus spotify": focus("spotify"),
+        "close it": Parse(Intent.CLOSE_WINDOW, Slots(deictic=True)),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "focus spotify and close it", pinned_address=TERMINAL.address)
+    # the pinned window is the terminal; "it" is the window the focus acted on
+    assert decision.action.window == MUSIC
+    assert decision.rest[0].action.window == MUSIC
+
+
+def test_this_in_a_later_clause_still_means_the_window_pinned_at_key_down():
+    """clauses.py leaves "this" and "here" out of the back references on purpose: they
+    point at what the speaker is looking at, which never moved."""
+    parses = {
+        "focus spotify": focus("spotify"),
+        "close this": Parse(Intent.CLOSE_WINDOW, Slots(deictic=True)),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "focus spotify and close this", pinned_address=TERMINAL.address)
+    assert decision.rest[0].action.window == TERMINAL
+
+
+def test_a_clause_after_a_launch_leaves_its_target_for_the_executor_to_settle():
+    # the window the launch opens does not exist in any snapshot, so nothing may name it
+    parses = {
+        "open firefox": launch("firefox"),
+        "move it to workspace 3": Parse(Intent.MOVE_TO_WORKSPACE, Slots(workspace="3")),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "open firefox and move it to workspace 3", pinned_address=TERMINAL.address)
+    moved = decision.rest[0]
+    assert moved.verdict is Verdict.ACT
+    assert moved.action.window is None
+    assert moved.action.workspace == "3"
+
+
+def test_a_launch_cannot_carry_a_close_because_each_clause_reads_its_own_words():
+    """The tier 2 verb has to be in the clause that wants it, not merely somewhere in the
+    utterance: "close" said about kitty may not authorize anything in the launch."""
+    parses = {
+        "close kitty": Parse(Intent.CLOSE_WINDOW, Slots(window_ref="kitty")),
+        "open firefox": launch("firefox"),
+        "get rid of firefox": Parse(Intent.CLOSE_WINDOW, Slots(window_ref="firefox")),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "close kitty and get rid of firefox")
+    assert decision.verdict is Verdict.COUNTDOWN  # "close" is in clause 0
+    assert decision.rest[0].verdict is Verdict.REFUSE  # and not in clause 1
+    assert "verb said out loud" in decision.rest[0].reason
+
+
+def test_every_clause_is_tiered_against_the_desktop_the_clause_before_leaves():
+    """Switching to workspace 3 first makes "move it to 3" a move that stays in view,
+    which is tier 1, where the same words on their own would have been tier 2."""
+    parses = {
+        "workspace 3": Parse(Intent.SWITCH_WORKSPACE, Slots(workspace="3")),
+        "bring spotify here": Parse(
+            Intent.MOVE_TO_WORKSPACE, Slots(window_ref="spotify", workspace="here")
+        ),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "workspace 3 and bring spotify here")
+    assert decision.rest[0].action.workspace == "3"
+
+
+def test_a_clause_that_did_not_act_leaves_the_next_one_nothing_to_point_back_at():
+    parses = {
+        "focus the camera": focus("the camera"),
+        "close it": Parse(Intent.CLOSE_WINDOW, Slots(deictic=True)),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "focus the camera and close it", pinned_address=TERMINAL.address)
+    assert decision.verdict is not Verdict.ACT
+    # nothing was focused, so "it" falls back to the window pinned at key down
+    assert decision.rest[0].action.window == TERMINAL
+
+
+def test_a_parse_whose_slot_swallowed_a_seam_asks_before_acting_on_the_front_of_it():
+    """The real grammar copies up to six words into a slot, so "focus spotify and close
+    it" parses whole and the lexicon then resolves it on "spotify" and drops the rest."""
+    u, jev = real(SEPARATED)
+    decision = say(u, "focus spotify and close it", pinned_address=TERMINAL.address)
+    assert "separates_0" in jev.asked
+    assert decision.action.window == MUSIC
+    assert [d.action.intent for d in decision.rest] == [Intent.CLOSE_WINDOW]
+
+
+def test_a_one_word_target_beside_a_comma_never_leaves_the_fast_path():
+    # "Focus, Kitty." is a real recognizer output: one word cannot hide a clause
+    u, jev = real()
+    decision = say(u, "Focus, Kitty.")
+    assert decision.action.window == TERMINAL
+    assert len(jev.calls) == 0
+
+
+def test_an_utterance_judged_one_command_still_says_so_when_its_tail_is_one():
+    u, _ = real(TOGETHER)
+    decision = say(u, "focus spotify and close it", pinned_address=TERMINAL.address)
+    assert decision.verdict is Verdict.SUGGEST
+    assert "more than one command" in decision.reason
+    assert decision.action is None
+
+
+def test_with_jev_off_an_utterance_with_a_connective_takes_the_v1_path_unchanged():
+    from hyprsay.lexicon import Lexicon
+    from hyprsay.nlu.grammar import Grammar
+
+    u = Understander(CFG, Lexicon(APPS), Grammar(), None)
+    decision = say(u, "focus spotify and close it", pinned_address=TERMINAL.address)
+    # nobody could judge the seam, so nothing is refused for being two commands
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == MUSIC
+
+
+def test_a_dictated_tail_is_never_cut_and_never_asked_about():
+    u, jev = real()
+    decision = say(u, "Type milk and eggs and bread.", pinned_address=NOTES.address)
+    assert not any(qid.startswith("separates") for qid in jev.asked)
+    assert decision.action.text == "milk and eggs and bread"
+    assert decision.rest == ()
+
+
+def test_a_clause_keeps_its_own_raw_words_for_what_gets_typed():
+    parses = {"focus spotify": focus("spotify")}
+    u, _ = real(SEPARATED)
+    decision = say(u, "Focus Spotify, then type Dear Team.", pinned_address=NOTES.address)
+    assert decision.action.window == MUSIC
+    assert decision.rest[0].action.text == "Dear Team"
+    assert parses  # the real grammar, not a scripted one
+
+
+# ------------------------------------------------------------------- reaching inside
+
+
+def browser(**extra) -> DesktopState:
+    return desktop(FOX_A, TERMINAL, NOTES, active=FOX_A.address, **extra)
+
+
+def inapp_parse(intent, **slots) -> Parse:
+    return Parse(intent, Slots(**slots))
+
+
+def test_none_of_the_in_app_intents_is_ever_offered_to_jev():
+    from hyprsay.model import JEV_INTENTS
+
+    for intent in (Intent.SCROLL, Intent.PRESS_CHORD, Intent.RUN_RECIPE, Intent.CLICK_CONTROL):
+        assert intent not in JEV_INTENTS
+        assert intent not in bank.INTENTS
+
+
+def test_a_scroll_acts_at_once_because_the_same_notches_bring_the_view_back():
+    parses = {"scroll down": inapp_parse(Intent.SCROLL, direction=Direction.DOWN)}
+    u, jev = build(parses=parses)
+    decision = say(u, "scroll down", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.ACT
+    assert decision.tier == 0
+    assert decision.action.window == FOX_A
+    assert len(jev.calls) == 0
+
+
+@pytest.mark.parametrize(
+    ("intent", "slots"),
+    [(Intent.SCROLL, {"direction": Direction.DOWN}), (Intent.PRESS_CHORD, {"verb": "Page_Down"})],
+)
+def test_navigating_a_terminal_is_allowed_because_it_can_cause_nothing(intent, slots):
+    """Scrolling a terminal moves its scrollback, and Page Down moves a view. The window
+    people scroll most is the one with the long output, and refusing that with "a shell
+    runs what it receives" was both wrong and impossible to predict."""
+    u, _ = build(parses={"go": inapp_parse(intent, **slots)})
+    decision = say(u, "go", browser(), pinned_address=TERMINAL.address)
+    assert decision.verdict is Verdict.ACT
+    assert decision.tier == 0
+
+
+@pytest.mark.parametrize("chord", ["ctrl+t", "Return", "ctrl+w"])
+def test_a_chord_that_can_cause_something_is_still_refused_by_a_terminal(chord):
+    u, _ = build(parses={"go": inapp_parse(Intent.PRESS_CHORD, verb=chord)})
+    decision = say(u, "go", browser(), pinned_address=TERMINAL.address)
+    assert decision.verdict is Verdict.REFUSE
+    assert "terminal" in decision.reason
+
+
+def test_no_gesture_is_authorized_while_a_launcher_covers_the_window():
+    """The inherited pointer call only NOTES a covering layer, so this is the only thing
+    between a spoken scroll and the launcher that is taking the keyboard."""
+    u, _ = build(parses={"scroll down": inapp_parse(Intent.SCROLL, direction=Direction.DOWN)})
+    state = browser(layers=(Layer("rofi", "eDP-1", 3),))
+    decision = say(u, "scroll down", state, pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.REFUSE
+    assert "rofi" in decision.reason
+
+
+def test_a_chord_this_cannot_send_is_refused_rather_than_passed_through():
+    u, _ = build(parses={"press": inapp_parse(Intent.PRESS_CHORD, verb="ctrl+alt+shift+z")})
+    decision = say(u, "press", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.REFUSE
+    assert "not a chord" in decision.reason
+
+
+def test_a_chord_that_closes_something_earns_the_countdown_a_close_earns():
+    u, _ = build(parses={"close tab": inapp_parse(Intent.PRESS_CHORD, verb="ctrl+w")})
+    decision = say(u, "close tab", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.tier == 2
+
+
+def test_a_recipe_the_window_kind_does_not_offer_is_refused_not_attempted():
+    u, _ = build(parses={"find cats": inapp_parse(Intent.RUN_RECIPE, verb="save", text="cats")})
+    decision = say(u, "find cats", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.REFUSE
+
+
+def test_a_recipe_that_types_is_as_dangerous_as_typing_and_gets_a_countdown():
+    parses = {"look up cats": inapp_parse(Intent.RUN_RECIPE, verb="search_web", text="cats")}
+    u, _ = build(parses=parses)
+    decision = say(u, "look up cats", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.tier == 2
+    assert decision.action.verb == "search_web"
+    assert decision.action.text == "cats"
+
+
+def test_a_spoken_phrase_that_is_not_an_address_is_refused_before_any_key_goes_out():
+    parses = {"go": inapp_parse(Intent.RUN_RECIPE, verb="go_to_url", text="linus tech tips")}
+    u, _ = build(parses=parses)
+    decision = say(u, "go", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.REFUSE
+    assert "phrase" in decision.reason
+
+
+def test_a_known_site_said_by_name_becomes_an_address_code_wrote():
+    parses = {"go": inapp_parse(Intent.RUN_RECIPE, verb="go_to_url", text="youtube")}
+    u, _ = build(parses=parses)
+    decision = say(u, "go", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.text == "youtube"  # the span; `recipes` builds the https URL
+
+
+class Tree:
+    """Stands in for the accessibility tree. A unit test may never touch the bus."""
+
+    def __init__(self, controls_found=(), error=None):
+        self.found = list(controls_found)
+        self.error = error
+        self.reads = 0
+
+    def __call__(self, window, **kwargs):
+        self.reads += 1
+        if self.error is not None:
+            raise self.error
+        return list(self.found)
+
+
+def a_control(name, window=None):
+    from hyprsay import controls
+
+    return controls.Control(
+        f":1.9:/{name}", name, "push button", True, (0, 0, 10, 10), (window or FOX_A).address
+    )
+
+
+@pytest.fixture
+def tree(monkeypatch):
+    from hyprsay.nlu import understand as module
+
+    def install(found=(), error=None):
+        fake = Tree(found, error)
+        monkeypatch.setattr(module.controls, "controls_for", fake)
+        return fake
+
+    return install
+
+
+def test_the_accessibility_tree_is_read_only_when_the_utterance_asks_to_click(tree):
+    walked = tree([a_control("Send")])
+    parses = {
+        "scroll down": inapp_parse(Intent.SCROLL, direction=Direction.DOWN),
+        "click send": inapp_parse(Intent.CLICK_CONTROL, text="send"),
+    }
+    u, _ = build(parses=parses)
+    say(u, "scroll down", browser(), pinned_address=FOX_A.address)
+    assert walked.reads == 0  # a walk cost 16.2 seconds live; it is never speculative
+    decision = say(u, "click send", browser(), pinned_address=FOX_A.address)
+    assert walked.reads == 1
+    assert decision.action.verb == "Send"
+
+
+def test_a_click_refuses_with_the_sentence_the_probe_returns(tree):
+    from hyprsay import controls
+
+    said = "no accessibility bus is running; run systemctl --user restart at-spi-dbus-bus"
+    tree(error=controls.ControlsError(said))
+    u, _ = build(parses={"click send": inapp_parse(Intent.CLICK_CONTROL, text="send")})
+    decision = say(u, "click send", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.REFUSE
+    assert decision.reason == said
+
+
+def test_a_control_the_speaker_did_not_name_is_never_a_click_target(tree):
+    tree([a_control("Delete"), a_control("Cancel")])
+    u, _ = build(parses={"click send": inapp_parse(Intent.CLICK_CONTROL, text="send")})
+    decision = say(u, "click send", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.SUGGEST
+    assert decision.action is None
+
+
+def test_a_control_whose_name_reads_destructive_gets_a_countdown(tree):
+    tree([a_control("Delete everything")])
+    u, _ = build(parses={"click delete": inapp_parse(Intent.CLICK_CONTROL, text="delete")})
+    decision = say(u, "click delete", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.tier == 2
+
+
+def test_an_ordinary_click_is_never_free_to_reverse(tree):
+    tree([a_control("Reload")])
+    u, _ = build(parses={"click reload": inapp_parse(Intent.CLICK_CONTROL, text="reload")})
+    decision = say(u, "click reload", browser(), pinned_address=FOX_A.address)
+    assert decision.verdict is Verdict.ACT
+    assert decision.tier == 1
+
+
+def test_a_click_in_a_clause_whose_window_is_not_open_yet_is_refused_not_guessed(tree):
+    walked = tree([a_control("Send")])
+    parses = {
+        "open firefox": launch("firefox"),
+        "click send": inapp_parse(Intent.CLICK_CONTROL, text="send"),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "open firefox and click send", browser(), pinned_address=FOX_A.address)
+    assert decision.rest[0].verdict is Verdict.REFUSE
+    assert walked.reads == 0
+
+
+def test_an_in_app_clause_follows_the_application_the_clause_before_opened(tree):
+    parses = {
+        "open firefox": launch("firefox"),
+        "scroll down": inapp_parse(Intent.SCROLL, direction=Direction.DOWN),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    # the key was held over a terminal, and scrolling one is refused; the clause means
+    # the window the launch opened, which no snapshot has yet
+    decision = say(u, "open firefox and scroll down", browser(), pinned_address=TERMINAL.address)
+    assert decision.rest[0].verdict is Verdict.ACT
+    assert decision.rest[0].action.window is None
+
+
+def test_words_the_speaker_is_dictating_never_reach_the_question_about_the_seam():
+    """`clauses` refuses to offer a seam inside a dictated tail, but a tail can still sit
+    on the far side of one it did offer. Those words are the speaker's, not a command.
+
+    (The shared state of the same fan-out still carries the whole utterance, which is a
+    leak this file had before compound commands existed and does not have a fix here:
+    cutting the state at a carrier verb would distort every ordinary sentence that
+    happens to contain "write" or "said".)
+    """
+    u, jev = real(SEPARATED)
+    say(u, "Close this and type my password is hunter2.", pinned_address=NOTES.address)
+    _, questions = jev.request_with("separates_0")
+    halves = questions["separates_0"].instructions
+    assert halves["before"] == "Close this"
+    # the carrier stays: it is what makes the answer "yes, two commands"
+    assert halves["after"] == "type"

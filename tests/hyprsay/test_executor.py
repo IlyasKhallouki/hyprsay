@@ -11,7 +11,7 @@ import pytest
 from hyprsay import executor, ops
 from hyprsay.config import Config, Safety
 from hyprsay.executor import Executor
-from hyprsay.model import Action, App, DesktopState, Direction, Intent, Window, Workspace
+from hyprsay.model import Action, App, DesktopState, Direction, Intent, Layer, Window, Workspace
 from hypruse import hyprctl, journal, safety, server, session, trust
 from hypruse import input as hinput
 
@@ -835,3 +835,202 @@ def test_boot_runs_the_inherited_sequence_in_order_once_and_keeps_strict_off(mon
 
     assert order == ["session", "plain", "arm", hinput.release_held]
     assert "HYPRUSE_STRICT" not in executor.os.environ
+
+
+# --------------------------------------------------------------- reaching inside a window
+
+from dataclasses import replace as _replace  # noqa: E402
+
+from hyprsay import controls, recipes  # noqa: E402
+
+BROWSER = Window("0xb1", "firefox", "firefox", "Docs", 1, "1", 0, at=(0, 0), size=(1000, 800))
+SHELL = Window("0x7f", "kitty", "kitty", "fish", 1, "1", 0, at=(0, 0), size=(800, 600))
+
+KINDS = {"firefox": "web browser", "org.gnome.TextEditor": "code editor", "kitty": "terminal"}
+
+
+class Lexicon:
+    """Only what `ops` reads: the kind a window's trusted desktop file declares."""
+
+    def kind_of(self, window):
+        return KINDS.get(window.cls, "")
+
+
+@pytest.fixture
+def inside(desk, monkeypatch):
+    """A desk whose focused window is a browser, with the engine's executor registered.
+
+    `ops` reads the running engine's configuration and lexicon the way `recipes` does.
+    Without one every window's kind is unknown and every gesture is refused, which is the
+    fail-closed direction and not what these tests are about.
+    """
+    desk.state = _replace(STATE, windows=(BROWSER, SHELL, EDITOR), active_address=BROWSER.address)
+
+    def pointer(action, x=None, y=None, button="left", to_x=None, to_y=None, scroll_dy=0,
+                scroll_dx=0, double=False, then="none", allow_auth=False):  # fmt: skip
+        return desk._record("pointer", ("pointer", action, x, y, scroll_dy, scroll_dx), "scrolled")
+
+    def click_ui(name="", window="", **kw):
+        return desk._record(
+            "click_ui", ("click_ui", name, window), f"clicked push button {name!r} in firefox"
+        )
+
+    monkeypatch.setattr(server, "pointer", pointer)
+    monkeypatch.setattr(server, "click_ui", click_ui)
+    monkeypatch.setattr(recipes.time, "sleep", lambda seconds: None)
+    acts = Executor(Config(), desk.provide, desk.latch, Lexicon())
+    executor.use(acts)
+    yield desk, acts
+    executor.use(None)
+
+
+def test_a_scroll_becomes_wheel_notches_aimed_at_the_middle_of_the_window(inside):
+    desk, acts = inside
+    outcome = acts.execute(Action(Intent.SCROLL, window=BROWSER, direction=Direction.DOWN))
+    assert outcome.ok, outcome.message
+    assert desk.writes == [("pointer", "scroll", 500.0, 400.0, 4, 0)]
+
+
+def test_a_scroll_is_undone_by_the_same_notches_the_other_way(inside):
+    desk, acts = inside
+    outcome = acts.execute(Action(Intent.SCROLL, window=BROWSER, direction=Direction.DOWN))
+    assert outcome.inverse == Action(Intent.SCROLL, window=BROWSER, direction=Direction.UP)
+
+
+def test_a_chord_goes_out_through_the_guarded_keyboard_call_pinned_to_the_window(inside):
+    desk, acts = inside
+    outcome = acts.execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="Page_Down"))
+    assert outcome.ok, outcome.message
+    assert desk.writes == [("keyboard", "key", "", "Page_Down", "0xb1", False)]
+    assert outcome.inverse.verb == "Page_Up"
+
+
+def test_a_chord_with_no_way_back_is_offered_no_undo(inside):
+    _, acts = inside
+    assert acts.execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="Home")).inverse is None
+
+
+def test_a_chord_the_table_does_not_hold_is_refused_and_nothing_is_delivered(inside):
+    desk, acts = inside
+    outcome = acts.execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="ctrl+alt+z"))
+    assert not outcome.ok
+    assert desk.writes == []
+
+
+@pytest.mark.parametrize("intent", [Intent.SCROLL, Intent.PRESS_CHORD])
+def test_no_gesture_reaches_a_terminal_however_it_got_this_far(inside, intent):
+    desk, acts = inside
+    action = Action(intent, window=SHELL, direction=Direction.DOWN, verb="Page_Down")
+    outcome = acts.execute(action)
+    assert not outcome.ok and "terminal" in outcome.message
+    assert desk.writes == []
+
+
+def test_a_gesture_is_refused_while_a_launcher_holds_the_keyboard(inside):
+    desk, acts = inside
+    desk.state = _replace(desk.state, layers=(Layer("rofi", "eDP-1", 3),))
+    outcome = acts.execute(Action(Intent.SCROLL, window=BROWSER, direction=Direction.DOWN))
+    assert not outcome.ok and "rofi" in outcome.message
+    assert desk.writes == []
+
+
+def test_a_recipe_presses_its_reviewed_sequence_and_types_only_what_code_built(inside):
+    desk, acts = inside
+    action = Action(Intent.RUN_RECIPE, window=BROWSER, verb="go_to_url", text="youtube")
+    outcome = acts.execute(action)
+    assert outcome.ok, outcome.message
+    assert desk.writes == [
+        ("hypr", "focus_window", "0xb1", ""),
+        ("keyboard", "key", "", "ctrl+l", "0xb1", False),
+        ("keyboard", "type", "https://youtube.com/", "", "0xb1", False),
+        # `recipes` writes "enter" and `inapp` spells the same key "Return"
+        ("keyboard", "key", "", "Return", "0xb1", False),
+    ]
+
+
+def test_a_recipe_the_window_kind_does_not_offer_is_refused_rather_than_guessed(inside):
+    desk, acts = inside
+    desk.state = _replace(desk.state, active_address=EDITOR.address)
+    outcome = acts.execute(Action(Intent.RUN_RECIPE, window=EDITOR, verb="search_web"))
+    assert not outcome.ok and "search web" in outcome.message
+    assert desk.writes == []
+
+
+def test_a_recipe_never_types_a_phrase_that_is_not_an_address(inside):
+    desk, acts = inside
+    action = Action(Intent.RUN_RECIPE, window=BROWSER, verb="go_to_url", text="linus tech tips")
+    outcome = acts.execute(action)
+    assert not outcome.ok and "phrase" in outcome.message
+    # the bar was opened before the refusal, and nothing was typed into it
+    assert not any(call[:2] == ("keyboard", "type") for call in desk.writes)
+
+
+def test_a_tab_close_is_offered_no_undo_and_a_tab_walk_is(inside):
+    """`inapp.INVERSE_CHORDS` offers one only where it is not worse than the act: a
+    closed tab keeps nothing of what was typed into it, so it gets none."""
+    _, acts = inside
+    closed = acts.execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="ctrl+w"))
+    assert closed.ok and closed.inverse is None
+    walked = acts.execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="ctrl+Tab"))
+    assert walked.inverse == Action(Intent.PRESS_CHORD, window=BROWSER, verb="ctrl+shift+Tab")
+
+
+def test_a_click_goes_through_the_inherited_click_ui_and_has_no_undo(inside, monkeypatch):
+    desk, acts = inside
+    monkeypatch.setattr(controls, "controls_for", lambda window, **kw: [_control("Send", window)])
+    action = Action(Intent.CLICK_CONTROL, window=BROWSER, verb="Send", text="send")
+    outcome = acts.execute(action)
+    assert outcome.ok, outcome.message
+    assert desk.writes == [("click_ui", "Send", "0xb1")]
+    assert outcome.inverse is None
+
+
+def test_a_control_that_is_no_longer_the_best_match_is_not_clicked(inside, monkeypatch):
+    desk, acts = inside
+    # the page redrew between the countdown and the click, and something else now answers
+    monkeypatch.setattr(
+        controls, "controls_for", lambda window, **kw: [_control("Send money", window)]
+    )
+    action = Action(Intent.CLICK_CONTROL, window=BROWSER, verb="Send", text="send")
+    outcome = acts.execute(action)
+    assert not outcome.ok and "changed" in outcome.message
+    assert desk.writes == []
+
+
+def test_an_unreadable_accessibility_tree_comes_back_as_one_plain_sentence(inside, monkeypatch):
+    desk, acts = inside
+
+    def broken(window, **kw):
+        raise controls.ControlsError("no accessibility bus is running; run the repair")
+
+    monkeypatch.setattr(controls, "controls_for", broken)
+    outcome = acts.execute(Action(Intent.CLICK_CONTROL, window=BROWSER, verb="Send", text="send"))
+    assert not outcome.ok and outcome.message == "no accessibility bus is running; run the repair"
+    assert desk.writes == []
+
+
+def _control(name: str, window: Window) -> controls.Control:
+    return controls.Control(f":1.9:/{name}", name, "push button", True, (0, 0, 10, 10),
+                            window.address)  # fmt: skip
+
+
+def test_a_chord_with_no_engine_running_is_refused_not_guessed(desk, monkeypatch):
+    """`ops` reads the engine for the window's kind. Without one nothing is known about
+    the window, and an unknown kind is the case that turns keys off."""
+    monkeypatch.setattr(server, "keyboard", lambda *a, **kw: "pressed")
+    desk.state = _replace(STATE, windows=(BROWSER,), active_address=BROWSER.address)
+    executor.use(None)
+    outcome = desk.executor().execute(Action(Intent.PRESS_CHORD, window=BROWSER, verb="ctrl+t"))
+    assert not outcome.ok and "kind" in outcome.message
+
+
+def test_scrolling_does_not_depend_on_knowing_the_window_kind(desk, monkeypatch):
+    """A wheel notch moves a view whatever the window is, so an unknown kind is no
+    reason to refuse it. Only something that could reach past the view is."""
+    monkeypatch.setattr(server, "pointer", lambda *a, **kw: "scrolled")
+    desk.state = _replace(STATE, windows=(BROWSER,), active_address=BROWSER.address)
+    executor.use(None)
+    outcome = desk.executor().execute(
+        Action(Intent.SCROLL, window=BROWSER, direction=Direction.DOWN)
+    )
+    assert outcome.ok
