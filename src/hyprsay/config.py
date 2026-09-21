@@ -87,8 +87,25 @@ class Gates:
 
     addressed: float = 0.6
     margin: float = 0.3
-    # the absolute per-window boolean must clear this for "that window exists"
-    present: float = 0.5
+    # "Is the speaker referring to this window?" runs low in absolute terms even when the
+    # answer is plainly yes. Measured on the eval fixture
+    # (docs/research/live/presence_calibration.json, 48 samples): when the window was
+    # open the top probability was 0.20 to 0.57 and stood 0.06 to 0.50 above the
+    # runner-up; when it was not open the top never passed 0.17 and never stood out by
+    # more than 0.05. The runner-up that counts belongs to a DIFFERENT app, since two
+    # windows of one app legitimately tie (understand.py). So presence is a floor
+    # AND a standout, not "above one half", which rejected 15 of 21 correct answers. These
+    # two values accepted 18 of 21 with 0 of 27 false accepts. One fixture desktop: a
+    # calibration, not a proof.
+    present: float = 0.2
+    standout: float = 0.1
+    # booleans about the UTTERANCE ("does the speaker name a window", "is the speaker
+    # pointing"). Deliberately a separate knob from `present`: that one was calibrated on
+    # per-window questions only, and lowering it once leaked into these and let a bare
+    # "close" count as pointing at a window. Uncalibrated: the midpoint.
+    spoken: float = 0.5
+    # a relative Choice over apps is confident in absolute terms, unlike the booleans
+    app_offer: float = 0.5
     fuzzy_exact: float = 0.92
     fuzzy_gap: float = 0.15
 
