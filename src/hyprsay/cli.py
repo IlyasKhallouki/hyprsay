@@ -3,6 +3,8 @@
 hyprsay run                 the engine (normally started by the systemd user unit)
 hyprsay say "open firefox"  run a typed sentence through the real pipeline; dry run
                             unless --act. The way to test understanding without a mic.
+hyprsay replay clip.wav     the same, starting from recorded audio: recognizer included
+hyprsay record clip.wav     record a clip from the microphone (Enter to stop)
 hyprsay doctor              what works, what is missing, and what to do about it
 hyprsay setup               speech model, default config, bind lines, user units
 hyprsay binds               the two lines to add to your Hyprland config
@@ -33,6 +35,13 @@ def main(argv: list[str] | None = None) -> int:
     say.add_argument("text")
     say.add_argument("--act", action="store_true", help="carry the decision out (default: dry run)")
     say.add_argument("--json", action="store_true")
+    replay = sub.add_parser("replay", help="run a recorded clip through recognizer and pipeline")
+    replay.add_argument("wav")
+    replay.add_argument("--act", action="store_true")
+    replay.add_argument("--cloud", action="store_true", help="use the gateway recognizer")
+    record = sub.add_parser("record", help="record a clip from the microphone")
+    record.add_argument("wav")
+    record.add_argument("--seconds", type=float, default=0.0, help="stop after this long")
     sub.add_parser("doctor", help="check the installation")
     setup = sub.add_parser("setup", help="download the speech model, write config, install units")
     setup.add_argument(
@@ -52,8 +61,17 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as exc:
         print(f"hyprsay: config error: {exc}", file=sys.stderr)
         return 2
-    handler = {"run": _run, "say": _say, "doctor": _doctor, "setup": _setup, "binds": _binds,
-               "inspect": _inspect, "ptt": _ptt}[args.command]  # fmt: skip
+    handler = {
+        "run": _run,
+        "say": _say,
+        "replay": _replay,
+        "record": _record,
+        "doctor": _doctor,
+        "setup": _setup,
+        "binds": _binds,
+        "inspect": _inspect,
+        "ptt": _ptt,
+    }[args.command]
     return handler(cfg, args)
 
 
@@ -132,6 +150,88 @@ def _say(cfg, args) -> int:
     )
     print(("done      " if outcome.ok else "refused   ") + outcome.message)
     return 0 if outcome.ok else 1
+
+
+# ------------------------------------------------------------------------------ audio
+
+
+def _read_wav(path: str) -> bytes:
+    """Any PCM WAV as 16 kHz mono signed 16 bit, which is what the recognizers take."""
+    import wave
+
+    import numpy as np
+
+    with wave.open(path, "rb") as w:
+        rate, channels, width = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if width != 2:
+        raise SystemExit(f"{path}: only 16 bit PCM is supported, this file is {8 * width} bit")
+    audio = np.frombuffer(raw, dtype="<i2").astype(np.float32)
+    if channels > 1:
+        audio = audio.reshape(-1, channels).mean(axis=1)
+    if rate != 16000 and len(audio):
+        n = int(len(audio) * 16000 / rate)
+        audio = np.interp(np.linspace(0, len(audio) - 1, n), np.arange(len(audio)), audio)
+    return np.clip(audio, -32768, 32767).astype("<i2").tobytes()
+
+
+def _replay(cfg, args) -> int:
+    import time
+    from dataclasses import replace
+
+    from . import jev as jev_pkg
+    from .stt.hybrid import make_recognizer
+
+    pcm = _read_wav(args.wav)
+    key = ""
+    try:
+        key = jev_pkg.load_key()
+    except jev_pkg.JevAuthError:
+        print("note: no gateway key; local recognizer and grammar only", file=sys.stderr)
+    if args.cloud:
+        cfg = replace(cfg, stt=replace(cfg.stt, backend="cloud"))
+    recognizer = make_recognizer(cfg, key)
+
+    async def hear():
+        await recognizer.transcribe(b"\0\0" * 1600, 16000)  # load the model off the clock
+        started = time.perf_counter()
+        transcript = await recognizer.transcribe(pcm, 16000)
+        return transcript, (time.perf_counter() - started) * 1000
+
+    transcript, ms = asyncio.run(hear())
+    print(f"audio      {len(pcm) / 32000:.2f} s")
+    print(f"recognized {transcript.text!r}   via {transcript.backend} in {ms:.0f} ms")
+    if not transcript.text.strip():
+        print("nothing was recognized")
+        return 1
+    return _say(cfg, argparse.Namespace(text=transcript.text, act=args.act, json=False))
+
+
+def _record(cfg, args) -> int:
+    import threading
+    import wave
+
+    from .audio import AudioError, Recorder
+
+    recorder = Recorder(cfg)
+    try:
+        recorder.start()
+    except AudioError as exc:
+        print(f"hyprsay: {exc}", file=sys.stderr)
+        return 1
+    if args.seconds > 0:
+        print(f"recording for {args.seconds:g} s ...")
+        threading.Event().wait(args.seconds)
+    else:
+        input("recording: speak, then press Enter ")
+    pcm = recorder.stop()
+    with wave.open(args.wav, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(pcm)
+    print(f"wrote {args.wav}: {len(pcm) / 32000:.2f} s")
+    return 0
 
 
 # ------------------------------------------------------------------------------ doctor
