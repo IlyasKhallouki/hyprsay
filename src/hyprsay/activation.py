@@ -191,7 +191,39 @@ class PushToTalk:
 # --------------------------------------------------------------------------- config lines
 
 
-DEFAULT_KEY = "SUPER, grave"
+# The physical key above Tab, by position rather than by name. Naming it "grave" bound a
+# key that does not exist on an AZERTY keyboard, where that key is twosuperior: the bind
+# never matched and the keystrokes fell through to whatever had focus.
+DEFAULT_KEY = "SUPER, code:49"
+# Hyprland names keys the way X11 does, which is not how anyone says them out loud.
+# "hold SUPER + grave" sends a first-time user hunting for a key called grave.
+KEY_NAMES = {
+    "code:49": "the key just above Tab (` on a US keyboard, \u00b2 on AZERTY)",
+    "grave": "` (the backtick key, above Tab)",
+    "apostrophe": "'",
+    "semicolon": ";",
+    "comma": ",",
+    "period": ".",
+    "slash": "/",
+    "backslash": "\\",
+    "minus": "-",
+    "equal": "=",
+    "bracketleft": "[",
+    "bracketright": "]",
+    "space": "Space",
+    "return": "Enter",
+    "escape": "Esc",
+    "menu": "the Menu key",
+}
+
+
+def describe_key(key: str) -> str:
+    """ "SUPER, grave" as a person would read it aloud."""
+    mods, _, name = key.rpartition(",")
+    name = name.strip()
+    spoken = KEY_NAMES.get(name.lower(), name.upper() if len(name) == 1 else name)
+    parts = [m.strip().upper() for m in mods.replace("+", " ").split() if m.strip()]
+    return " + ".join([*parts, spoken]) if parts else spoken
 
 
 def bind_lines(provider: str, key: str = DEFAULT_KEY, *, transport: str = "event") -> list[str]:
@@ -477,6 +509,14 @@ def _describe_error(body: bytes) -> str:
     return f"wl_display.error object={obj} code={code}: {message}"
 
 
+def _keycode(name: str) -> int | None:
+    """`code:49` names a physical key. Hyprland reports those as a keycode, not a name."""
+    if name.lower().startswith("code:"):
+        with contextlib.suppress(ValueError):
+            return int(name.split(":", 1)[1])
+    return None
+
+
 def conflicts(key: str, binds: Iterable[Mapping[str, Any]]) -> list[str]:
     """Which of the user's existing binds already use this combination.
 
@@ -488,11 +528,17 @@ def conflicts(key: str, binds: Iterable[Mapping[str, Any]]) -> list[str]:
     wanted = {m.strip().upper() for m in want_mods.replace("+", " ").split() if m.strip()}
     wanted.discard("MOD")
     target = want_key.strip().upper()
+    code = _keycode(want_key.strip())
     found = []
     for bind in binds:
         mask = bind.get("modmask") or 0
         mods = {name for bit, name in MOD_BITS if mask & bit}
-        if mods == wanted and (bind.get("key") or "").upper() == target:
+        same = (
+            bind.get("keycode") == code
+            if code is not None
+            else (bind.get("key") or "").upper() == target
+        )
+        if mods == wanted and same:
             described = bind.get("description") or ""
             action = " ".join(x for x in (bind.get("dispatcher"), bind.get("arg")) if x)
             found.append(described or action or "an existing bind")

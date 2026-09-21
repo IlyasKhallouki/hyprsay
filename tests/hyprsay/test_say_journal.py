@@ -164,9 +164,9 @@ def test_a_trial_installs_both_bindings_and_removes_them_on_the_way_out(monkeypa
     socket = TrialSocket()
     code, started = trial(monkeypatch, socket)
     assert code == 0
-    assert socket.keywords[0].startswith("keyword bind SUPER, grave, event, hyprsay:down")
-    assert socket.keywords[1].startswith("keyword bindr SUPER, grave, event, hyprsay:up")
-    assert socket.keywords[-1] == "keyword unbind SUPER, grave"
+    assert socket.keywords[0].startswith("keyword bind SUPER, code:49, event, hyprsay:down")
+    assert socket.keywords[1].startswith("keyword bindr SUPER, code:49, event, hyprsay:up")
+    assert socket.keywords[-1] == "keyword unbind SUPER, code:49"
     assert started and started[0][0] == "/usr/bin/python3"
 
 
@@ -178,7 +178,8 @@ def test_a_trial_puts_the_session_back_even_when_the_engine_crashes(monkeypatch)
 
 
 def test_a_trial_refuses_a_key_that_is_already_bound_and_touches_nothing(monkeypatch):
-    taken = [{"modmask": 64, "key": "grave", "description": "terminal"}]
+    # the default binds by position, so a clash is reported as a keycode
+    taken = [{"modmask": 64, "key": "", "keycode": 49, "description": "terminal"}]
     socket = TrialSocket(binds=taken)
     code, started = trial(monkeypatch, socket)
     assert code == 1

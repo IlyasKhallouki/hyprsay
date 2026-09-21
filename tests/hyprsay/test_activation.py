@@ -270,8 +270,8 @@ def test_close_completes_an_open_pair_before_ending_the_stream():
 
 def test_hyprlang_bind_lines_use_the_event_dispatcher_on_press_and_release():
     assert bind_lines("hyprlang") == [
-        "bind = SUPER, grave, event, hyprsay:down",
-        "bindr = SUPER, grave, event, hyprsay:up",
+        "bind = SUPER, code:49, event, hyprsay:down",
+        "bindr = SUPER, code:49, event, hyprsay:up",
     ]
     assert bind_lines("hyprlang", "SUPER, V") == [
         "bind = SUPER, V, event, hyprsay:down",
@@ -311,7 +311,7 @@ def test_a_key_with_no_modifier_survives_the_lua_translation():
 
 def test_the_global_transport_needs_one_bind_naming_app_and_shortcut():
     assert bind_lines("hyprlang", transport="global") == [
-        "bind = SUPER, grave, global, hyprsay:ptt"
+        "bind = SUPER, code:49, global, hyprsay:ptt"
     ]
     assert bind_lines("lua", "SUPER, V", transport="global")[1] == (
         'hl.bind("SUPER + V", hl.dsp.global("hyprsay:ptt"))'
@@ -636,6 +636,21 @@ def test_a_free_key_reports_nothing():
     assert activation.conflicts("SUPER, grave", [bind(SUPER, "V", description="clipboard")]) == []
 
 
+def test_a_physical_key_is_matched_by_its_code_not_its_name():
+    """The default names a position, because the key above Tab is `grave` on a US
+    keyboard and `twosuperior` on AZERTY. Hyprland reports those binds as a keycode."""
+    existing = [bind(SUPER, "", keycode=49, description="terminal drop-down")]
+    assert activation.conflicts("SUPER, code:49", existing) == ["terminal drop-down"]
+    assert activation.conflicts("SUPER, code:50", existing) == []
+    # and a named key must not collide with a keycode bind
+    assert activation.conflicts("SUPER, grave", existing) == []
+
+
+def test_the_default_key_is_described_by_where_it_is():
+    spoken = activation.describe_key(activation.DEFAULT_KEY)
+    assert "above Tab" in spoken and "AZERTY" in spoken
+
+
 def test_the_modifiers_must_match_exactly_not_merely_overlap():
     # SUPER+SHIFT+V and SUPER+V are different keys, and neither is bare V
     binds = [bind(SUPER | SHIFT, "V", description="clipboard manager")]
@@ -657,3 +672,11 @@ def test_a_bind_with_no_description_falls_back_to_what_it_does_then_to_a_placeho
 def test_the_default_key_is_the_one_the_bind_lines_use():
     lines = activation.bind_lines("hyprlang")
     assert all(activation.DEFAULT_KEY in line for line in lines)
+
+
+def test_a_key_is_described_the_way_someone_would_read_it_aloud():
+    # "hold SUPER + grave" sends a first-time user hunting for a key called grave
+    assert activation.describe_key("SUPER, grave").startswith("SUPER + `")
+    assert activation.describe_key("SUPER SHIFT, v") == "SUPER + SHIFT + V"
+    assert activation.describe_key("SUPER, F9") == "SUPER + F9"
+    assert activation.describe_key(", menu") == "the Menu key"

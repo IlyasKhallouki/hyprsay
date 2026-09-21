@@ -111,7 +111,9 @@ Then try it without changing anything permanent:
 uv run hyprsay try      # temporary key binding, engine and overlay. Ctrl-C puts it all back
 ```
 
-Hold `SUPER` and the backtick key, say "workspace three", let go. When you want it always
+Hold `SUPER` and the key just above Tab (`` ` `` on a US keyboard, `²` on AZERTY), say
+"workspace three", let go. It binds that key by position, so the layout does not matter.
+When you want it always
 running, add the two lines `hyprsay binds` prints to your Hyprland config and install the
 services:
 

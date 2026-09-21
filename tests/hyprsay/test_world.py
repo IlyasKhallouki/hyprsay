@@ -709,10 +709,9 @@ def test_losing_the_event_socket_locks_the_world_until_it_is_back(requests, tmp_
             states: list[DesktopState] = []
             model.subscribe(states.append)
             await fake.drop()
-            await until(lambda: len(states) == 2)
+            await until(lambda: len(states) == 2 and fake.accepted == 2)
             assert states[0] == DesktopState()
             assert states[1].locked is False
-            assert fake.accepted == 2
             assert requests.received == [SNAPSHOT_WIRE] * 2
 
     run(scenario())
