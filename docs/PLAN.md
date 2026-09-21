@@ -365,7 +365,9 @@ toolkit combination was run live on this session [V]. Load `libgtk4-layer-shell.
 - The utterance itself is sensitive and is sent on every semantic command. `inspect --last`
   prints exactly what went out. `providerOptions.gateway.zeroDataRetention` is requested once P0
   confirms route B accepts it; the gateway's own catalog lists Jev as `zdr: all`, `no_training: all` [D].
-- Audio never leaves the machine in v1. The key is read from `AI_GATEWAY_API_KEY` or
+- Audio stays on the machine, with one exception that is on by default: in `hybrid` mode, when
+  the local transcript yields no confident decision, that one clip goes to a gateway speech model.
+  `stt.backend = "local"` removes the exception. See `docs/PRIVACY.md`. The key is read from `AI_GATEWAY_API_KEY` or
   `~/.config/hyprsay/ai-gateway.key` (0600) and never reaches a log, a repr or an exception.
 - Voice is an unauthenticated channel. Push to talk is the main mitigation; tiers, the trusted
   anchor rule and the physical-key confirm are the rest. `docs/PRIVACY.md` is written in P0 with
