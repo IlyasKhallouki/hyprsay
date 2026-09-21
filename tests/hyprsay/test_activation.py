@@ -270,6 +270,10 @@ def test_close_completes_an_open_pair_before_ending_the_stream():
 
 def test_hyprlang_bind_lines_use_the_event_dispatcher_on_press_and_release():
     assert bind_lines("hyprlang") == [
+        "bind = SUPER, grave, event, hyprsay:down",
+        "bindr = SUPER, grave, event, hyprsay:up",
+    ]
+    assert bind_lines("hyprlang", "SUPER, V") == [
         "bind = SUPER, V, event, hyprsay:down",
         "bindr = SUPER, V, event, hyprsay:up",
     ]
@@ -306,8 +310,10 @@ def test_a_key_with_no_modifier_survives_the_lua_translation():
 
 
 def test_the_global_transport_needs_one_bind_naming_app_and_shortcut():
-    assert bind_lines("hyprlang", transport="global") == ["bind = SUPER, V, global, hyprsay:ptt"]
-    assert bind_lines("lua", transport="global")[1] == (
+    assert bind_lines("hyprlang", transport="global") == [
+        "bind = SUPER, grave, global, hyprsay:ptt"
+    ]
+    assert bind_lines("lua", "SUPER, V", transport="global")[1] == (
         'hl.bind("SUPER + V", hl.dsp.global("hyprsay:ptt"))'
     )
 
@@ -609,3 +615,45 @@ def test_a_missing_display_socket_is_a_wire_error(tmp_path):
             GlobalShortcut(PushToTalk(cfg()), display=str(tmp_path / "absent")).start()
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- bind conflicts
+
+
+def bind(modmask, key, **extra):
+    return {"modmask": modmask, "key": key, **extra}
+
+
+SUPER, ALT, CTRL, SHIFT = 64, 8, 4, 1
+
+
+def test_a_key_already_bound_is_reported_with_what_holds_it():
+    binds = [bind(SUPER, "V", description="clipboard"), bind(SUPER, "Q", dispatcher="killactive")]
+    assert activation.conflicts("SUPER, V", binds) == ["clipboard"]
+
+
+def test_a_free_key_reports_nothing():
+    assert activation.conflicts("SUPER, grave", [bind(SUPER, "V", description="clipboard")]) == []
+
+
+def test_the_modifiers_must_match_exactly_not_merely_overlap():
+    # SUPER+SHIFT+V and SUPER+V are different keys, and neither is bare V
+    binds = [bind(SUPER | SHIFT, "V", description="clipboard manager")]
+    assert activation.conflicts("SUPER, V", binds) == []
+    assert activation.conflicts("SUPER SHIFT, V", binds) == ["clipboard manager"]
+    assert activation.conflicts("", []) == []
+
+
+def test_the_key_name_is_compared_without_case_and_mods_may_be_written_either_way():
+    binds = [bind(SUPER | ALT, "grave", dispatcher="exec", arg="foo")]
+    assert activation.conflicts("SUPER+ALT, GRAVE", binds) == ["exec foo"]
+    assert activation.conflicts("alt super, grave", binds) == ["exec foo"]
+
+
+def test_a_bind_with_no_description_falls_back_to_what_it_does_then_to_a_placeholder():
+    assert activation.conflicts("SUPER, X", [bind(SUPER, "X")]) == ["an existing bind"]
+
+
+def test_the_default_key_is_the_one_the_bind_lines_use():
+    lines = activation.bind_lines("hyprlang")
+    assert all(activation.DEFAULT_KEY in line for line in lines)

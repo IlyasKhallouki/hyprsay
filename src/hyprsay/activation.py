@@ -37,9 +37,9 @@ import socket
 import struct
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from hypruse.wire import (
     DISPLAY_ID,
@@ -191,11 +191,17 @@ class PushToTalk:
 # --------------------------------------------------------------------------- config lines
 
 
-def bind_lines(provider: str, key: str = "SUPER, V", *, transport: str = "event") -> list[str]:
+DEFAULT_KEY = "SUPER, grave"
+
+
+def bind_lines(provider: str, key: str = DEFAULT_KEY, *, transport: str = "event") -> list[str]:
     """The lines the user adds to their Hyprland config, in their config dialect.
 
     `key` is in hyprlang form, "MODS, KEY". The same lines serve hold and latch mode:
     in latch mode the release event still arrives and is ignored.
+
+    The default is the backtick key: it is easy to hold down with the left hand, and on the
+    machine this was written for every other obvious candidate was already bound.
     """
     if transport not in {"event", "global"}:
         raise ValueError(f"unknown ptt transport {transport!r}")
@@ -240,6 +246,7 @@ def _lua_combo(key: str) -> str:
 
 MANAGER_INTERFACE = "hyprland_global_shortcuts_manager_v1"
 MANAGER_VERSION = 1
+MOD_BITS = ((64, "SUPER"), (8, "ALT"), (4, "CTRL"), (1, "SHIFT"))
 MGR_REGISTER_SHORTCUT, MGR_DESTROY = 0, 1
 SHORTCUT_DESTROY = 0
 SHORTCUT_EV_PRESSED, SHORTCUT_EV_RELEASED = 0, 1
@@ -468,3 +475,25 @@ class GlobalShortcut:
 def _describe_error(body: bytes) -> str:
     obj, code, message = parse_error(body)
     return f"wl_display.error object={obj} code={code}: {message}"
+
+
+def conflicts(key: str, binds: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Which of the user's existing binds already use this combination.
+
+    A push-to-talk key that is already bound looks exactly like a broken installation: the
+    key does something else and hyprsay never hears a thing. `hyprctl -j binds` gives the
+    modifier as a bitmask, so it is compared as a set of names rather than as text.
+    """
+    want_mods, _, want_key = key.partition(",")
+    wanted = {m.strip().upper() for m in want_mods.replace("+", " ").split() if m.strip()}
+    wanted.discard("MOD")
+    target = want_key.strip().upper()
+    found = []
+    for bind in binds:
+        mask = bind.get("modmask") or 0
+        mods = {name for bit, name in MOD_BITS if mask & bit}
+        if mods == wanted and (bind.get("key") or "").upper() == target:
+            described = bind.get("description") or ""
+            action = " ".join(x for x in (bind.get("dispatcher"), bind.get("arg")) if x)
+            found.append(described or action or "an existing bind")
+    return found

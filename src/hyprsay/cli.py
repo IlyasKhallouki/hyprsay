@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         "--units", action="store_true", help="install and enable the systemd user units"
     )
     binds = sub.add_parser("binds", help="print the Hyprland bind lines")
-    binds.add_argument("--key", default="SUPER, V")
+    binds.add_argument("--key", default="", help="MODS, KEY in Hyprland form")
     inspect = sub.add_parser("inspect", help="show recent utterances and what was sent to Jev")
     inspect.add_argument("-n", type=int, default=1)
     inspect.add_argument("--json", action="store_true")
@@ -406,12 +406,25 @@ def _install_units() -> int:
 
 
 def _binds(cfg, args) -> int:
-    from .activation import bind_lines
-    from .world import HyprSocket, snapshot
+    from .activation import DEFAULT_KEY, bind_lines, conflicts
+    from .world import HyprSocket, HyprSocketError, snapshot
 
-    provider = snapshot(HyprSocket()).provider
-    for line in bind_lines(provider, args.key):
+    sock = HyprSocket()
+    key = args.key or DEFAULT_KEY
+    provider = snapshot(sock).provider
+    for line in bind_lines(provider, key, transport=cfg.ptt.transport):
         print(line)
+    # a key that is already bound looks exactly like a broken install: it does something
+    # else and hyprsay never hears a thing
+    try:
+        clashes = conflicts(key, sock.query("binds"))
+    except (HyprSocketError, OSError, ValueError):
+        return 0
+    if clashes:
+        print(f"\nwarning: {key} is already bound to {clashes[0]}.", file=sys.stderr)
+        print("Pick another with --key, for example: hyprsay binds --key 'SUPER, semicolon'",
+              file=sys.stderr)  # fmt: skip
+        return 1
     return 0
 
 

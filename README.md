@@ -105,7 +105,7 @@ uv run hyprsay setup        # speech model (about 130 MB), default config, your 
 uv run hyprsay doctor       # what works, what is missing
 ```
 
-Add the two lines `hyprsay binds` prints to your Hyprland config (default `SUPER + V`), then:
+Add the two lines `hyprsay binds` prints to your Hyprland config (default `SUPER` + backtick; it warns if that key is already bound), then:
 
 ```sh
 uv run hyprsay setup --units    # installs and starts the systemd user units
