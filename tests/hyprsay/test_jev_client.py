@@ -188,6 +188,14 @@ def test_the_hedge_wins_when_the_original_stalls():
     assert result.latency_ms < 900
 
 
+def test_hedging_is_off_unless_asked_for():
+    server = Server((200, TYPESAFE_BODY, 0.2), (200, TYPESAFE_BODY, 0))
+    client = JevClient(KEY, transport=httpx.MockTransport(server), deadline=1.0)
+    assert client.hedge_after is None
+    assert evaluate(client).attempts == 1
+    assert len(server.posts) == 1
+
+
 def test_no_hedge_is_sent_when_the_answer_is_prompt():
     server = Server((200, TYPESAFE_BODY, 0))
     result = evaluate(make(server, deadline=1.0, hedge_after=0.3))
