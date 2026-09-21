@@ -1775,3 +1775,32 @@ def test_words_the_speaker_is_dictating_never_reach_the_question_about_the_seam(
     assert halves["before"] == "Close this"
     # the carrier stays: it is what makes the answer "yes, two commands"
     assert halves["after"] == "type"
+
+
+def test_a_browser_recipe_goes_to_the_browser_even_when_a_terminal_is_focused():
+    """ "Go to youtube.com" names a browser, not whatever held the key. Refusing it over a
+    terminal read as a safety rule when really the wrong window had been chosen."""
+    u, _ = build(
+        parses={
+            "go to youtube com": inapp_parse(
+                Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"
+            )
+        }
+    )
+    decision = say(u, "go to youtube com", browser(), pinned_address=TERMINAL.address)
+    assert decision.verdict is not Verdict.REFUSE
+    assert decision.action.window == FOX_A
+
+
+def test_a_recipe_still_refuses_when_two_windows_could_do_it():
+    """Nobody can know which browser was meant, so the caller says what is missing."""
+    both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
+    u, _ = build(
+        parses={
+            "go to youtube com": inapp_parse(
+                Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"
+            )
+        }
+    )
+    decision = say(u, "go to youtube com", both, pinned_address=TERMINAL.address)
+    assert decision.verdict is Verdict.REFUSE

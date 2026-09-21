@@ -514,6 +514,13 @@ class Understander:
                 Verdict.REFUSE, reason="the window you were pointing at is gone", heard=heard.said
             )
         kind = self.lexicon.kind_of(window) if window is not None else ""
+        if window is not None and parse.intent is Intent.RUN_RECIPE:
+            # the target has to be settled BEFORE it is authorized: a browser recipe
+            # judged against the terminal that held the key refuses every time, and with
+            # the typing sentence, which reads as a safety rule rather than a wrong window
+            elsewhere = self._recipe_elsewhere(parse.slots.verb or "", window, kind, state)
+            if elsewhere is not None:
+                window, kind = elsewhere
         if window is not None:
             # the only thing that stops a gesture reaching a launcher, a lock prompt, an
             # authentication dialog or a shell: the inherited pointer call merely NOTES a
@@ -599,6 +606,29 @@ class Understander:
             return Decision(Verdict.REFUSE, reason=str(exc), heard=heard.said)
         action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name, text=parse.slots.text)
         return self._finish(action, _recipe_evidence(recipe, heard), (), heard, state)
+
+    def _recipe_elsewhere(
+        self, name: str, focused: Window, kind: str, state: DesktopState
+    ) -> tuple[Window, str] | None:
+        """The window this recipe belongs to, when it is not the one being looked at.
+
+        "Go to youtube.com" names a browser, not whatever happened to hold the key. Asked
+        over a terminal it used to refuse with the typing sentence, which reads as a
+        safety rule when really the wrong window had been chosen. So: if the focused
+        window cannot do it and exactly one open window can, that is the one meant. More
+        than one and nobody can know which, so the caller falls through to the refusal
+        that names what is missing.
+        """
+        if any(recipe.name == name for recipe in recipes.for_window(focused, kind)):
+            return None
+        able = [
+            (w, k)
+            for w in state.windows
+            if w.address != focused.address
+            for k in (self.lexicon.kind_of(w),)
+            if any(recipe.name == name for recipe in recipes.for_window(w, k))
+        ]
+        return able[0] if len(able) == 1 else None
 
     def _deferred_recipe(
         self, name: str, text: str | None, heard: _Heard, state: DesktopState

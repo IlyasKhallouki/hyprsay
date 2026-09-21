@@ -189,21 +189,33 @@ def _say(cfg, args) -> int:
     if args.json:
         print(json.dumps(journal._plain(decision, keep_titles=False), indent=1))
     else:
-        print(f"heard     {decision.heard or args.text!r}")
-        print(f"verdict   {decision.verdict.value}   (tier {decision.tier})")
-        if decision.action:
-            print(f"action    {decision.action.describe()}")
-        for n, cand in enumerate(decision.candidates, 1):
-            mark = "trusted anchor" if cand.corroborated else "not corroborated"
-            print(f"  [{n}] {cand.label}   score {cand.score:.2f}   {mark}")
-        if decision.suggestions:
-            print("try       " + " | ".join(decision.suggestions))
-        if decision.reason:
-            print(f"why       {decision.reason}")
+        # a chained utterance is one Decision carrying the rest, and printing only the
+        # first one made `say` look like it had dropped the other clauses, which is the
+        # very thing the chain work exists to stop
+        chain = (decision, *decision.rest)
+        for n, step in enumerate(chain, 1):
+            part = f"part {n} of {len(chain)}   " if len(chain) > 1 else ""
+            print(f"heard     {part}{step.heard or args.text!r}")
+            print(f"verdict   {step.verdict.value}   (tier {step.tier})")
+            if step.action:
+                print(f"action    {step.action.describe()}")
+            for i, cand in enumerate(step.candidates, 1):
+                mark = "trusted anchor" if cand.corroborated else "not corroborated"
+                print(f"  [{i}] {cand.label}   score {cand.score:.2f}   {mark}")
+            if step.suggestions:
+                print("try       " + " | ".join(step.suggestions))
+            if step.reason:
+                print(f"why       {step.reason}")
+            if n < len(chain):
+                print()
     if not args.act:
         if decision.action and decision.verdict in (Verdict.ACT, Verdict.ACT_SWAP):
             print("(dry run: pass --act to carry it out)")
         return 0
+    if decision.rest:
+        print("\nthis is a chain, and only the engine runs those: try it with `hyprsay try`",
+              file=sys.stderr)  # fmt: skip
+        return 1
     if decision.action is None or decision.verdict not in (Verdict.ACT, Verdict.ACT_SWAP):
         print("nothing to carry out: only ACT verdicts run from `say`; countdowns and key "
               "confirmations need the engine", file=sys.stderr)  # fmt: skip
