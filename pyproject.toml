@@ -38,6 +38,7 @@ Issues = "https://github.com/IlyasKhallouki/hypruse/issues"
 
 [project.scripts]
 hypruse = "hypruse.cli:main"
+hyprsay = "hyprsay.cli:main"
 
 [build-system]
 requires = ["hatchling"]

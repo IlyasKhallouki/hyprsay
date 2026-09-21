@@ -1,0 +1,15 @@
+[Unit]
+Description=hyprsay engine: push-to-talk voice control for Hyprland
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=@HYPRSAY@ run
+Restart=on-failure
+RestartSec=2
+# the engine needs the compositor's socket; import the session environment with
+#   systemctl --user import-environment HYPRLAND_INSTANCE_SIGNATURE WAYLAND_DISPLAY XDG_RUNTIME_DIR
+# (Hyprland setups using uwsm or `exec-once = dbus-update-activation-environment --systemd --all` already do)
+
+[Install]
+WantedBy=graphical-session.target

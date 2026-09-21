@@ -1,0 +1,15 @@
+[Unit]
+Description=hyprsay HUD: layer-shell overlay
+PartOf=graphical-session.target
+Requires=hyprsay-engine.service
+After=hyprsay-engine.service
+
+[Service]
+# the system interpreter, on purpose: PyGObject is a distro package and is invisible to a venv
+ExecStart=/usr/bin/python3 @HUD@
+Environment=GTK_A11Y=none
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
