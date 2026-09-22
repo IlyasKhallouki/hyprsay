@@ -53,6 +53,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from hyprsay.model import Direction, Intent, Parse, Slots
+from hyprsay.nlu.ground import NOVELTY
 from hyprsay.nlu.normalize import Normalized
 
 # --------------------------------------------------------------------------- fragments
@@ -75,6 +76,13 @@ _WS_TARGET = (
 _DIR = r"(?P<dir>left|right|up|down|upwards?|downwards?|above|below)"
 _SOUND = r"(?:volume|sound|audio)"
 _LAUNCH = r"(?:open up|open|launch|start up|start|run|fire up|boot up)"
+# A launch verb no longer decides the action, it declares a preference (nlu/ground.py),
+# and this is the word that turns "open a terminal" into "open ANOTHER terminal". It is
+# only stripped here, so that "another terminal" resolves on "terminal" alone; which
+# preference it declares is read from the utterance itself by `ground.preference`, since
+# a word inside an application's own name ("open Second Life") must not silently change
+# what the sentence asks for.
+_NOVELTY = rf"(?:an? |une |un )?(?:{'|'.join(sorted(NOVELTY, key=len, reverse=True))})"
 _PLAYING = r"(?:music|song|track|audio|media|video|playback|it|this|that)"
 
 _AMOUNTS = {
@@ -679,9 +687,10 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _rule(
         Intent.LAUNCH_APP,
-        rf"{_LAUNCH} (?P<ref>{_REF})",
+        rf"{_LAUNCH} (?:{_NOVELTY} )?(?P<ref>{_REF})",
         _slots("app"),
         "open firefox",
+        "open another terminal",
         "launch the file manager",
         "start a terminal",
     ),
@@ -705,6 +714,32 @@ _PICK = _rule(
     "2",
     "number two",
     "the second one",
+)
+
+
+def _the_other_one(_said: dict[str, str]) -> Slots:
+    """A correction takes badge 2: the rival the swap did not take, or the runner-up."""
+    return Slots(number=2)
+
+
+# Recovering from a wrong guess is what earns the right to guess harder, so this ships
+# before any speculation work. These are corrections, not commands: they are live only
+# while badges are showing, which is why they are not in `_RULES`. Said cold, "the other
+# one" names nothing, and Jev is the better answer than a refusal.
+#
+# A correction re-targets the operation that is already pending, so it is an ordinary
+# PICK (`understand._pick`) rather than a second mechanism with its own memory. "undo
+# that" and "cancel" already reached the same place through `_LIVE_WHILE_PICKING`.
+_CORRECTIONS: tuple[_Rule, ...] = (
+    _rule(
+        Intent.PICK,
+        r"(?:no,? |nope,? )?(?:not (?:that|this|the) one|not that|not this"
+        r"|(?:i mean(?:t)? )?the other(?: one| window)?)",
+        _the_other_one,
+        "no, the other one",
+        "not that one",
+        "the other one",
+    ),
 )
 
 
@@ -762,7 +797,11 @@ class Grammar:
 
     def __init__(self) -> None:
         self._rules = _RULES
-        self._picking = (_PICK, *(r for r in _RULES if r.intent in _LIVE_WHILE_PICKING))
+        self._picking = (
+            _PICK,
+            *_CORRECTIONS,
+            *(r for r in _RULES if r.intent in _LIVE_WHILE_PICKING),
+        )
 
     def parse(self, norm: Normalized, *, picking: bool = False) -> Parse | None:
         rules = self._picking if picking else self._rules
@@ -773,11 +812,11 @@ class Grammar:
         return None
 
     def examples(self, intent: Intent) -> tuple[str, ...]:
-        rules = (*self._rules, _PICK)
+        rules = (*self._rules, _PICK, *_CORRECTIONS)
         return tuple(e for r in rules if r.intent == intent for e in r.examples)
 
     def intents(self) -> tuple[Intent, ...]:
-        return tuple(dict.fromkeys(r.intent for r in (*self._rules, _PICK)))
+        return tuple(dict.fromkeys(r.intent for r in (*self._rules, _PICK, *_CORRECTIONS)))
 
     def _try(self, text: str, norm: Normalized, rules: tuple[_Rule, ...]) -> Parse | None:
         if not text:

@@ -26,7 +26,7 @@ from typing import Any
 from hyprsay.jev.types import Boolean, Choice, Question, Score
 from hyprsay.model import JEV_INTENTS, Intent
 
-VERSION = "2026-09-21.4"
+VERSION = "2026-09-22.1"
 
 NOTE = (
     "The utterance is an automatic speech recognition transcript of a short spoken "
@@ -83,11 +83,18 @@ INTENTS: dict[Intent, dict[str, Any]] = {
         "not_for": "moving or resizing a window",
         "examples": ["float this", "tile the terminal again"],
     },
+    # The old wording said "not_for: going to a window that is already open", which asked
+    # the model the question and withheld the evidence: nothing in a request says what is
+    # open. Code answers that now, from live state (nlu/ground.py), so this option is
+    # about the APPLICATION the speaker named and the branch is not the model's to take.
     Intent.LAUNCH_APP: {
-        "what": "start an application, including when the speaker only says what they need",
-        "not_for": "going to a window that is already open",
+        "what": "have an application in front of the speaker, named or described by what "
+        "it is for, whether or not a copy of it is already running",
+        "not_for": "choosing between two windows of one application, or changing the "
+        "window the speaker is already looking at",
         "examples": [
             "open firefox",
+            "open another terminal",
             "start a file manager",
             "launch the calculator",
             "i need a calculator",

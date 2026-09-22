@@ -6,7 +6,9 @@ Order, and why (docs/PLAN.md sections 3 and 5):
 2. Normalize, then the exact grammar, also over the normalizer's variants. The easy 80
    percent never touches the network: a Jev round trip measured about 315 ms p50 from
    this machine, against well under a millisecond for a grammar parse.
-3. Entities resolve locally against trusted lexicon fields (`resolve.py`).
+3. Entities resolve locally against trusted lexicon fields (`resolve.py`), and an
+   application the speaker named is grounded against the live desktop (`ground.py`):
+   "open chrome" with chrome already open goes to it, at tier 0, with no request at all.
 4. Only when the grammar has no parse, or an entity will not resolve, the Jev fan-out
    runs (`requests.py`): concurrent small requests, one round trip.
 5. Whatever Jev says is a proposal. Agreement, corroboration and the tier function
@@ -68,7 +70,7 @@ from hyprsay.model import (
     Verdict,
     Window,
 )
-from hyprsay.nlu import bank, clauses, requests, resolve, tiers
+from hyprsay.nlu import bank, clauses, ground, requests, resolve, tiers
 from hyprsay.nlu.resolve import MAX_HINTS, LexiconLike, Resolution
 from hyprsay.nlu.tiers import Evidence
 
@@ -702,7 +704,15 @@ class Understander:
         if found.status == "ambiguous":
             return self._hints(template, found.candidates, "several apps match", heard, state)
         return self._launch(
-            found.app, found.candidates, Evidence(source="grammar"), heard, state, template
+            found.app,
+            found.candidates,
+            Evidence(source="grammar"),
+            heard,
+            state,
+            template,
+            # the words the rule matched, which is where the launch verb and any novelty
+            # word beside it live. A parse built by hand records none and means "launch".
+            said=parse.utterance,
         )
 
     def _launch(
@@ -713,7 +723,15 @@ class Understander:
         heard: _Heard,
         state: DesktopState,
         template: Action | None = None,
+        *,
+        said: str = "",
     ) -> Decision:
+        """The one funnel both paths reach once an application has been settled.
+
+        It is also where "open chrome" stops meaning "start chrome": the verb only
+        declared a preference, and `ground.reach` decides against the live desktop
+        whether that means going to a window that exists or starting another copy.
+        """
         if not app.trusted:
             return Decision(
                 Verdict.REFUSE,
@@ -721,6 +739,15 @@ class Understander:
                 "approved; run hyprsay doctor",
                 heard=heard.said,
             )
+        # the template carries the workspace the speaker asked for ("open firefox on
+        # workspace 3"). Building a bare Action here threw it away and opened the
+        # application where it already was, which is what "open zapzap in a new
+        # workspace" did.
+        base = template if template is not None else Action(Intent.LAUNCH_APP)
+        prefer = ground.preference(said, base.workspace)
+        reached = ground.reach(app, prefer, state, self.lexicon, self.cfg.gates)
+        if reached.verdict is not ground.Reached.LAUNCH:
+            return self._reach(reached, evidence, heard, state)
         chosen = next((c for c in candidates if c.app is app), None)
         evidence = replace(
             evidence,
@@ -728,13 +755,40 @@ class Understander:
             explicit_target=True,
             plausible=len(candidates),
         )
-        # the template carries the workspace the speaker asked for ("open firefox on
-        # workspace 3"). Building a bare Action here threw it away and opened the
-        # application where it already was, which is what "open zapzap in a new
-        # workspace" did.
-        base = template if template is not None else Action(Intent.LAUNCH_APP)
         action = replace(base, intent=Intent.LAUNCH_APP, app=app, window=None)
         return self._finish(action, evidence, candidates, heard, state)
+
+    def _reach(
+        self, reached: ground.Reach, evidence: Evidence, heard: _Heard, state: DesktopState
+    ) -> Decision:
+        """A launch phrase that resolved to a window that is already open.
+
+        The workspace is deliberately not copied onto the action. A focus follows its
+        window to whatever workspace it lives on, which is what "open chrome" with chrome
+        on workspace 8 should do; carrying a workspace here would read as "drag it over
+        to me", a different command at a different tier. When the speaker did name a
+        workspace, `ground.preference` never let the utterance get this far.
+
+        Several windows are handed to `_hints`, the same machinery a tie on "focus
+        firefox" uses, so a tier 0 tie still acts on the most recent window and offers
+        the others as badges rather than growing a second way to choose.
+        """
+        template = Action(Intent.FOCUS_WINDOW)
+        found = tuple(
+            resolve.window_candidate(self.lexicon, heard.text, w, 1.0) for w in reached.windows
+        )
+        if reached.verdict is ground.Reached.AMBIGUOUS:
+            return self._hints(template, found[:MAX_HINTS], reached.reason, heard, state)
+        only = found[0]
+        evidence = replace(
+            evidence,
+            corroborated=only.corroborated,
+            explicit_target=True,
+            verb_said=tiers.verb_said(Intent.FOCUS_WINDOW, heard.literal),
+            by_title=False,
+            plausible=1,
+        )
+        return self._finish(replace(template, window=only.window), evidence, found, heard, state)
 
     def _window_locally(
         self, parse: Parse, phrase: str, template: Action, heard: _Heard, state: Any
@@ -1438,10 +1492,17 @@ class Understander:
         need: _Need | None,
         template: Action | None = None,
     ) -> Decision:
+        # Jev chose the intent, not the action: from bank.VERSION 2026-09-22.1 the
+        # LAUNCH_APP description covers an application that is already open, and the
+        # branch is `ground.reach`'s to take against live state. The words are the whole
+        # utterance, since no rule matched a span of it.
+        said = heard.text
         if local_app is not None:
             self._note(reading)
             candidate = resolve.app_candidate(self.lexicon, heard.text, local_app, 1.0)
-            return self._launch(local_app, (candidate,), evidence, heard, state, template)
+            return self._launch(
+                local_app, (candidate,), evidence, heard, state, template, said=said
+            )
         failure = answers.failure("r3")
         if failure is not None:
             return self._degrade(heard, state, need, _plain(failure), failure, reading)
@@ -1455,7 +1516,7 @@ class Understander:
             resolve.app_candidate(self.lexicon, heard.text, a, p) for a, p in ranked[:MAX_HINTS]
         )
         evidence = replace(evidence, wide_margin=ranked[0][1] - runner_up >= self.cfg.gates.margin)
-        return self._launch(ranked[0][0], candidates, evidence, heard, state, template)
+        return self._launch(ranked[0][0], candidates, evidence, heard, state, template, said=said)
 
     # ----------------------------------------------------------------------- outcomes
 

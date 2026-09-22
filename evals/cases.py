@@ -110,11 +110,20 @@ CANONICAL: list[Case] = [
     ("make this fullscreen", "fullscreen", "focused", None, "act", "layout"),
     ("float this", "toggle_floating", "focused", None, "act", "layout"),
     ("toggle floating", "toggle_floating", "focused", None, "act", "layout"),
-    ("open firefox", "launch_app", "firefox", None, "act", "launch"),
+    # two firefox windows are open in the fixture, so "open" means go to one of them:
+    # starting a third copy is not what anyone means (docs/STRATEGY.md Phase 1)
+    ("open firefox", "focus_window", "ff1", None, "act", "reach-existing"),
     ("launch discord", "launch_app", "discord", None, "act", "launch"),
     ("open thunderbird", "launch_app", "thunderbird", None, "act", "launch"),
     ("start a terminal", "launch_app", "kitty", None, "act", "launch"),
     ("open the calculator", "launch_app", "org.gnome.Calculator", None, "act", "launch"),
+    # nothing of that app is open, so "open" really does mean start it
+    ("open discord", "launch_app", "discord", None, "act", "launch"),
+    ("open a new firefox", "launch_app", "firefox", None, "act", "launch-anyway"),
+    # "terminal" reaches kitty only through its kind, scoring 0.68, under the gate that
+    # lets a launch act without asking. Asking is the gate working, so this is labelled
+    # for what it should do rather than for what would be convenient.
+    ("open another terminal", "launch_app", None, None, "hints", "launch-anyway"),
     ("make it bigger", "resize_window", "focused", None, "act", "resize"),
     ("make this smaller", "resize_window", "focused", None, "act", "resize"),
     ("move this left", "move_window", "focused", None, "act", "direction"),
@@ -145,7 +154,7 @@ ASR_SURFACE: list[Case] = [
     ("Taggle full screen.", "fullscreen", "focused", None, "act", "asr"),
     ("Open firefuck.", "launch_app", "firefox", None, "act", "asr"),
     ("Focus, Spotify.", "focus_window", "spot", None, "act", "asr"),
-    ("Open Obsidian.", "launch_app", "obsidian", None, "act", "asr"),
+    ("Open Obsidian.", "focus_window", "obs", None, "act", "reach-existing"),
     ("Uh, could you please go to workspace four", "switch_workspace", None, "4", "act", "asr"),
 ]
 
