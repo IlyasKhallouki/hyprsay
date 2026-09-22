@@ -22,7 +22,10 @@ Reaching inside a window (a wheel notch, a named chord, a recipe, a click) is ti
 the module that owns the gesture, never by a second table here. `tier` delegates to
 `inapp.chord_tier`, `recipes.tier_for` and `controls.click_tier`, and a recipe that types
 is raised to whatever typing costs on that window, because a recipe that types is exactly
-as dangerous as typing.
+as dangerous as typing. `Intent.SERVICE` is the same delegation aimed outwards: an
+adapter declares a tier in code beside each capability it offers and `adapters.base`
+raises it for a hostile label, so `tier` reads that answer off the `Service` rather than
+holding a table of what every application's verbs cost.
 
 Typing is the dangerous operation (PLAN 5.6 and section 14): the first review found that
 a hostile window could take focus and receive dictated text, and that shells execute on
@@ -172,6 +175,8 @@ def tier(intent: Intent, action: Action | None, state: DesktopState, cfg: Config
         return 1 if action is not None and _stays_in_view(action, state) else 2
     if intent is Intent.TYPE_TEXT:
         return 1 if action is not None and _type_allowlisted(action.window, cfg) else 2
+    if intent is Intent.SERVICE:
+        return _service_tier(action)
     if intent in IN_APP:
         return _in_app_tier(intent, action, state, cfg)
     if intent in TIER1:
@@ -188,6 +193,25 @@ def tier(intent: Intent, action: Action | None, state: DesktopState, cfg: Config
 # import this module for the refusal rules, and a module-level import back would be a
 # cycle that fails on whichever side Python loads first.
 IN_APP = frozenset({Intent.SCROLL, Intent.PRESS_CHORD, Intent.RUN_RECIPE, Intent.CLICK_CONTROL})
+
+
+def _service_tier(action: Action | None) -> int:
+    """What an adapter's own capability costs: what the ADAPTER declared for it.
+
+    The same delegation the in-app intents get, for the same reason. `adapters.base`
+    makes an adapter declare a tier in code beside each capability and then runs it
+    through `tier_for`, which lets an untrusted label raise it; that answer rides on the
+    `Service` so this function reads it instead of inventing a second one. An action with
+    no service on it is an intent this table cannot price, and the answer to that is the
+    strictest tier, exactly as `_in_app_tier` answers a missing action.
+
+    The executor asks the adapter AGAIN before it writes (`ops._service`) and refuses a
+    capability that has grown more expensive since, so a tier carried here can only ever
+    be the ceiling of what is allowed, never a way to smuggle a cheaper one in.
+    """
+    if action is None or action.service is None:
+        return 3
+    return min(max(action.service.tier, 0), 3)
 
 
 def _in_app_tier(intent: Intent, action: Action | None, state: DesktopState, cfg: Config) -> int:

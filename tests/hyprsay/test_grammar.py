@@ -22,6 +22,13 @@ NOISE_STUDY = Path(__file__).parents[2] / "docs/research/live/stt_noise_out.json
 GRAMMAR = Grammar()
 THIS = Slots(deictic=True)
 
+# The intents no form of words can reach, so no rule here may cover one. `none` is the
+# absence of a command. `service` is one capability of one adapter, chosen out of the list
+# code harvested from the live machine: what selects it is an option id the model answered
+# and code minted, never a phrase, so a grammar rule for it could only ever be a second
+# route around the handle check (`adapters/base.Minted`, `model.Intent.SERVICE`).
+UNSPOKEN = {Intent.NONE, Intent.SERVICE}
+
 
 @pytest.fixture(autouse=True)
 def _no_lexicon(monkeypatch):
@@ -277,8 +284,7 @@ def test_an_utterance_parses_to_its_intent_and_slots(raw, intent, slots):
 
 def test_the_table_is_big_enough_to_mean_something():
     assert len(UTTERANCES) >= 80
-    assert {intent for _, intent, _ in UTTERANCES} >= set(Intent) - {
-        Intent.NONE,
+    assert {intent for _, intent, _ in UTTERANCES} >= set(Intent) - UNSPOKEN - {
         Intent.PICK,
         Intent.TYPE_TEXT,
     }
@@ -587,12 +593,12 @@ def test_a_long_utterance_that_starts_like_a_command_is_cheap_too():
 # --------------------------------------------------------------------------- the table itself
 
 
-def test_every_intent_but_none_is_covered():
-    assert set(GRAMMAR.intents()) == set(Intent) - {Intent.NONE}
+def test_every_intent_but_the_unspoken_ones_is_covered():
+    assert set(GRAMMAR.intents()) == set(Intent) - UNSPOKEN
     assert len(GRAMMAR.intents()) == len(set(GRAMMAR.intents()))
 
 
-@pytest.mark.parametrize("intent", [i for i in Intent if i is not Intent.NONE])
+@pytest.mark.parametrize("intent", [i for i in Intent if i not in UNSPOKEN])
 def test_every_example_parses_to_the_intent_it_illustrates(intent):
     examples = GRAMMAR.examples(intent)
     assert examples
@@ -602,5 +608,8 @@ def test_every_example_parses_to_the_intent_it_illustrates(intent):
         assert parsed.intent is intent, example
 
 
-def test_none_has_no_examples():
-    assert GRAMMAR.examples(Intent.NONE) == ()
+def test_an_unspoken_intent_has_no_examples():
+    """An example is a phrase that parses to its intent, so an intent no phrase reaches
+    cannot have one, and offering one would be offering a command that does not exist."""
+    for intent in UNSPOKEN:
+        assert GRAMMAR.examples(intent) == ()

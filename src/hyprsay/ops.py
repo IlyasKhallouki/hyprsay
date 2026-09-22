@@ -21,6 +21,11 @@ human keeps using the mouse while speaking. `movewindow` has no addressed form o
 Volume, media and the screen lock are not compositor business. They run `wpctl`,
 `playerctl` and `loginctl` with an argument vector, never a shell line.
 
+`Intent.SERVICE` is the one operation that does not write the desktop at all: it hands a
+capability back to the adapter that offered it (`adapters/base.py`). It is in this table
+rather than beside it so that an adapter write goes through exactly the checks every
+other write goes through, in the same order, from the same function.
+
 Every inverse is computed from the desktop as it was BEFORE the write, and is itself an
 ordinary `Action`, so "undo" goes through the same checks as anything else.
 """
@@ -32,11 +37,14 @@ import re
 import shlex
 import shutil
 import subprocess
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 from hyprsay import controls, inapp, recipes
+from hyprsay.adapters import base
 from hyprsay.config import Config
 from hyprsay.model import Action, DesktopState, Direction, Intent, Window
 from hypruse import hyprctl, journal, safety, server, trust
@@ -227,6 +235,34 @@ def move_in_layout(address: str, letter: str) -> str:
         return _would(f"move {address} {letter}")
     hyprctl.dispatch("movewindow", letter)
     return f"moved {address} {letter}"
+
+
+@journal.journaled("act")
+def perform_service(adapter: str, capability: str, handle: str, state: DesktopState) -> str:
+    """Hand one capability to the adapter that minted its handle, and say what happened.
+
+    Journaled here and not left to `daemon._act`, for the reason the three wrappers above
+    this one are journaled: an adapter writes down its own socket or its own bus, so
+    nothing in `hypruse.server` sees the call and nothing else would record that it
+    happened. `hyprsay say --act` has no daemon behind it at all, and that is exactly the
+    surface an adapter is easiest to test from.
+
+    The adapter is looked up by NAME rather than handed in, so the journal entry is three
+    plain strings instead of an object repr, and so this function can be replayed.
+    """
+    found = base.by_name(_adapters(), adapter)
+    if found is None:
+        raise OpError(f"{adapter} is not running in this process, so nothing was done.")
+    context = base.Context(state=state, heard="", now=time.monotonic())
+    try:
+        outcome = found.perform(capability, handle, context)
+    except base.AdapterError as exc:
+        # the adapter's own sentence, word for word: it names the repair, and it may
+        # quote text an application wrote, which `Affordance` has already sanitized
+        raise OpError(str(exc)) from exc
+    if not outcome.ok:
+        raise OpError(outcome.message or f"{adapter} did not do that.")
+    return outcome.message or f"{capability.replace('_', ' ')} done."
 
 
 @journal.journaled("act")
@@ -450,6 +486,21 @@ def _engine() -> tuple[Config, object | None]:
     return engine.cfg, engine.lexicon
 
 
+def _adapters() -> tuple[Any, ...]:
+    """The adapters the running engine holds, read the same way `_engine` reads a lexicon.
+
+    The SAME objects the understander harvested from, which is the whole reason they are
+    built once in `daemon.build` and handed to both: a handle is only ever honoured by
+    the `adapters.base.Minted` that issued it, so a second set of adapters would refuse
+    every option the first set offered. With no engine there are none, and `_service`
+    then refuses rather than finding some other way to a bus.
+    """
+    from hyprsay.executor import current
+
+    engine = current()
+    return () if engine is None else tuple(engine.adapters)
+
+
 def _authorize_gesture(
     window: Window, before: DesktopState, gesture: str = inapp.CHORD, keys: str = ""
 ) -> str:
@@ -561,6 +612,60 @@ def _click_control(action: Action, before: DesktopState) -> str:
         return controls.click(ranked[0][0], window)
     except controls.ControlsError as exc:
         raise OpError(str(exc)) from exc
+
+
+# ------------------------------------------------------------------- through an adapter
+
+
+def _service(action: Action, fresh: DesktopState) -> str:
+    """One adapter capability, carried out by the adapter that offered it.
+
+    THE GUARDS, in the order they run, and why each one is here and not somewhere else.
+    The executor has already taken the lock latch, refused read-only mode and re-read the
+    desktop (`executor._run`); `fresh` is that re-read, and it is what every check below
+    is made against. What is left is the part only this function can do:
+
+    1. the adapter still exists in this process. An option minted by an adapter that is
+       gone is a handle nobody can honour (`adapters.base.Minted`), and the honest answer
+       to one is a refusal, never a different adapter with the same capability id.
+    2. the capability is still one that adapter offers RIGHT NOW. Asked of the adapter
+       against fresh state rather than remembered from the harvest, which is
+       `adapters.base.capability_of`'s whole reason for existing: a player that closed
+       between the answer and the act takes its capability with it.
+    3. the tier has not gone up. `adapters.base.tier_for` lets an untrusted label RAISE
+       what an option costs, and that rule is worth nothing if it is applied once, before
+       the model answers, and never again. So the live tier is recomputed from the live
+       capability and the label the option carried, and a capability that now costs more
+       than it did when it was offered is refused rather than performed at the old price.
+    4. tier 3 is not reachable at all, by construction (`base.MAX_OFFERABLE_TIER`), and it
+       is checked anyway: this is the last code that looks before an application acts.
+
+    `perform` itself checks the one thing only it can: that the handle is one it minted.
+    """
+    service = action.service
+    if service is None:
+        raise OpError("There is nothing for an adapter to do here.")
+    adapters = _adapters()
+    found = base.by_name(adapters, service.adapter)
+    if found is None:
+        raise OpError(f"{service.adapter} is not available, so nothing was done.")
+    context = base.Context(state=fresh, heard="", now=time.monotonic())
+    try:
+        live = base.capability_of(found, service.capability, context)
+    except Exception as exc:
+        raise OpError(f"{service.adapter} could not be asked what it can do now.") from exc
+    if live is None:
+        raise OpError(f"{service.adapter} cannot do that any more, so nothing was done.")
+    try:
+        now = base.tier_for(live, service.label)
+    except base.AdapterError as exc:
+        raise OpError(str(exc)) from exc
+    if now > service.tier or now > base.MAX_OFFERABLE_TIER:
+        raise OpError("That costs more now than when it was offered, so nothing was done.")
+    if journal.dry_run():
+        return _would(f"ask {service.adapter} to {service.capability.replace('_', ' ')}")
+    safety.touch("service")
+    return perform_service(service.adapter, service.capability, service.handle, fresh)
 
 
 def _lock_screen(_action: Action, _before: DesktopState) -> str:
@@ -706,5 +811,11 @@ OPERATIONS: dict[Intent, Operation] = {
         Operation(
             Intent.CLICK_CONTROL, _click_control, _none, needs_window=True, repeatable=False
         ),  # fmt: skip
+        # No window: an adapter option names its own target in its handle, so it is never
+        # aimed at whatever has focus. No inverse: what was playing before is not
+        # recoverable from here and an undo would be a second guess (`waytify.perform`).
+        # Not repeatable: "again" replays an action WITHOUT re-tiering it, and a handle
+        # goes stale, so the second run would be a fresh write at a price nobody checked.
+        Operation(Intent.SERVICE, _service, _none, repeatable=False),
     )
 }

@@ -14,6 +14,12 @@ Before every write, in this order:
    class it had then (docs/PLAN.md 5.6). Text is sanitized again here, whatever the
    grammar already did, because this is the last code that sees it.
 
+An adapter capability (`Intent.SERVICE`) takes the same four steps and then two more that
+only `ops._service` can take: the adapter is asked AGAIN, against the fresh state, whether
+it still offers that capability, and what it now costs. A capability that has gone, or one
+whose tier has risen since the option was offered, is refused. So an adapter is not a
+second route around this file; it is one more operation inside it.
+
 Then the operation runs through `hyprsay.ops`, which goes through the inherited hypruse
 functions and their guards. Whatever those raise becomes an `Outcome` with one plain
 sentence. `execute`, `undo` and `again` never raise: the caller is a worker thread
@@ -33,6 +39,7 @@ from dataclasses import replace
 from typing import Any
 
 from hyprsay import ops
+from hyprsay.adapters import base as adapters
 from hyprsay.config import Config
 from hyprsay.model import Action, DesktopState, Intent, LockLatch, Outcome, Window
 from hypruse import hyprctl, journal, safety, server, session, trust, wire
@@ -80,9 +87,16 @@ class Executor:
         state_provider: Callable[[], DesktopState],
         latch: LockLatch,
         lexicon: Any = None,
+        adapters: tuple[Any, ...] = (),
     ) -> None:
         self.cfg = cfg
         self.lexicon = lexicon
+        # THE SAME OBJECTS the understander harvested from, never a second set. A handle
+        # is honoured only by the `adapters.base.Minted` that issued it, so an executor
+        # holding its own adapters would refuse every option the harvest offered, and
+        # would do it with a sentence that reads like the track went away. `daemon.build`
+        # and `cli._say` each build them once and hand the same tuple to both halves.
+        self.adapters = tuple(adapters)
         self._state_provider = state_provider
         self._latch = latch
         self._serial = threading.RLock()
@@ -239,6 +253,10 @@ def explain(exc: BaseException) -> str:
     """One plain sentence for the HUD, for anything the inherited code can raise."""
     if isinstance(exc, ops.OpError):
         return str(exc)
+    if isinstance(exc, adapters.AdapterError):
+        # an adapter's own sentence already names the repair ("start it with `waytify
+        # daemon`"), so it is passed through rather than summarized into "that failed"
+        return _first_sentence(exc) or "That service could not do it."
     if isinstance(exc, trust.TrustError):
         return f"Refused: {_first_sentence(exc)}."
     if isinstance(exc, journal.DryRunError):

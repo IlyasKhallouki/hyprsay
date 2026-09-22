@@ -43,6 +43,12 @@ class World:
     def on_custom(self, callback):
         self.custom = callback
 
+    def subscribe(self, callback):
+        # where the daemon hears about a focus change, which is when it starts reading
+        # the new window's controls
+        self.watcher = callback
+        return lambda: None
+
     async def run(self):
         await asyncio.Event().wait()
 
@@ -1333,3 +1339,70 @@ def test_a_clause_that_stopped_changing_while_the_speaker_kept_talking_waits():
     run(hold(e, p))
     assert p["executor"].executed == [MOVE]
     assert p["executor"].while_held == [False]
+
+
+# --------------------------------------------------- reading what is inside the window
+
+
+class Warmed:
+    """Stands in for `controls.warm`, which hands a tree walk to its own worker."""
+
+    def __init__(self, explodes=False):
+        self.windows: list[str] = []
+        self.explodes = explodes
+
+    def __call__(self, window):
+        self.windows.append(window.address)
+        if self.explodes:
+            raise RuntimeError("the accessibility registry will not activate")
+        return True
+
+
+def test_the_controls_of_the_pinned_window_are_read_from_at_key_down(monkeypatch):
+    warmed = Warmed()
+    monkeypatch.setattr(daemon.controls, "warm", warmed)
+    e, p = engine()
+    run(e._key_down())
+    # the harvest reads a cache and never walks one (affordances), so the walk has to
+    # start here, at the moment the pinned window is settled
+    assert warmed.windows == ["0x1"]
+    assert p["recorder"].started == 1
+
+
+def test_a_focus_change_starts_reading_the_window_that_now_has_it(monkeypatch):
+    warmed = Warmed()
+    monkeypatch.setattr(daemon.controls, "warm", warmed)
+    e, p = engine()
+
+    async def go():
+        task = asyncio.create_task(e.run())
+        await asyncio.sleep(0)
+        p["world"].watcher(replace(STATE, active_address="0x2"))
+        p["world"].watcher(replace(STATE, active_address="0x2"))  # a title change, say
+        p["world"].watcher(replace(STATE, active_address="0x1"))
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    run(go())
+    # once per window the focus lands on, and not once per event: a walk is seconds long
+    assert warmed.windows == ["0x2", "0x1"]
+
+
+def test_a_broken_accessibility_bus_never_reaches_the_microphone(monkeypatch):
+    monkeypatch.setattr(daemon.controls, "warm", Warmed(explodes=True))
+    e, p = engine()
+    run(utter(e, p))
+    assert p["executor"].executed == [FOCUS]
+    assert p["hud"].states[-1] == "act"
+
+
+def test_nothing_is_read_out_of_a_window_while_the_session_is_locked(monkeypatch):
+    warmed = Warmed()
+    monkeypatch.setattr(daemon.controls, "warm", warmed)
+    e, p = engine()
+    e._on_desktop(replace(STATE, active_address="0x2", locked=True))
+    # a walk reads the name of everything on screen, and a locked screen is not ours to
+    # read. `DesktopState.locked` fails closed, so an unreadable desktop reads as locked
+    e._on_desktop(DesktopState())
+    assert warmed.windows == []

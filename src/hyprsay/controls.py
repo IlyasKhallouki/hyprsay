@@ -14,7 +14,11 @@ takes 0.4 to 0.55 s to say so; the cached re-read takes 0.02 ms. Three consequen
 all of them load bearing:
 
 - the walk runs only when the utterance actually asks to click something, never
-  speculatively, because a speculative one would eat the whole latency budget;
+  speculatively ON THE UTTERANCE'S OWN THREAD, because one there would eat the whole
+  latency budget. `warm` is the other half of that sentence: the daemon starts a walk on
+  a worker at the two moments that predict a question about a window (the focus landing
+  there, and the key going down), and `affordances.harvest` then READS THE CACHE AND
+  NEVER WALKS. A cold cache costs that utterance its control options and nothing else;
 - a walk that overruns its caller's deadline is NOT thrown away. It keeps going on its
   worker and lands in the cache, so the first "click send" answers "say that again in a
   moment" and the second one is instant. At 16 s a walk is far too expensive to repeat;
@@ -213,6 +217,8 @@ _CACHE: dict[str, _Cached] = {}
 # when the title changes described a window that no longer exists, and the next
 # utterance must not be handed its buttons
 _PENDING: dict[tuple[str, str, str], Future] = {}
+# the one speculative walk nobody is waiting on, so `warm` can drop it for a newer one
+_WARMING: Future | None = None
 _LOCK = threading.Lock()
 _POOL: ThreadPoolExecutor | None = None
 
@@ -256,6 +262,29 @@ def _fresh(window: Window) -> tuple[Control, ...] | None:
             del _CACHE[window.address]
             return None
         return cached.controls
+
+
+def cached(window: Window) -> tuple[Control, ...] | None:
+    """What has already been read for this window, without reading anything.
+
+    The door `affordances.harvest` comes in by, and the reason it is a separate function
+    from `controls_for`: a harvest has 250 ms for the whole desktop
+    (`nlu/understand.HARVEST_S`) and a walk is 3.8 s on the live ZapZap window and 16.2 s
+    on KCalc's 48 controls, so a harvest that could reach `controls_for` would be a
+    harvest that could hang the utterance. This one cannot: it takes the lock, reads a
+    dict and returns.
+
+    Three answers, and the caller has to tell them apart:
+
+        None  nothing has been read, or what was read has expired or gone stale. The
+              window may well be full of buttons. `warm` is what fixes this, and until it
+              lands the honest answer is that this utterance has no control options.
+        ()    read, and the window publishes nothing: a terminal, a canvas, or Chrome
+              without --force-renderer-accessibility. Measured live: 0.05 to 0.10 s to
+              establish, then free for 30 s.
+        (...) the controls, as of at most `CACHE_TTL_S` ago.
+    """
+    return _fresh(window)
 
 
 def _control(window: Window, element: dict[str, Any]) -> Control | None:
@@ -347,6 +376,57 @@ def _succeeded(future: Future) -> bool:
     return not future.cancelled() and future.exception(timeout=0) is None
 
 
+def _claim(future: Future) -> None:
+    """Somebody is waiting on this walk now, so no `warm` may cancel it out from under
+    them. Called by `controls_for`, which is the only caller that waits."""
+    global _WARMING
+    with _LOCK:
+        if _WARMING is future:
+            _WARMING = None
+
+
+def warm(window: Window, limit: int = 60, reader: Reader | None = None) -> bool:
+    """Start reading this window's controls now, on the worker, and return at once.
+
+    WHY, in one measurement: a harvest may not walk (`cached`), so a walk has to have
+    happened before the harvest, and the two moments that predict a question about a
+    window are the focus landing on it and the push-to-talk key going down. The daemon
+    calls this at both. Nothing waits for the result: it lands in the cache through the
+    same done-callback that catches a walk which overran its caller, and the next harvest
+    of that window reads it for 0.02 ms.
+
+    Returns True when a walk is running for this window, False when the cache already has
+    one and there is nothing to do. Never raises and never blocks: the bus is touched on
+    the worker, never here, because this is called from the event loop that owns the
+    microphone.
+
+    No `probe` first. A probe is another bus round trip, and a walk on a broken bus fails
+    by itself in about the same time and caches nothing, which is the same outcome one
+    tier of checking later.
+    """
+    global _WARMING
+    if _fresh(window) is not None:
+        return False
+    with _LOCK:
+        running = _PENDING.get(_key(window))
+        if running is not None and not running.done():
+            # already being walked. Cancelling and resubmitting the same window here is
+            # what made "focus it, then press the key" throw away its own head start
+            return True
+        # the previous speculative walk is for a window the speaker has since left. One
+        # worker walks one window at a time and a walk is seconds long, so keeping it
+        # would put the window they are looking at NOW behind it: alt-tabbing across five
+        # windows would leave the fifth walk a minute away. A walk that has already
+        # started ignores the cancel and still fills the cache, which is what we want.
+        queued, _WARMING = _WARMING, None
+    if queued is not None:
+        queued.cancel()
+    future = _start(window, limit, reader or Atspi())
+    with _LOCK:
+        _WARMING = future
+    return True
+
+
 # Classes that publish nothing until they are started with a flag. Chrome and every
 # Electron shell built on it expose an empty tree rather than no tree, which reads as
 # "no such button" unless it is named for what it is.
@@ -419,6 +499,9 @@ def controls_for(
         if not usable:
             raise ControlsError(why)
         future = _start(window, limit, reader)
+        # a click is somebody waiting, so this walk stops being the speculative one a
+        # later `warm` is allowed to cancel
+        _claim(future)
         try:
             walked: list[Control] = future.result(timeout=max(timeout, 0.0))
         except TimeoutError as exc:

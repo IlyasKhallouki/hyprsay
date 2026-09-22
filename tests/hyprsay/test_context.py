@@ -631,6 +631,9 @@ class World:
     def on_custom(self, callback):
         pass
 
+    def subscribe(self, callback):
+        return lambda: None
+
     async def run(self):
         await asyncio.Event().wait()
 

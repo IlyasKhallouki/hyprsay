@@ -1274,8 +1274,14 @@ class Understander:
 
     # -------------------------------------------------------------- the ordered plan
 
-    async def _harvest(self, heard: _Heard) -> dict[str, Affordance]:
+    async def _harvest(
+        self, heard: _Heard, *, copies: int = plan.MAX_STEPS
+    ) -> dict[str, Affordance]:
         """Everything the machine can do right now, as options a model may choose among.
+
+        `copies` is how many times the caller's request will carry this list, and it halves
+        the token budget three times over for a plan of three steps (`affordances.harvest`).
+        The second turn asks ONE Choice, so it passes 1 and gets the whole budget.
 
         Off the loop and under a deadline. The harvest itself measured 1.4 to 2.2 ms p50
         and 5.6 ms cold (`affordances.py`), but it asks every adapter and an adapter asks
@@ -1298,7 +1304,7 @@ class Understander:
         )
         try:
             async with asyncio.timeout(HARVEST_S):
-                found = await asyncio.to_thread(affordances.harvest, machine, copies=plan.MAX_STEPS)
+                found = await asyncio.to_thread(affordances.harvest, machine, copies=copies)
         except Exception as exc:
             self.last_exchange["errors"]["harvest"] = type(exc).__name__
             return {}
@@ -1318,14 +1324,17 @@ class Understander:
         offered: dict[str, Affordance],
         *,
         name: str = "rp",
-        count: int = plan.MAX_STEPS,
+        build: Callable[[dict[str, Affordance]], dict[str, Question]] = plan.questions,
     ) -> tuple[requests.Request | None, dict[str, Affordance]]:
         """Rp: the step Choices in ONE request, with the options that fit in it.
 
-        `count` is how many step Choices the request carries, and it is a parameter for
-        one reason: the second turn asks ONE, over a list that may be fifty search
-        results. Three Choices carry that list three times and about seven options fit;
-        one carries it once and thirty to forty-three fit (`requests.plan_request`).
+        `build` is which questions ask it, and it is a parameter for two reasons that
+        arrived together. The second turn asks ONE Choice, over a list that may be fifty
+        search results: three Choices carry that list three times and about seven options
+        fit, while one carries it once and thirty to forty-three do
+        (`requests.plan_request`). And it asks a DIFFERENT question, because a measurement
+        said it had to (`bank.chosen_result`). The shrinking loop below is the same either
+        way: it is about what fits, not about what is being asked.
 
         Never split across requests. `requests._wire_one` inlines a Choice's options
         inside each question, so `step_1` and `step_2` in two different requests would
@@ -1344,7 +1353,7 @@ class Understander:
         drift = self._drift()
         cap = requests.headroom(self.cfg.jev.token_cap, drift)
         while options:
-            questions = plan.questions(options, count)
+            questions = build(options)
             estimated = requests.estimate(base, questions)
             if estimated <= cap:
                 built = requests.Request(
@@ -1474,7 +1483,7 @@ class Understander:
         capability = self._capability_now(adapter, asked.capability, heard, state)
         if not turns.fetchable(capability):
             return self._gave_up(note, turns.Stopped.NO_CAPABILITY, heard)
-        slots = turns.slots_for(capability, heard.text)
+        slots = turns.slots_for(capability, heard.text, heard.raw.split())
         if slots is None:
             return self._gave_up(note, turns.Stopped.NO_QUERY, heard)
         note = replace(note, query_chars=sum(len(v) for v in slots.values()))
@@ -1560,7 +1569,7 @@ class Understander:
         # and the executor re-reads the desktop before it writes, as it does for every
         # other decision in this file
         first_harvest = self.last_exchange.get("affordances")
-        again = await self._harvest(heard)
+        again = await self._harvest(heard, copies=1)
         note = replace(note, extra={**note.extra, "harvest": self.last_exchange["affordances"]})
         if first_harvest is not None:
             self.last_exchange["affordances"] = first_harvest
@@ -1568,7 +1577,9 @@ class Understander:
         # "rp.2": the same family as the first plan request, so `_merge` files its answers
         # in `answers.steps` unchanged, and a distinct name, so `inspect --last` shows two
         # requests rather than the second overwriting the first (`requests.Request.name`)
-        request, options = self._plan_request(self._base(heard), options, name="rp.2", count=1)
+        request, options = self._plan_request(
+            self._base(heard), options, name="rp.2", build=plan.result_questions
+        )
         if request is None:
             return self._gave_up(note, turns.Stopped.UNANSWERED, heard)
         sent = self.last_exchange.get("requests", [])
@@ -2701,6 +2712,12 @@ class _Heard:
     the grammar parsed (it records that in `Parse.utterance`, so a repaired "firefuck"
     corroborates Firefox). `literal` is what the recognizer actually produced, and only
     `literal` may supply a tier 2 verb: a guess never authorizes a disruptive action.
+
+    `raw` is the transcript before the normalizer touched it at all, which `literal` is
+    NOT: `literal` is `Normalized.tokens`, and those are the normalized spellings carrying
+    raw offsets. The difference is exactly one word wide and it matters once, in
+    `turns.strip_carrier`: the normalizer writes a spoken "second" as "2", and telling an
+    ordinal apart from a band called "2 Unlimited" needs the word the speaker said.
     """
 
     said: str
@@ -2708,6 +2725,7 @@ class _Heard:
     tokens: tuple[str, ...]
     literal: tuple[str, ...]
     variants: tuple[str, ...]
+    raw: str = ""
 
     @property
     def every_word(self) -> set[str]:
@@ -2718,7 +2736,8 @@ def _heard(norm: Any, parse: Parse | None) -> _Heard:
     # the real normalizer emits Token objects with raw offsets; fakes may emit strings
     literal = tuple(getattr(t, "text", t) for t in norm.tokens)
     text = parse.utterance if parse is not None and parse.utterance else norm.text
-    return _Heard(norm.text, text, tuple(text.split()), literal, tuple(norm.variants))
+    raw = getattr(norm, "raw", "") or norm.text
+    return _Heard(norm.text, text, tuple(text.split()), literal, tuple(norm.variants), raw)
 
 
 @dataclass

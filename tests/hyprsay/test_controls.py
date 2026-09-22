@@ -5,7 +5,9 @@ on the bus is broken anyway, which is the case `probe` exists for: those tests f
 three ways it breaks rather than waiting for one of them to happen.
 """
 
+import contextlib
 import threading
+import time
 from dataclasses import replace
 
 import pytest
@@ -86,9 +88,21 @@ def raising(exc):
 def _empty_cache():
     controls.invalidate()
     controls._PENDING.clear()
+    controls._WARMING = None
     yield
     controls.invalidate()
     controls._PENDING.clear()
+    controls._WARMING = None
+
+
+def until(predicate, seconds=5.0):
+    """Wait for something a worker thread is about to do, or fail the test saying so."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.002)
+    raise AssertionError("the worker never got there")
 
 
 # --------------------------------------------------------------------------- the probe
@@ -442,3 +456,105 @@ def test_a_fall_back_to_vision_note_is_never_reported_as_a_click(monkeypatch):
     with pytest.raises(controls.ControlsError) as err:
         controls.click(control("Send"), WINDOW)
     assert "could not be clicked" in str(err.value)
+
+
+# --------------------------------------------------------------------- warming the cache
+
+
+def test_the_cache_tells_a_cold_reading_apart_from_a_window_that_publishes_nothing():
+    tree = FakeTree([])
+    assert controls.cached(WINDOW) is None
+    controls.warm(WINDOW, reader=tree)
+    until(lambda: controls.cached(WINDOW) is not None)
+    # () and None are two different statements and the harvest reads them differently:
+    # one is "nobody has looked", the other is "there is nothing there"
+    assert controls.cached(WINDOW) == ()
+
+
+def test_a_warm_fills_the_cache_for_a_later_reader_with_nobody_waiting():
+    tree = FakeTree([element("Send"), element("Cancel")])
+    assert controls.warm(WINDOW, reader=tree) is True
+    until(lambda: controls.cached(WINDOW))
+    assert [c.name for c in controls.cached(WINDOW)] == ["Send", "Cancel"]
+    assert tree.reads == 1
+
+
+def test_a_warm_of_a_window_already_in_the_cache_walks_nothing():
+    tree = FakeTree([element("Send")])
+    controls.warm(WINDOW, reader=tree)
+    until(lambda: controls.cached(WINDOW))
+    assert controls.warm(WINDOW, reader=tree) is False
+    assert tree.reads == 1
+
+
+def test_a_warm_of_a_window_already_being_walked_does_not_start_a_second_walk():
+    gate = threading.Event()
+    tree = FakeTree([element("Send")], gate=gate)
+    try:
+        assert controls.warm(WINDOW, reader=tree) is True
+        until(lambda: tree.reads == 1)
+        assert controls.warm(WINDOW, reader=tree) is True
+        assert tree.reads == 1
+    finally:
+        gate.set()
+
+
+def test_a_warm_for_a_new_window_drops_the_walk_the_speaker_has_left():
+    gate = threading.Event()
+    tree = FakeTree([element("Send")], gate=gate)
+    left = replace(WINDOW, address="0x2", title="left behind")
+    looking_at = replace(WINDOW, address="0x3", title="in front of them")
+    try:
+        # the worker is inside the first walk, so everything after it is queued
+        controls.warm(WINDOW, reader=tree)
+        until(lambda: tree.reads == 1)
+        controls.warm(left, reader=tree)
+        queued = controls._PENDING[controls._key(left)]
+        controls.warm(looking_at, reader=tree)
+        # one worker, one walk at a time, seconds each: a queue of walks is a queue of
+        # answers about windows nobody is looking at any more
+        assert queued.cancelled()
+        assert not controls._PENDING[controls._key(looking_at)].cancelled()
+    finally:
+        gate.set()
+
+
+def test_a_walk_a_click_is_waiting_for_is_never_cancelled_by_a_warm():
+    gate = threading.Event()
+    tree = FakeTree([element("Send")], gate=gate)
+    wanted = replace(WINDOW, address="0x2", title="the one that was asked about")
+    elsewhere = replace(WINDOW, address="0x3", title="wherever focus went")
+    found: list = []
+
+    def click_path():
+        with contextlib.suppress(controls.ControlsError):
+            found.append(controls.controls_for(wanted, timeout=5.0, reader=tree))
+
+    controls.warm(WINDOW, reader=tree)  # holds the one worker
+    until(lambda: tree.reads == 1)
+    asking = threading.Thread(target=click_path)
+    asking.start()
+    try:
+        until(lambda: controls._key(wanted) in controls._PENDING)
+        controls.warm(elsewhere, reader=tree)
+        assert not controls._PENDING[controls._key(wanted)].cancelled()
+    finally:
+        gate.set()
+        asking.join(timeout=5)
+    assert [c.name for c in found[0]] == ["Send"]
+
+
+def test_a_warm_never_raises_when_the_bus_is_broken():
+    tree = FakeTree([], error=a11y.A11yError("the registry does not answer"))
+    assert controls.warm(WINDOW, reader=tree) is True
+    until(lambda: controls._key(WINDOW) not in controls._PENDING)
+    # a walk that failed caches nothing, not even an emptiness: a broken bus is not the
+    # same statement as "this window has no buttons"
+    assert controls.cached(WINDOW) is None
+
+
+def test_a_warm_probes_nothing_so_it_cannot_block_the_caller(monkeypatch):
+    monkeypatch.setattr(controls, "probe", raising(AssertionError("a probe is a bus round trip")))
+    tree = FakeTree([element("Send")])
+    assert controls.warm(WINDOW, reader=tree) is True
+    until(lambda: controls.cached(WINDOW))

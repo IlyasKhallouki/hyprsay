@@ -210,6 +210,20 @@ def questions(options: Mapping[str, Affordance], count: int = MAX_STEPS) -> dict
     return {step_id(n): bank.plan_step(n, described) for n in range(1, count + 1)}
 
 
+def result_questions(options: Mapping[str, Affordance]) -> dict[str, Question]:
+    """ONE Choice over the same options, asking which RESULT the speaker meant.
+
+    Keyed `step_1` like every other step question, so `read` below is the one place that
+    decides what a step answer has to look like and needs no second shape to know about.
+    What changes is the wording, and only because a measurement said it had to: see
+    `bank.chosen_result`.
+    """
+    if not options:
+        return {}
+    described: dict[str, Any] = {key: found.as_option() for key, found in options.items()}
+    return {step_id(1): bank.chosen_result(described)}
+
+
 def read(
     answers: Mapping[str, Any],
     options: Mapping[str, Affordance],

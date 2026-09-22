@@ -64,6 +64,12 @@ def _plain(value: Any, keep_titles: bool) -> Any:
                 and type(value).__name__ in ("Action", "Slots")
             ):
                 out[f.name] = redact_text(item)  # dictated text
+            elif f.name == "label" and isinstance(item, str) and type(value).__name__ == "Service":
+                # a `model.Service` label is a track, a playlist or "Pause Chromium: <what
+                # is playing>", which is the same sentence about the same person a window
+                # title carries. Redacted rather than dropped, so two different picks
+                # still read as two different entries when a decision is being explained.
+                out[f.name] = redact_text(item)
             elif _omitted(f.name, item, keep_titles):
                 continue
             else:
@@ -87,11 +93,29 @@ def _plain(value: Any, keep_titles: bool) -> Any:
     return repr(value)
 
 
+def _redact_outcome(fields: dict[str, Any]) -> dict[str, Any]:
+    """An adapter writes its own success sentence, and for a player that sentence is
+    what you are listening to: "Playing Bohemian Rhapsody".
+
+    `Service.label` was already redacted on the way IN, and then the same words came
+    back out through `Outcome.message` in the clear, which made the promise in
+    docs/PRIVACY.md ("what a media player is playing is not sent") true of the request
+    and false of the file on disk. Only an adapter's message is touched: every other
+    operation's message is hyprsay's own text about hyprsay's own act.
+    """
+    action = fields.get("action")
+    message = fields.get("message")
+    if not isinstance(message, str) or getattr(action, "service", None) is None:
+        return fields
+    return {**fields, "message": redact_text(message)}
+
+
 def record(kind: str, **fields: Any) -> None:
     if os.environ.get("HYPRSAY_JOURNAL", "").lower() in ("off", "0", "false", "no"):
         return
     try:
         keep_titles = os.environ.get("HYPRSAY_JOURNAL_TITLES") == "1"
+        fields = _redact_outcome(fields)
         entry = {"ts": round(time.time(), 3), "kind": kind, **_plain(fields, keep_titles)}
         file = path()
         file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

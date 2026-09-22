@@ -9,9 +9,21 @@ import subprocess
 import pytest
 
 from hyprsay import executor, ops
+from hyprsay.adapters import base as adapters
 from hyprsay.config import Config, Safety
 from hyprsay.executor import Executor
-from hyprsay.model import Action, App, DesktopState, Direction, Intent, Layer, Window, Workspace
+from hyprsay.model import (
+    Action,
+    App,
+    DesktopState,
+    Direction,
+    Intent,
+    Layer,
+    Outcome,
+    Service,
+    Window,
+    Workspace,
+)
 from hypruse import hyprctl, journal, safety, server, session, trust
 from hypruse import input as hinput
 
@@ -1034,3 +1046,179 @@ def test_scrolling_does_not_depend_on_knowing_the_window_kind(desk, monkeypatch)
         Action(Intent.SCROLL, window=BROWSER, direction=Direction.DOWN)
     )
     assert outcome.ok
+
+
+# ------------------------------------------------------------------- through an adapter
+#
+# The route that did not exist: an adapter's own capability, chosen out of a harvested
+# list, carried out by the adapter that minted the handle. Every test here states one of
+# the guards `ops._service` runs, and the last three state what the guards refuse.
+
+
+SERVICE_CAP = adapters.Capability(
+    id="fake.play_track",
+    summary="play a track on Spotify, found by name",
+    tier=1,
+    kind="spotify track",
+)
+
+
+class Player:
+    """An adapter that records, refuses on request, and opens nothing."""
+
+    name = "fake"
+
+    def __init__(self, caps=(SERVICE_CAP,), *, outcome=None, error=None) -> None:
+        self.caps = tuple(caps)
+        self.outcome = outcome
+        self.error = error
+        self.performed: list[tuple[str, str]] = []
+
+    def probe(self):
+        return True, "fine"
+
+    def can_serve(self, context):
+        return True
+
+    def capabilities(self, context):
+        return self.caps
+
+    def resolve(self, capability, slots, context):
+        return ()
+
+    def perform(self, capability, handle, context):
+        self.performed.append((capability, handle))
+        if self.error is not None:
+            raise self.error
+        return self.outcome or Outcome(True, f"Playing {handle}.")
+
+
+def service(tier: int = 1, label: str = "Bohemian Rhapsody - Queen") -> Action:
+    return Action(
+        Intent.SERVICE,
+        service=Service("fake", "fake.play_track", "spotify:track:x", tier=tier, label=label),
+    )
+
+
+@pytest.fixture
+def playing(desk, monkeypatch):
+    """A desk with one adapter registered on the executor, torn down afterwards."""
+    player = Player()
+    acts = Executor(Config(), desk.provide, desk.latch, Lexicon(), adapters=(player,))
+    executor.use(acts)
+    yield desk, acts, player
+    executor.use(None)
+
+
+def test_a_chosen_adapter_capability_reaches_the_adapter_that_minted_its_handle(playing):
+    desk, acts, player = playing
+    outcome = acts.execute(service())
+    assert outcome.ok, outcome.message
+    assert player.performed == [("fake.play_track", "spotify:track:x")]
+    assert outcome.message == "Playing spotify:track:x."
+    assert desk.writes == []  # nothing touched the compositor
+
+
+def test_an_adapter_write_re_reads_the_desktop_and_asks_the_lock_latch_first(playing):
+    """The same first three steps every other write takes, from the same function."""
+    desk, acts, player = playing
+    before = (desk.latch.asked, desk.state_reads)
+    acts.execute(service())
+    assert (desk.latch.asked, desk.state_reads) == (before[0] + 1, before[1] + 1)
+
+
+def test_a_locked_screen_refuses_an_adapter_capability_and_the_adapter_is_never_called(playing):
+    desk, acts, player = playing
+    desk.latch.is_locked = True
+    outcome = acts.execute(service())
+    assert not outcome.ok and outcome.message == executor.LOCKED
+    assert player.performed == []
+
+
+def test_read_only_mode_refuses_an_adapter_capability(playing, monkeypatch):
+    desk, acts, player = playing
+    monkeypatch.setattr(server, "READONLY", True)
+    outcome = acts.execute(service())
+    assert not outcome.ok and outcome.message == executor.READ_ONLY
+    assert player.performed == []
+
+
+def test_a_dry_run_says_what_it_would_ask_for_and_asks_for_nothing(playing, monkeypatch):
+    desk, acts, player = playing
+    monkeypatch.setattr(ops.journal, "dry_run", lambda: True)
+    outcome = acts.execute(service())
+    assert outcome.ok and outcome.message.startswith("DRY RUN")
+    assert player.performed == []
+
+
+def test_an_adapter_that_is_not_in_this_process_is_refused_and_never_substituted(desk):
+    """A handle is honoured only by the `Minted` that issued it, so an adapter that is
+    gone is a refusal and never a different adapter that knows the same capability id."""
+    acts = Executor(Config(), desk.provide, desk.latch, Lexicon(), adapters=())
+    executor.use(acts)
+    try:
+        outcome = acts.execute(service())
+    finally:
+        executor.use(None)
+    assert not outcome.ok and "not available" in outcome.message
+
+
+def test_a_capability_the_adapter_no_longer_offers_is_refused(playing):
+    """Asked again against the fresh desktop rather than remembered from the harvest: a
+    player that closed between the answer and the act takes its capability with it."""
+    desk, acts, player = playing
+    player.caps = ()
+    outcome = acts.execute(service())
+    assert not outcome.ok and "any more" in outcome.message
+    assert player.performed == []
+
+
+def test_a_capability_that_costs_more_now_than_when_it_was_offered_is_refused(playing):
+    """An untrusted label may RAISE what an act costs and may never lower it. That rule
+    is worth nothing if it is applied once, before the answer comes back, and never
+    again, so the live tier is recomputed at the moment of the write."""
+    desk, acts, player = playing
+    player.caps = (_replace(SERVICE_CAP, tier=2),)
+    outcome = acts.execute(service(tier=1))
+    assert not outcome.ok and "costs more now" in outcome.message
+    assert player.performed == []
+
+
+def test_a_homoglyph_in_the_label_raises_the_live_tier_at_the_moment_of_the_write(playing):
+    desk, acts, player = playing
+    outcome = acts.execute(service(tier=1, label="Bohemiаn Rhapsody"))
+    assert not outcome.ok and "costs more now" in outcome.message
+    assert player.performed == []
+
+
+def test_an_adapter_refusal_becomes_one_plain_sentence_and_not_a_traceback(playing):
+    desk, acts, player = playing
+    player.error = adapters.AdapterError("the waytify daemon is not running; start it")
+    outcome = acts.execute(service())
+    assert not outcome.ok
+    assert outcome.message == "the waytify daemon is not running; start it"
+
+
+def test_an_adapter_that_says_it_did_not_do_it_is_not_reported_as_done(playing):
+    desk, acts, player = playing
+    player.outcome = Outcome(False, "Spotify would not start that.")
+    outcome = acts.execute(service())
+    assert not outcome.ok and outcome.message == "Spotify would not start that."
+
+
+def test_an_adapter_capability_offers_no_undo_and_is_never_repeated_by_again(playing):
+    """There is no "go back to what you interrupted", and a handle goes stale, so a
+    repeat would be a fresh write at a price nobody checked."""
+    desk, acts, player = playing
+    outcome = acts.execute(service())
+    assert outcome.inverse is None
+    assert not acts.undo().ok
+    assert not acts.again().ok
+    assert len(player.performed) == 1
+
+
+def test_a_service_action_with_no_service_on_it_does_nothing(playing):
+    desk, acts, player = playing
+    outcome = acts.execute(Action(Intent.SERVICE))
+    assert not outcome.ok
+    assert player.performed == []

@@ -236,6 +236,36 @@ def test_what_a_media_player_is_playing_is_not_journalled_either(monkeypatch, tm
     assert "chromium" in written  # the bus name is the bus daemon's word and stays
 
 
+def test_what_an_adapter_says_it_played_is_not_journalled_either(tmp_path, monkeypatch):
+    """`Service.label` was redacted on the way in and the same words came back out in
+    an adapter's own success sentence, so the promise held for the request and not for
+    the file on disk."""
+    from hyprsay import journal
+    from hyprsay.model import Action, Intent, Service
+
+    monkeypatch.setenv("HYPRSAY_JOURNAL", "on")
+    monkeypatch.setattr(journal, "path", lambda: tmp_path / "j.jsonl")
+    secret = "Bohemian Rhapsody"
+    action = Action(
+        Intent.SERVICE,
+        service=Service(adapter="waytify", capability="play_track", handle="h", label=secret),
+    )
+    journal.record("action", action=action, ok=True, message=f"Playing {secret}.")
+    written = (tmp_path / "j.jsonl").read_text()
+    assert secret not in written
+    assert "waytify" in written  # the adapter's own name is hyprsay's word and stays
+
+
+def test_hyprsays_own_message_is_not_redacted_by_that(tmp_path, monkeypatch):
+    from hyprsay import journal
+    from hyprsay.model import Action, Intent
+
+    monkeypatch.setenv("HYPRSAY_JOURNAL", "on")
+    monkeypatch.setattr(journal, "path", lambda: tmp_path / "j.jsonl")
+    journal.record("action", action=Action(Intent.FOCUS_WINDOW), ok=True, message="Focused kitty.")
+    assert "Focused kitty." in (tmp_path / "j.jsonl").read_text()
+
+
 # ------------------------------------------------------------ carrying out from the terminal
 
 

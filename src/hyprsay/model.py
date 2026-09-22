@@ -132,6 +132,10 @@ class Intent(StrEnum):
     FOCUS_DIRECTION = "focus_direction"
     VOLUME = "volume"
     MEDIA = "media"
+    # one capability of one adapter, carried out by the adapter that minted its handle
+    # (`adapters/base.py`). Never in JEV_INTENTS and never in the grammar: the model
+    # answers an option id, and code turns that id into this.
+    SERVICE = "service"
     TYPE_TEXT = "type_text"  # grammar only, never offered to Jev
     LOCK_SCREEN = "lock_screen"  # grammar only, never offered to Jev
     # reaching INSIDE a window. Grammar only, for the same reason typing is: Jev must
@@ -253,6 +257,33 @@ class Candidate:
 
 
 @dataclass(frozen=True)
+class Service:
+    """One adapter capability, chosen from a list and ready to be carried out.
+
+    WHY IT IS ONE RECORD and not four more fields on `Action`. The three strings only
+    ever mean anything together: a handle is dereferenced by the adapter that minted it
+    and by nothing else (`adapters.base.Minted`), so `adapter`, `capability` and `handle`
+    travel as a unit or they are a string nobody may act on.
+
+    `tier` is what this option cost at the moment the model was allowed to choose it.
+    It is carried so the executor can re-ask the adapter and refuse a capability that has
+    grown more expensive since: `adapters.base.tier_for` lets an untrusted label RAISE a
+    tier and never lower one, and that rule is worth nothing if it is only ever applied
+    before the answer comes back.
+
+    `label` is untrusted: an application, a page or the internet wrote it. It is here so
+    the overlay can say which of two options is about to happen, and it authorizes
+    nothing, selects nothing and is never dereferenced.
+    """
+
+    adapter: str
+    capability: str
+    handle: str
+    tier: int = 1
+    label: str = ""
+
+
+@dataclass(frozen=True)
 class Action:
     intent: Intent
     window: Window | None = None
@@ -263,11 +294,16 @@ class Action:
     verb: str | None = None
     number: int | None = None
     text: str | None = None
+    service: Service | None = None
 
     def describe(self) -> str:
         """A short human phrase for the HUD chip. Never includes dictated text."""
         what = self.intent.value.replace("_", " ")
         target = self.window.cls if self.window else self.app.name if self.app else ""
+        if self.service is not None:
+            # the label, not the handle: a handle is a bus name or a track URI and is
+            # never shown, exactly as `Affordance.as_option` never carries one
+            return f"{self.service.capability} {self.service.label}".strip()
         where = f" -> {self.workspace}" if self.workspace else ""
         how = f" {self.direction.value}" if self.direction else f" {self.verb}" if self.verb else ""
         return f"{what}{how} {target}{where}".strip()

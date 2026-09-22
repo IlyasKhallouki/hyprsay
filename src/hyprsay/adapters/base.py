@@ -372,9 +372,21 @@ def offer(
     return tuple(out[:limit])
 
 
+def by_name(adapters: Iterable[Adapter], name: str) -> Adapter | None:
+    """The adapter called `name`, or None.
+
+    A name and not an index, because the list the executor holds and the list the
+    understander harvested from are the SAME objects (`daemon.build` builds them once),
+    and a `Minted` handle is only honoured by the instance that issued it. A name that
+    matches nothing is an option whose adapter is gone, which the caller refuses rather
+    than performing against whichever adapter happens to be nearest.
+    """
+    return next((a for a in adapters if getattr(a, "name", "") == name), None)
+
+
 def find(adapters: Iterable[Adapter], affordance: Affordance) -> Adapter | None:
     """The adapter that minted this option, so a chosen id can be performed."""
-    return next((a for a in adapters if a.name == affordance.adapter), None)
+    return by_name(adapters, affordance.adapter)
 
 
 def capability_of(adapter: Adapter, capability: str, context: Context) -> Capability | None:

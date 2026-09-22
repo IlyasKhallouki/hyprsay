@@ -17,6 +17,13 @@ costs. Every affordance carries the tier the module that owns the gesture alread
     installed apps, as launch targets     `nlu/tiers.tier(Intent.LAUNCH_APP, ...)`     1
     volume and media transport            `nlu/tiers.tier(Intent.VOLUME | MEDIA, ...)` 1
     adapters, through `adapters.base.offer`  each capability's own declared tier
+    a wheel notch and the view-moving      `nlu/tiers.tier(Intent.SCROLL | PRESS_CHORD,
+      chords, aimed at the focused window   ...)`, which is `inapp.chord_tier`        0 or 1
+    the recipes each window offers         `nlu/tiers.tier(Intent.RUN_RECIPE, ...)`, which
+                                            is `recipes.tier_for` raised to the typing
+                                            tier when the recipe types             0 or 1
+    the controls of the focused window,    `nlu/tiers.tier(Intent.CLICK_CONTROL, ...)`,
+      read from a cache, never walked       which is `controls.click_tier`               1
 
 There is no second tier table in this file and there must never be one. An untrusted
 label may RAISE a tier and may never lower one, which is `adapters.base.tier_for`'s rule
@@ -25,12 +32,59 @@ them.
 
 WHAT IS NOT HARVESTED, AND WHY. Closing a window is absent: it is tier 2, it needs its
 verb said out loud (`nlu/tiers.LITERAL_VERBS`), and an option list is not evidence from
-the speaker. In-app reach is absent too, and that one is measured rather than argued:
-`controls.py` records KCalc's 48 controls taking 16.2 seconds to walk and says the walk
-"runs only when the utterance actually asks to click something, never speculatively,
-because a speculative one would eat the whole latency budget". A key-down harvest is
-exactly a speculative walk. When in-app options do arrive they take their tier from
-`controls.click_tier`, `inapp.chord_tier` and `recipes.tier_for`, never from here.
+the speaker. Nothing above tier 1 is offered by the three in-app sources either, for the
+same sentence: `nlu/tiers.verdict` refuses a tier 2 act that has no literally spoken verb
+behind it, and `understand._step` drops a whole PLAN the moment one of its steps is above
+tier 1. So a tier 2 option cannot be carried out from a list, it can only cost the
+utterance the list was built for, which is `_layout`'s rule in this same file: an option
+that can only be refused is not an option, it is a trap for the ranker.
+
+IN-APP REACH, WHICH THIS FILE USED TO REFUSE TO HARVEST (reversed 2026-09-22). The old
+argument was measured and it was about the WALK, not about the options: `controls.py`
+records KCalc's 48 controls taking 16.2 s, the walk here is 3.8 s on the live ZapZap
+window, and the harvest has 250 ms for the whole desktop (`nlu/understand.HARVEST_S`), so
+a harvest that walked the accessibility tree would eat the utterance it was built for.
+What was wrong was the conclusion. Without these sources the model is asked to drive a
+desktop and told nothing about what is inside any window on it, which is the one thing
+hypruse exists to provide, so the three sources are here and the walk is still not:
+
+- `controls.cached` READS AND NEVER WALKS. A cold cache means this utterance offers no
+  control options, which is a correct answer and never an error. `daemon._warm_controls`
+  is what fills it, on a worker, at the focus change and at key down, leaning on the
+  behaviour `controls.py` already had: a walk nobody is waiting for still lands in the
+  cache. Measured warm, this source costs 0.3 ms.
+- a recipe and a gesture need no tree at all. They are a table in this repository and the
+  keyboard, which is why `recipes.py` and `inapp.py` exist in the first place.
+
+THE TRUST RULE FOR A CONTROL NAME, which is the whole reason this was excluded second.
+`Control.name` is written by the application, and inside a browser by the page, and
+`Control.__post_init__` forces `trusted` to False so that no code can say otherwise. So
+every control option is UNTRUSTED, and:
+
+- a control name may win a SLOT and never a tier. The tier comes from
+  `nlu/tiers.tier(Intent.CLICK_CONTROL, ...)`, which is `controls.click_tier`, which
+  reads the name only to RAISE what a click costs. A page that names its button "Delete"
+  pushes it to tier 2 and thereby out of the list entirely: a page can silence its own
+  button and can never add one, or make one cheaper;
+- a control name never selects the window. Controls are read for the focused window
+  alone, every option carries that window's own address in its handle, and no source here
+  may build an option for a window it did not read;
+- a control the speaker did not name is never offered, which is `controls.best_match`'s
+  rule, called rather than copied. The gate is STRICTER here than on the click path,
+  because the harvest scores against the whole utterance while the click path scores
+  against the span the grammar cut out, and strict is the direction an untrusted label
+  has to fail in;
+- a name is never an option id. Ids are `c1`, `c2`, minted here, for the reason the
+  adapter renumbering below gives: an id is a dict KEY in the request, and application
+  text does not become a key.
+
+WHAT PUTS AN IN-APP OPTION IN THE LIST AT ALL. The speaker's own words, exactly as with
+`_apps`: an utterance that names no application offers no launch, and an utterance that
+reaches for nothing inside a window offers no scroll, no recipe and no control. That is
+not thrift. "Go to chrome" has no scroll in it, and an in-app option in front of a model
+that was not asked for is an invitation to reach into an application instead of doing
+what was said. It is also what keeps these three sources free: on an utterance about
+windows they build nothing and cost nothing.
 
 THE HARD CONSTRAINT, AND THE NUMBERS BEHIND THE CUT. Jev takes at most 255 options and
 this project caps a request at 1,800 tokens, because latency and HTTP 503s both climb
@@ -51,6 +105,20 @@ the payload, never the 255. Measured on this machine's live desktop, read only, 
       worst case alone is larger than the entire 1,800 token request
     the rest of a request (fixed overhead, utterance, variants, `bank.NOTE`) measured
       379 tokens, which leaves about 1,420 for options
+
+WHAT THE THREE IN-APP SOURCES COST, measured the same way on 2026-09-22 against the same
+live desktop, 9 windows, ZapZap focused with its 16 controls in the cache, this machine
+under its ordinary load of a dozen agent sessions (so these are pessimistic):
+
+    nothing said, or an utterance about windows: +0.1 ms and +0 options. The three
+      sources build nothing at all, which is the point of the paragraph above
+    "scroll down", "click reply", "zoom in": the whole harvest goes from 5.5 to 9.1 ms
+      p50 to 6.8 to 12.1 ms p50, worst single call of 25 runs 101 ms, against the 250 ms
+      deadline `nlu/understand.HARVEST_S` gives the whole thing
+    per source, warm: controls 0.6 to 3.5 ms, recipes 0.1 to 3.2 ms, gestures 0.02 to
+      1.1 ms. `controls.cached` itself is 6 microseconds
+    an in-app option is 22 to 26 tokens, the same as every other option, because the
+      labels are the same length: "scroll down in this window", "Reply, push button"
 
 That last pair of numbers is why 50 is a ceiling and not a target. It is also why
 `harvest` takes `copies`: docs/STRATEGY.md 2.2 asks `step_1`, `step_2` and `step_3` to be
@@ -95,12 +163,13 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
+from hyprsay import controls, inapp, recipes
 from hyprsay.adapters import base
 from hyprsay.adapters.base import Adapter, Affordance, Capability, Context, Trust
 from hyprsay.config import Config
 from hyprsay.jev import tokens
 from hyprsay.lexicon import mixed_script, phonetic_key, sanitize, similarity
-from hyprsay.model import Action, App, Intent, Window
+from hyprsay.model import Action, App, Direction, Intent, Window
 from hyprsay.nlu import tiers
 from hyprsay.nlu.resolve import LexiconLike
 
@@ -113,27 +182,59 @@ SELF = "hyprsay"
 
 WINDOW = "window"
 LAYOUT = "layout"
+GESTURE = "gesture"
 WORKSPACE = "workspace"
 APP = "app"
 SYSTEM = "system"
 SERVICE = "service"
+RECIPE = "recipe"
+CONTROL = "control"
 
 # The last tie break, after what was said and after recency: the cheapest and most
 # reversible source first, which is the same order `nlu/tiers.py` puts the intents in.
-ORDER: tuple[str, ...] = (WINDOW, LAYOUT, WORKSPACE, APP, SYSTEM, SERVICE)
+# The two in-app sources that press keys or click come last, and `CONTROL` is the very
+# last of all, for the reason `controls.click_tier` gives: a click can send a message,
+# spend money or delete a file, and there is no inverse for any of it.
+ORDER: tuple[str, ...] = (
+    WINDOW,
+    LAYOUT,
+    GESTURE,
+    WORKSPACE,
+    APP,
+    SYSTEM,
+    SERVICE,
+    RECIPE,
+    CONTROL,
+)
 _RANK: dict[str, int] = {source: index for index, source in enumerate(ORDER)}
 
 # How many options one source may take, so that a long list from one place cannot starve
 # every other place. The quotas sum to more than MAX_OPTIONS on purpose: they are a
 # ceiling per source, and the global cut below them is what decides the final list.
+#
+# The three in-app quotas are the tightest, and the reason is the budget rather than the
+# danger: a browser window alone offers 13 recipes and a warm window can hold 60 controls,
+# while three copies of the list leave room for about 16 options in all (`budget_for`,
+# `copies`). They are also the sources that only appear when they were asked for.
 QUOTA: dict[str, int] = {
     WINDOW: 14,
     LAYOUT: 4,
+    GESTURE: 6,
     WORKSPACE: 10,
     APP: 12,
     SYSTEM: 8,
     SERVICE: 14,
+    RECIPE: 6,
+    CONTROL: 6,
 }
+
+# The highest tier an option may carry. Not `base.MAX_OFFERABLE_TIER`, which is 2 and is
+# about what may be SHOWN to a model: this is about what a model's answer can actually
+# authorize, and a tier 2 act needs a verb the speaker said out loud and an explicit
+# target, neither of which picking an id out of a list can be. Applied to the three
+# in-app sources, which are the only ones that can produce a tier 2 option from live
+# state; see "WHAT IS NOT HARVESTED, AND WHY".
+MAX_INAPP_TIER = 1
 
 # docs/STRATEGY.md 2.4: plan for 50 to 60 candidates, not 120. `MAX_CANDIDATES` is the
 # same 50, decided in `adapters/base.py` for the same measurement, so it is imported
@@ -367,19 +468,24 @@ def _place(window: Window) -> str:
     return str(window.workspace_id) if window.workspace_id > 0 else sanitize(window.workspace_name)
 
 
-def _window_label(window: Window, lexicon: LexiconLike | None) -> tuple[str, Trust]:
-    """What a window is called, and who vouched for the name.
+def _named_by(window: Window, lexicon: LexiconLike | None) -> tuple[str, Trust]:
+    """What to call a window, and who vouched for the name.
 
-    A window whose class routes back to a trusted `.desktop` entry is labelled by that
+    A window whose class routes back to a trusted `.desktop` entry is named by that
     entry's `Name`, which is root owned text (docs/PLAN.md 5.6), so it is TRUSTED. Any
-    other window is labelled by the class its own owner set, so it is UNTRUSTED. The title
+    other window is named by the class its own owner set, so it is UNTRUSTED. The title
     is never read, here or anywhere else in the ranking.
     """
     app = lexicon.app_for_window(window) if lexicon is not None else None
     if app is not None and app.trusted:
-        return f"{app.name} on workspace {_place(window)}", Trust.TRUSTED
-    own = window.cls or window.initial_class or "a window"
-    return f"{own} on workspace {_place(window)}", Trust.UNTRUSTED
+        return app.name, Trust.TRUSTED
+    return window.cls or window.initial_class or "a window", Trust.UNTRUSTED
+
+
+def _window_label(window: Window, lexicon: LexiconLike | None) -> tuple[str, Trust]:
+    """A window as a focus target: what it is called, and where it is."""
+    name, trust = _named_by(window, lexicon)
+    return f"{name} on workspace {_place(window)}", trust
 
 
 def _windows(context: Machine) -> list[Ranked]:
@@ -590,6 +696,383 @@ def _services(context: Machine) -> list[Ranked]:
     return out
 
 
+# ------------------------------------------------------------------- inside the window
+
+
+def _handle(window: Window, payload: str) -> str:
+    """An in-app option's handle: the window it was built for, then what it names inside.
+
+    The address goes in the handle and never in the id, which is the rule the module
+    docstring states for a window and for the same two reasons: an id is a dict KEY in the
+    request, and an address does not leave the machine. A handle is read back here, by
+    code, and is never sent anywhere.
+
+    Carrying it is what makes "no source may build an option for a window it did not read"
+    checkable by the caller rather than promised by this file: the address in the handle
+    is the one the option was authorized against, and `understand._action_for` resolves it
+    against fresh state or refuses.
+    """
+    return f"{window.address} {payload}".strip()
+
+
+def target(handle: str) -> tuple[str, str]:
+    """An in-app handle read back as (window address, what it names inside that window).
+
+    Here rather than in the caller, so that reading a handle is one call and not the
+    string surgery `Affordance.adapter` and `.capability` exist to avoid. A Hyprland
+    address never contains a space, and `Affordance.__post_init__` has already run
+    `sanitize` over the handle, which collapses every run of whitespace to one space and
+    strips the ends, so the FIRST space is the seam whatever the application called its
+    control.
+    """
+    address, _, inside = handle.partition(" ")
+    return address, inside
+
+
+def _kind(context: Machine, window: Window) -> str:
+    """What `Lexicon.kind_of` calls this window's app, or "" when nothing trusted claims
+    it. A harvest with no lexicon gets "", which `recipes.for_window` and
+    `nlu/tiers.typing_refusal` both already read as "unknown", so a missing lexicon lands
+    on the conservative answer those two already have rather than on a new one.
+    """
+    return context.lexicon.kind_of(window) if context.lexicon is not None else ""
+
+
+def _reaches(words: Sequence[str], groups: Sequence[Sequence[str]]) -> float:
+    """`said`, with the option's FIRST group of words required.
+
+    `said` is the mean over the groups, so half a vocabulary scores 0.5, and a second
+    group holding an ordinary word would let its option in on a sentence that was about
+    something else: "put this in workspace 3" reaches zoom-in on the word "in", and
+    "play the next track" reaches next-tab on "next". The first group of every table below
+    is the distinctive one ("zoom", "tab", "scroll", "wikipedia"), and nothing gets into
+    the list without it.
+    """
+    if not groups or said(words, groups[:1]) <= 0.0:
+        return 0.0
+    return said(words, groups)
+
+
+def _reachable(
+    intent: Intent, source: str, action: Action, summary: str, context: Machine
+) -> Capability | None:
+    """The capability for one in-app option, or None when its tier puts it out of reach.
+
+    The tier is asked of `nlu/tiers.tier`, which asks `inapp.scroll(...).tier`,
+    `inapp.chord_tier`, `recipes.tier_for` and `controls.click_tier` in turn: the module
+    that owns the gesture decides, here as everywhere else in this file. All this adds is
+    the `MAX_INAPP_TIER` cut, which is about what an answer to a Choice can authorize.
+    """
+    capability = _capability(intent, source, summary, context, action)
+    return capability if capability.tier <= MAX_INAPP_TIER else None
+
+
+def _inapp_option(
+    capability: Capability, ident: str, label: str, handle: str, trust: Trust
+) -> Affordance | None:
+    """`_option`, refused when what comes back is still above `MAX_INAPP_TIER`.
+
+    Two tiers have to be read, not one. `_reachable` reads the capability's, which is what
+    the module that owns the gesture decided; this reads the option's, which is that one
+    raised again by `adapters.base.tier_for` when the LABEL carries a homoglyph. A control
+    name spelled with a Cyrillic "c" is a string built to be read as something it is not,
+    and the answer to one is the same here as everywhere: it costs a tier more, and a tier
+    2 act is not something an answer to a Choice can authorize.
+    """
+    option = _option(capability, ident, label, handle, trust)
+    return option if option.tier <= MAX_INAPP_TIER else None
+
+
+# The gestures offered for the focused window, each with the words this repository uses
+# for it, exactly like LAYOUT_OPS. `payload` is what `inapp` expects: a `Direction` for a
+# scroll, and a chord in `inapp.CHORD_TIERS`' own spelling for a press. Nothing here says
+# what any of it costs, and there is no chord in this table that is not in that one.
+GESTURES: tuple[tuple[Intent, str, str, tuple[tuple[str, ...], ...]], ...] = (
+    (
+        Intent.SCROLL,
+        Direction.DOWN.value,
+        "scroll down in this window",
+        (("scroll", "wheel", "scrolling"), ("down", "downwards", "further")),
+    ),
+    (
+        Intent.SCROLL,
+        Direction.UP.value,
+        "scroll up in this window",
+        (("scroll", "wheel", "scrolling"), ("up", "upwards", "back")),
+    ),
+    (
+        Intent.PRESS_CHORD,
+        "Page_Down",
+        "page down in this window",
+        (("page",), ("down", "next", "forward")),
+    ),
+    (
+        Intent.PRESS_CHORD,
+        "Page_Up",
+        "page up in this window",
+        (("page",), ("up", "previous", "back")),
+    ),
+    (Intent.PRESS_CHORD, "Home", "go to the top", (("top", "beginning", "start"),)),
+    (Intent.PRESS_CHORD, "End", "go to the bottom", (("bottom", "end"),)),
+    (Intent.PRESS_CHORD, "ctrl+Tab", "the next tab", (("tab", "tabs"), ("next", "following"))),
+    (
+        Intent.PRESS_CHORD,
+        "ctrl+shift+Tab",
+        "the previous tab",
+        (("tab", "tabs"), ("previous", "last", "back")),
+    ),
+    (Intent.PRESS_CHORD, "alt+Left", "go back a page", (("back", "backwards"),)),
+    (Intent.PRESS_CHORD, "alt+Right", "go forward a page", (("forward", "forwards"),)),
+    (Intent.PRESS_CHORD, "ctrl+r", "reload this page", (("reload", "refresh"),)),
+)
+
+
+def _gesture_action(intent: Intent, payload: str, window: Window) -> Action:
+    """The Action a gesture option names, in the shape `nlu/tiers` reads it: a scroll
+    carries its `Direction`, a chord carries the table's spelling in `verb`."""
+    if intent is Intent.SCROLL:
+        return Action(intent, window=window, direction=Direction(payload))
+    return Action(intent, window=window, verb=payload)
+
+
+def _gestures(context: Machine) -> list[Ranked]:
+    """Scrolling, paging and the named chords, aimed at the window in front of the speaker.
+
+    The focused window and no other, because a wheel notch cannot be aimed anywhere else:
+    it goes to whatever is under the cursor, and `inapp.perform` pins it by putting the
+    cursor inside the authorized window rather than by naming it.
+
+    Every entry is put through `inapp.refusal`, the function the executor itself calls, so
+    a chord is offered exactly where typing is allowed and a scroll wherever no layer has
+    grabbed the screen. A terminal is dropped before that, and dropped for BOTH kinds:
+    `inapp.perform` refuses a terminal a wheel notch as well as a chord ("a terminal reads
+    keys and wheel notches as commands"), so every gesture option on kitty could only ever
+    be refused, whatever `inapp.refusal` says about the wheel.
+    """
+    focused = context.state.focused
+    if focused is None:
+        return []
+    kind = _kind(context, focused)
+    if tiers.is_terminal(focused, kind):
+        return []
+    words = spoken(context.heard)
+    out: list[Ranked] = []
+    for index, (intent, payload, summary, groups) in enumerate(GESTURES, 1):
+        score = _reaches(words, groups)
+        if score <= 0.0:
+            continue
+        gesture = inapp.SCROLL if intent is Intent.SCROLL else inapp.CHORD
+        keys = "" if intent is Intent.SCROLL else payload
+        if inapp.refusal(focused, kind, context.state, context.cfg, gesture, keys):
+            continue
+        action = _gesture_action(intent, payload, focused)
+        capability = _reachable(intent, GESTURE, action, summary, context)
+        if capability is None:
+            continue
+        option = _inapp_option(
+            capability, f"g{index}", summary, _handle(focused, payload), Trust.TRUSTED
+        )
+        if option is None:
+            continue
+        # recency 0: a gesture reaches into the window the speaker is looking at, which is
+        # the most recent thing there is, exactly as a layout verb does
+        out.append(Ranked(option, GESTURE, score, 0))
+    return out
+
+
+# The words each recipe answers to, keyed by `Recipe.name`, distinctive group first (see
+# `_reaches`). A name with no entry falls back to the words of the name itself, so a
+# recipe added to `recipes.py` still ranks by what it is called instead of vanishing.
+#
+# The site names come from `recipes.KNOWN_SITES` rather than from a second list here: it
+# is the table that decides what a bare spoken label may become, so it is also the honest
+# answer to "did the speaker name somewhere to go".
+# "page" is deliberately not here: a page is where you already are, so "reload the page"
+# would reach a navigation recipe on the strength of a word that named nowhere to go
+_SITES: tuple[str, ...] = ("url", "site", "website", "address", *recipes.KNOWN_SITES)
+_SEARCH: tuple[str, ...] = ("search", "look", "find", "google")
+_TAB: tuple[str, ...] = ("tab", "tabs")
+
+RECIPE_WORDS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "open_url": (_SITES, ("open", "go", "navigate", "visit", "browse")),
+    "go_to_url": (_SITES, ("open", "go", "navigate", "visit")),
+    "search_web": (_SEARCH,),
+    "search_youtube": (("youtube",), _SEARCH),
+    "search_wikipedia": (("wikipedia",), _SEARCH),
+    "find": (("find", "search", "look"),),
+    "new_tab": (_TAB, ("new", "another", "open")),
+    "close_tab": (_TAB, ("close", "quit")),
+    "next_tab": (_TAB, ("next", "following")),
+    "previous_tab": (_TAB, ("previous", "last", "back")),
+    "back": (("back", "backwards"),),
+    "forward": (("forward", "forwards"),),
+    "reload": (("reload", "refresh"),),
+    "zoom_in": (("zoom",), ("in", "bigger", "larger", "closer")),
+    "zoom_out": (("zoom",), ("out", "smaller", "further")),
+    "zoom_reset": (("zoom",), ("reset", "normal", "default")),
+    "save": (("save",),),
+    "scroll_down": (("scroll", "wheel", "scrolling"), ("down", "downwards")),
+    "scroll_up": (("scroll", "wheel", "scrolling"), ("up", "upwards")),
+    "to_top": (("top", "beginning", "start"),),
+    "to_bottom": (("bottom", "end"),),
+}
+
+# Recipes the gesture source already offers for the focused window. Both would be one act
+# with two ids, which costs the tokens twice and splits the model's probability between
+# them, and the gesture is the cheaper of the two: it presses one key through `inapp`
+# instead of focusing the window first and then pressing it. Listed by recipe NAME,
+# because the recipe is the one being dropped, and only for the focused window, since that
+# is the only window a gesture is ever offered for.
+GESTURE_DOUBLES: frozenset[str] = frozenset(
+    {
+        "scroll_down",
+        "scroll_up",
+        "to_top",
+        "to_bottom",
+        "next_tab",
+        "previous_tab",
+        "back",
+        "forward",
+        "reload",
+    }
+)
+
+
+def _recipe_label(recipe: recipes.Recipe, window: Window, context: Machine) -> tuple[str, Trust]:
+    """What a recipe option says it will do, and to which window.
+
+    The focused window is not named, and the two reasons are the same size. It is the
+    window the speaker is looking at, so "reload this page" is already unambiguous; and
+    its label is then written entirely in this repository, which makes it TRUSTED text.
+    Any other window has to be named, and is named the way a focus target is: by its
+    trusted `.desktop` entry if it has one, by the class its owner wrote otherwise, which
+    is what makes that label UNTRUSTED.
+    """
+    focused = context.state.focused
+    if focused is not None and window.address == focused.address:
+        return recipe.description, Trust.TRUSTED
+    name, trust = _named_by(window, context.lexicon)
+    return f"{recipe.description}, in {name}", trust
+
+
+# every recipe name there is, over all the kind tables, read at import from the table
+# that owns them so that a recipe added there is scored here without a second edit
+RECIPE_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys(name for table in recipes.RECIPES.values() for name in table)
+)
+
+
+def _reached_recipes(words: Sequence[str]) -> dict[str, float]:
+    """The recipes the words reach at all, by name, scored once for the whole desktop.
+
+    Once, and before any window is looked at, because what a recipe answers to has
+    nothing to do with which window offers it: scoring inside the window loop asked the
+    same question nine times over on this machine's desktop and cost 3.2 ms to answer
+    "none of them" (measured). This is the same answer for 0.1 ms.
+    """
+    scored = {
+        name: _reaches(words, RECIPE_WORDS.get(name) or (tuple(name.split("_")),))
+        for name in RECIPE_NAMES
+    }
+    return {name: score for name, score in scored.items() if score > 0.0}
+
+
+def _recipes(context: Machine) -> list[Ranked]:
+    """The named key sequences a window offers, for every window the words reach into.
+
+    `recipes.for_window` is the whole offering, asked per window because it is keyed by
+    app KIND, and `recipes.refusal_for` is asked again for the checks that need the
+    window: a table nobody can run against this window is not an option list.
+
+    Terminals are dropped whole. `recipes.for_window` already offers a terminal nothing
+    but the pointer-only recipes, and those deliver their scroll through `inapp.perform`,
+    which refuses a terminal outright, so what survives its filter would still be refused
+    at the end.
+    """
+    state = context.state
+    reached = _reached_recipes(spoken(context.heard))
+    if not reached:
+        return []
+    focused = state.focused
+    out: list[Ranked] = []
+    index = 0
+    for window in sorted(state.windows, key=lambda w: w.focus_rank):
+        kind = _kind(context, window)
+        if tiers.is_terminal(window, kind):
+            continue
+        at_hand = focused is not None and window.address == focused.address
+        for recipe in recipes.for_window(window, kind):
+            score = reached.get(recipe.name, 0.0)
+            if score <= 0.0 or (at_hand and recipe.name in GESTURE_DOUBLES):
+                continue
+            if recipes.refusal_for(recipe, window, kind):
+                continue
+            action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name)
+            capability = _reachable(Intent.RUN_RECIPE, RECIPE, action, recipe.description, context)
+            if capability is None:
+                continue
+            label, trust = _recipe_label(recipe, window, context)
+            index += 1
+            option = _inapp_option(
+                capability, f"r{index}", label, _handle(window, recipe.name), trust
+            )
+            if option is None:
+                continue
+            out.append(Ranked(option, RECIPE, score, window.focus_rank))
+    return out
+
+
+def _controls(context: Machine) -> list[Ranked]:
+    """The controls of the focused window that the speaker actually named.
+
+    THE CACHE ONLY. `controls.cached` reads a dict; `controls.controls_for` walks the
+    accessibility tree, and that is 3.8 s on the live ZapZap window and 16.2 s on KCalc's
+    48, against 250 ms for this whole function's caller (`nlu/understand.HARVEST_S`). A
+    cold cache therefore offers nothing, and offering nothing is a correct answer here,
+    not a failure: `daemon._warm_controls` is what makes the next utterance different.
+
+    `controls.best_match` is the filter as well as the ranker, and it is the right one for
+    the reason its own docstring gives: a control whose name matches nothing the speaker
+    literally said is never returned, so a page cannot supply the evidence that selects
+    its own button. Everything it does return is UNTRUSTED, is offered under an id this
+    file minted, and carries the tier `controls.click_tier` gave it through
+    `nlu/tiers.tier`, which is at least 1 and is 2 for a name that reads destructive, and
+    2 again for a name with a homoglyph in it. A tier 2 one is then dropped, which is a
+    page raising the price of its own button until nobody may pick it: the harmless
+    direction, and the only one an untrusted name is ever allowed to move a tier in.
+    """
+    focused = context.state.focused
+    if focused is None:
+        return []
+    found = controls.cached(focused)
+    if not found:
+        # None is a cold cache and () is a window that publishes nothing (a terminal, a
+        # canvas, Chrome with no --force-renderer-accessibility). Neither is an error and
+        # neither is "there is no such button"; both are simply no options this time.
+        return []
+    out: list[Ranked] = []
+    index = 0
+    for control, score in controls.best_match(context.heard, found, limit=QUOTA[CONTROL]):
+        if not control.enabled:
+            # `controls.click` refuses a control that is not active, so offering one would
+            # be offering a refusal
+            continue
+        action = Action(Intent.CLICK_CONTROL, window=focused, verb=control.name, text=control.name)
+        summary = "click a control in the focused window"
+        capability = _reachable(Intent.CLICK_CONTROL, CONTROL, action, summary, context)
+        if capability is None:
+            continue
+        index += 1
+        label = f"{control.name}, {control.role}" if control.role else control.name
+        option = _inapp_option(
+            capability, f"c{index}", label, _handle(focused, control.name), Trust.UNTRUSTED
+        )
+        if option is None:
+            continue
+        out.append(Ranked(option, CONTROL, score, 0))
+    return out
+
+
 # --------------------------------------------------------------------------- the cut
 
 
@@ -699,6 +1182,9 @@ def harvest(
         (APP, _apps),
         (SYSTEM, _system),
         (SERVICE, _services),
+        (GESTURE, _gestures),
+        (RECIPE, _recipes),
+        (CONTROL, _controls),
     ):
         try:
             built.extend(gather(context))
@@ -717,11 +1203,15 @@ def harvest(
 
 __all__ = [
     "APP",
+    "CONTROL",
+    "GESTURE",
     "LAYOUT",
+    "MAX_INAPP_TIER",
     "MAX_OPTIONS",
     "OPTION_BUDGET",
     "ORDER",
     "QUOTA",
+    "RECIPE",
     "SELF",
     "SERVICE",
     "SYSTEM",
@@ -736,4 +1226,5 @@ __all__ = [
     "harvest",
     "said",
     "spoken",
+    "target",
 ]

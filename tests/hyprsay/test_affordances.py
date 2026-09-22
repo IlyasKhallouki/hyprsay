@@ -14,17 +14,38 @@ put a word into the request that code did not put there.
 """
 
 import json
+from dataclasses import replace
 
 import pytest
 
-from hyprsay import affordances
+from hyprsay import affordances, controls, inapp
 from hyprsay.adapters.base import MAX_LABEL, Affordance, Capability, Trust
 from hyprsay.affordances import Machine, harvest
-from hyprsay.config import Config
+from hyprsay.config import Config, Safety
 from hyprsay.jev import tokens
 from hyprsay.lexicon import Lexicon
-from hyprsay.model import App, DesktopState, Intent, Outcome, Window, Workspace
+from hyprsay.model import (
+    Action,
+    App,
+    DesktopState,
+    Direction,
+    Intent,
+    Layer,
+    Outcome,
+    Window,
+    Workspace,
+)
 from hyprsay.nlu import tiers
+
+
+def _boom(why):
+    """A seam that must not be reached, and that says what it stands for when it is."""
+
+    def never(*_args, **_kw):
+        raise AssertionError(why)
+
+    return never
+
 
 # --------------------------------------------------------------------------- fixtures
 
@@ -626,3 +647,297 @@ def test_claims_asks_how_much_of_the_utterance_a_free_text_label_explains():
 def test_a_homoglyph_word_in_a_label_claims_nothing():
     # "clоse" with a Cyrillic o is not the word "close" and may not be scored as one
     assert affordances.claims(("close",), "clоse the tab") == 0.0
+
+
+# ----------------------------------------------------------------- inside a window
+
+
+def control(name, role="push button", enabled=True, address="0x2"):
+    return controls.Control(
+        id=f":1.9:/{name}",
+        name=name,
+        role=role,
+        enabled=enabled,
+        bounds=(0, 0, 40, 20),
+        window_address=address,
+    )
+
+
+def warm(window, *found):
+    """Put a reading into the control cache the way a finished walk does, with no bus.
+
+    Through the real cache and not through a stub of `controls.cached`, because the thing
+    worth testing is that the harvest goes in by the door that cannot walk.
+    """
+    controls._CACHE[window.address] = controls._Cached(
+        window.title, window.cls, controls._now(), tuple(found)
+    )
+
+
+@pytest.fixture(autouse=True)
+def _cold_controls():
+    controls.invalidate()
+    yield
+    controls.invalidate()
+
+
+CHROME_WINDOW = win("0x2", "google-chrome", rank=0, title="YouTube", workspace=2)
+KITTY_WINDOW = win("0x1", "kitty", rank=1)
+INSIDE = desktop(CHROME_WINDOW, KITTY_WINDOW, workspaces=(1, 2), active="0x2")
+TYPING_ALLOWED = replace(CFG, safety=Safety(type_allow_classes=("google-chrome",)))
+
+
+def sourced(found, source) -> list:
+    return [r for r in found.ranked if r.source == source]
+
+
+def test_a_control_the_speaker_named_is_offered_as_a_click_target():
+    warm(CHROME_WINDOW, control("Reply"), control("Star"))
+    found = harvest(machine(INSIDE, heard="click reply"))
+    offered = sourced(found, affordances.CONTROL)
+    assert [r.affordance.label for r in offered] == ["Reply, push button"]
+    assert offered[0].affordance.capability == Intent.CLICK_CONTROL.value
+    assert offered[0].affordance.trust is Trust.UNTRUSTED
+    assert offered[0].said == 1.0
+
+
+def test_a_control_the_speaker_did_not_name_is_never_offered():
+    warm(CHROME_WINDOW, control("Reply"), control("Star"))
+    # the page wrote both names and the speaker used neither: a page may not supply the
+    # evidence that selects its own button (controls.best_match)
+    assert sourced(harvest(machine(INSIDE, heard="go to chrome")), affordances.CONTROL) == []
+
+
+def test_a_cold_control_cache_offers_nothing_and_is_not_an_error():
+    found = harvest(machine(INSIDE, heard="click reply"))
+    assert sourced(found, affordances.CONTROL) == []
+    assert found.ranked  # the rest of the desktop is unharmed
+    assert "cut" in found.note()
+
+
+def test_a_window_that_publishes_nothing_is_not_an_error_either():
+    warm(CHROME_WINDOW)  # the walk ran and found nothing, which is what Chrome does
+    assert sourced(harvest(machine(INSIDE, heard="click reply")), affordances.CONTROL) == []
+
+
+def test_the_harvest_never_walks_the_accessibility_tree(monkeypatch):
+    monkeypatch.setattr(
+        controls, "controls_for", _boom("a walk is 3.8 to 16.2 s and the harvest has 250 ms")
+    )
+    monkeypatch.setattr(controls, "Atspi", _boom("no bus is opened from inside a harvest"))
+    warm(CHROME_WINDOW, control("Reply"))
+    found = harvest(machine(INSIDE, heard="click reply"))
+    assert [r.affordance.label for r in sourced(found, affordances.CONTROL)] == [
+        "Reply, push button"
+    ]
+
+
+def test_a_control_name_that_reads_destructive_raises_itself_out_of_the_list():
+    warm(CHROME_WINDOW, control("Reply"), control("Delete"))
+    found = harvest(machine(INSIDE, heard="click delete and reply"))
+    labels = [r.affordance.label for r in sourced(found, affordances.CONTROL)]
+    # `controls.click_tier` reads an untrusted name only to RAISE what a click costs, and
+    # a tier 2 act cannot be authorized by picking an id out of a list
+    assert labels == ["Reply, push button"]
+    assert (
+        tiers.tier(Intent.CLICK_CONTROL, Action(Intent.CLICK_CONTROL, verb="Delete"), INSIDE, CFG)
+        == 2
+    )
+
+
+def test_a_homoglyph_in_a_control_name_raises_it_out_of_the_list():
+    # "Rерly" carries two Cyrillic letters: the same pixels, a different string. The word
+    # itself can never match anything (`controls.score` drops a mixed-script token), so
+    # the case that matters is the one where it rides along beside an honest word.
+    warm(CHROME_WINDOW, control("Rерly Star"))
+    assert sourced(harvest(machine(INSIDE, heard="click star")), affordances.CONTROL) == []
+    controls.invalidate()
+    warm(CHROME_WINDOW, control("Reply Star"))
+    offered = sourced(harvest(machine(INSIDE, heard="click star")), affordances.CONTROL)
+    assert [r.affordance.label for r in offered] == ["Reply Star, push button"]
+
+
+def test_a_control_name_never_becomes_an_option_id():
+    warm(CHROME_WINDOW, control("Reply"))
+    found = harvest(machine(INSIDE, heard="click reply"))
+    option = sourced(found, affordances.CONTROL)[0].affordance
+    assert option.id == "c1"
+    # the label is on the wire, which is what it is for; the KEY is never application text
+    assert "Reply" in json.dumps(found.options())
+    assert "Reply" not in "".join(found.options().keys())
+
+
+def test_a_control_option_carries_the_window_it_was_read_from():
+    warm(CHROME_WINDOW, control("Reply"))
+    option = sourced(harvest(machine(INSIDE, heard="click reply")), affordances.CONTROL)[0]
+    assert affordances.target(option.affordance.handle) == ("0x2", "Reply")
+    assert INSIDE.by_address("0x2") is CHROME_WINDOW
+
+
+def test_a_control_that_is_greyed_out_is_not_offered():
+    warm(CHROME_WINDOW, control("Reply", enabled=False))
+    assert sourced(harvest(machine(INSIDE, heard="click reply")), affordances.CONTROL) == []
+
+
+def test_a_window_cannot_offer_the_controls_of_a_window_it_does_not_own():
+    warm(KITTY_WINDOW, control("Reply", address="0x1"))
+    # the reading belongs to the window that is not focused, and nothing reads it
+    assert sourced(harvest(machine(INSIDE, heard="click reply")), affordances.CONTROL) == []
+
+
+def test_a_recipe_is_offered_only_when_the_words_reach_it():
+    quiet = harvest(machine(INSIDE, heard="go to chrome"))
+    assert sourced(quiet, affordances.RECIPE) == []
+    asked = harvest(machine(INSIDE, heard="open a new tab"))
+    assert [r.affordance.label for r in sourced(asked, affordances.RECIPE)] == ["open a new tab"]
+
+
+def test_a_recipe_that_types_is_offered_only_where_typing_is_allowed():
+    heard = "search youtube for dino crisis"
+    refused = harvest(machine(INSIDE, heard=heard))
+    assert sourced(refused, affordances.RECIPE) == []
+    allowed = harvest(
+        Machine(
+            state=INSIDE, heard=heard, lexicon=LEXICON, cfg=TYPING_ALLOWED, drift=tokens.Drift()
+        )
+    )
+    labels = [r.affordance.label for r in sourced(allowed, affordances.RECIPE)]
+    assert "search YouTube in a new tab" in labels
+    # a recipe that types is exactly as dangerous as typing (recipes.tier_for), so this is
+    # the typing allowlist deciding, not a second rule here
+    assert all(r.affordance.tier <= 1 for r in sourced(allowed, affordances.RECIPE))
+
+
+def test_a_terminal_is_offered_no_recipe_and_no_gesture():
+    terminal = desktop(KITTY_WINDOW, CHROME_WINDOW, workspaces=(1, 2), active="0x1")
+    found = harvest(machine(terminal, heard="scroll down and go back"))
+    assert sourced(found, affordances.GESTURE) == []
+    # the browser beside it still offers its own, pinned to its own address
+    handles = {r.affordance.handle.split()[0] for r in sourced(found, affordances.RECIPE)}
+    assert handles == {"0x2"}
+
+
+def test_a_recipe_for_another_window_names_it_and_the_focused_one_is_not_named():
+    found = harvest(machine(INSIDE, heard="zoom in"))
+    labels = [r.affordance.label for r in sourced(found, affordances.RECIPE)]
+    assert labels[0] == "make this page bigger"
+    assert all(", in " not in label for label in labels)
+    elsewhere = desktop(
+        win("0x4", "Spotify", rank=0), CHROME_WINDOW, workspaces=(1, 2), active="0x4"
+    )
+    found = harvest(machine(elsewhere, heard="zoom in"))
+    labels = [r.affordance.label for r in sourced(found, affordances.RECIPE)]
+    assert "make this page bigger, in Google Chrome" in labels
+
+
+def test_a_recipe_the_gesture_source_already_offers_is_not_offered_twice():
+    found = harvest(machine(INSIDE, heard="reload this"))
+    assert [r.affordance.label for r in sourced(found, affordances.GESTURE)] == ["reload this page"]
+    # `recipes.reload` does the same thing to the same window, through one more step
+    assert sourced(found, affordances.RECIPE) == []
+
+
+def test_a_recipe_carries_its_own_name_as_the_handle():
+    found = harvest(machine(INSIDE, heard="open a new tab"))
+    option = sourced(found, affordances.RECIPE)[0].affordance
+    assert affordances.target(option.handle) == ("0x2", "new_tab")
+    assert option.capability == Intent.RUN_RECIPE.value
+    assert option.trust is Trust.TRUSTED
+
+
+def test_the_gestures_the_words_reach_are_offered_for_the_focused_window():
+    found = harvest(machine(INSIDE, heard="scroll down"))
+    offered = sourced(found, affordances.GESTURE)
+    # the other direction is offered under it, at half the score, exactly as volume up and
+    # volume down both are: the ranking says which one was asked for
+    assert offered[0].affordance.label == "scroll down in this window"
+    assert offered[0].said > offered[1].said
+    assert affordances.target(offered[0].affordance.handle) == ("0x2", "down")
+    assert offered[0].affordance.capability == Intent.SCROLL.value
+    assert offered[0].affordance.tier == 0
+
+
+def test_a_chord_handle_is_the_spelling_inapp_expects():
+    found = harvest(machine(INSIDE, heard="go to the next tab"))
+    offered = sourced(found, affordances.GESTURE)
+    _, keys = affordances.target(offered[0].affordance.handle)
+    assert keys == "ctrl+Tab"
+    assert inapp.canonical(keys) == keys
+    assert inapp.press(keys, window="0x2").tier == offered[0].affordance.tier
+
+
+def test_every_gesture_handle_is_one_inapp_can_build():
+    for intent, payload, _summary, _groups in affordances.GESTURES:
+        if intent is Intent.SCROLL:
+            assert inapp.scroll(Direction(payload), window="0x2").kind == inapp.SCROLL
+        else:
+            assert inapp.canonical(payload) == payload
+
+
+def test_a_chord_that_does_more_than_move_a_view_is_refused_where_typing_is_refused():
+    # an application no trusted .desktop file claims: `tiers.typing_refusal` turns keys
+    # off there, and `inapp.refusal` asks it rather than deciding for itself. Page Down is
+    # the keyboard's version of the wheel and survives that, which is `inapp.refusal`'s
+    # own distinction and not a second one here
+    unknown = win("0x9", "homebrew", rank=0)
+    state = desktop(unknown, workspaces=(1,), active="0x9")
+    found = harvest(machine(state, heard="scroll down a page and go back"))
+    labels = {r.affordance.label for r in sourced(found, affordances.GESTURE)}
+    assert "scroll down in this window" in labels
+    assert "page down in this window" in labels
+    assert "go back a page" not in labels  # alt+Left is tier 1, and keys are off here
+    known = harvest(machine(INSIDE, heard="scroll down a page and go back"))
+    assert "go back a page" in {r.affordance.label for r in sourced(known, affordances.GESTURE)}
+
+
+def test_a_launcher_on_screen_takes_every_gesture_out_of_the_list():
+    grabbed = replace(INSIDE, layers=(Layer("rofi", "DP-1", 3),))
+    found = harvest(machine(grabbed, heard="scroll down and go back a page"))
+    assert sourced(found, affordances.GESTURE) == []
+
+
+def test_an_in_app_option_takes_its_tier_from_the_module_that_owns_the_gesture():
+    warm(CHROME_WINDOW, control("Reply"))
+    found = harvest(machine(INSIDE, heard="click reply, scroll down, reload and zoom in"))
+    for entry in found.ranked:
+        option = entry.affordance
+        if entry.source not in (affordances.GESTURE, affordances.RECIPE, affordances.CONTROL):
+            continue
+        _, inside = affordances.target(option.handle)
+        intent = Intent(option.capability)
+        if intent is Intent.SCROLL:
+            action = Action(intent, window=CHROME_WINDOW, direction=Direction(inside))
+        else:
+            action = Action(intent, window=CHROME_WINDOW, verb=inside)
+        assert option.tier == tiers.tier(intent, action, INSIDE, CFG), option.id
+
+
+def test_no_in_app_option_is_ever_offered_above_tier_one():
+    warm(CHROME_WINDOW, control("Reply"), control("Delete"), control("Send"))
+    heard = "click delete, send, save, close the tab and go to github dot com"
+    for cfg in (CFG, TYPING_ALLOWED):
+        found = harvest(
+            Machine(state=INSIDE, heard=heard, lexicon=LEXICON, cfg=cfg, drift=tokens.Drift())
+        )
+        inside = [
+            r
+            for r in found.ranked
+            if r.source in (affordances.GESTURE, affordances.RECIPE, affordances.CONTROL)
+        ]
+        assert all(r.affordance.tier <= affordances.MAX_INAPP_TIER for r in inside)
+
+
+def test_nothing_reaches_inside_a_window_unless_the_words_do():
+    warm(CHROME_WINDOW, control("Reply"), control("Star"))
+    found = harvest(machine(INSIDE, heard="go to chrome"))
+    assert all(
+        r.source not in (affordances.GESTURE, affordances.RECIPE, affordances.CONTROL)
+        for r in found.ranked
+    )
+
+
+def test_an_in_app_option_never_costs_a_harvest_that_asked_for_nothing():
+    warm(CHROME_WINDOW, *[control(f"Button {n}") for n in range(60)])
+    quiet = harvest(machine(INSIDE, heard="go to workspace 2"))
+    assert quiet.built == harvest(machine(INSIDE, heard="go to workspace 2")).built
+    assert all(r.source != affordances.CONTROL for r in quiet.ranked)
