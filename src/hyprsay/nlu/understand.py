@@ -368,6 +368,8 @@ class Understander:
         self.pending: Action | None = None
         # the Rx ballot this utterance offered, so its answer can be read back
         self._reach_plans: dict[str, _Reach] = {}
+        # what an earlier clause of the utterance being decided right now already did
+        self._chain_did: dict[str, Any] | str = ""
         # what the last few utterances did, and the desktop this one is being decided
         # against. It lives beside `pending` and is cleared on the same paths, because
         # two memories with two lifetimes is the bug factory docs/STRATEGY.md 4.5 names.
@@ -400,6 +402,9 @@ class Understander:
             "answers": {},
             "errors": {},
         }
+        # a note about an earlier clause belongs to ONE utterance. Left standing it
+        # would tell the next sentence what the one before it did, twice over.
+        self._chain_did = ""
         try:
             transcript = await self._interpret(transcript, provisional)
             decision = await self._decide(transcript, state, pinned_address, tuple(picking))
@@ -1265,6 +1270,13 @@ class Understander:
             decision = await self._clause(sub, state, pinned_address, chain=chain)
             decisions.append(decision)
             carried = _carried(decision)
+            # what THIS utterance has already done, for the clause that follows it. The
+            # context block's `previous` is the memory of earlier utterances, so inside
+            # one sentence every clause was told the same stale thing: "put the music on
+            # and turn it down a bit" decided clause 2 knowing nothing about clause 1 and
+            # came back "brightness is not supported yet". Turning something down right
+            # after starting music is about the music.
+            self._chain_did = _clause_note(decision)
             state = _projected(state, decision)
         if len(decisions) < 2:
             return None
@@ -1916,7 +1928,11 @@ class Understander:
         315 ms round trip.
         """
         state = requests.utterance_state(heard.said, heard.variants)
-        return {**state, **self.context.for_request()}
+        block = {**self.context.for_request()}
+        if self._chain_did:
+            # inside one utterance this is the truth and the remembered turn is not
+            block["previous"] = self._chain_did
+        return {**state, **block}
 
     def _ballot_label(self, window: Window) -> tuple[str, Any]:
         """How a window is named on the ballot: its trusted name AND what it is for.
@@ -2886,6 +2902,25 @@ def _answered(decision: Decision) -> bool:
     if decision.verdict is Verdict.HINTS:
         return decision.tier >= 2
     return False
+
+
+def _clause_note(decision: Decision) -> dict[str, Any] | str:
+    """What one clause of this utterance did, for the clause after it.
+
+    Its intent and its target's kind, never its words: a recipe's spoken span and
+    anything dictated are the speaker's own and do not travel (docs/PRIVACY.md). An app
+    name only when a trusted `.desktop` file claims the window, the same rule the rest
+    of the context block follows.
+    """
+    action = decision.action
+    if action is None or decision.verdict not in ACTING:
+        return ""
+    note: dict[str, Any] = {"did": action.intent.value}
+    if action.verb:
+        note["how"] = action.verb
+    if action.app is not None and action.app.trusted:
+        note["on"] = action.app.name
+    return note
 
 
 def _carried(decision: Decision) -> _Chain:
