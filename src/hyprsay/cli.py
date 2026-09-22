@@ -186,7 +186,13 @@ def _say(cfg, args) -> int:
         except jev_pkg.JevAuthError as exc:
             print(f"note: {exc}; grammar only", file=sys.stderr)
     lexicon = Lexicon.scan(cfg)
-    understander = Understander(cfg, lexicon, Grammar(), client)
+    # the same adapters the engine builds (`daemon.build`). Without them `say` ran with
+    # an empty adapter tuple, so every MPRIS, Spotify and waytify path was unreachable
+    # from the one surface that can be tested without a microphone: the harvest offered
+    # no service options and nothing ever noticed.
+    from . import adapters as adapter_pkg
+
+    understander = Understander(cfg, lexicon, Grammar(), client, adapters=adapter_pkg.live(cfg))
 
     async def go():
         try:
