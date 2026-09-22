@@ -536,6 +536,11 @@ def test_a_walk_a_click_is_waiting_for_is_never_cancelled_by_a_warm():
     asking.start()
     try:
         until(lambda: controls._key(wanted) in controls._PENDING)
+        # registering the walk and CLAIMING it are two steps, and a warm arriving
+        # between them cancelled the click's own walk about one run in six under load.
+        # That was a race in this test and not in the code: wait for the claim, which
+        # is what `_claim` publishes by letting go of `_WARMING`.
+        until(lambda: controls._WARMING is not controls._PENDING[controls._key(wanted)])
         controls.warm(elsewhere, reader=tree)
         assert not controls._PENDING[controls._key(wanted)].cancelled()
     finally:

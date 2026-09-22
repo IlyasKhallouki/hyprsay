@@ -2572,6 +2572,22 @@ class Understander:
         heard: _Heard,
         state: DesktopState,
     ) -> Decision:
+        if (
+            action.intent is Intent.MEDIA
+            and action.verb == "play_pause"
+            and affordances.names_a_thing_to_play(affordances.spoken(heard.text))
+        ):
+            # "play the second live version of bohemian rhapsody" with nothing on this
+            # machine able to look a track up came back as PLAY/PAUSE, which pauses
+            # whatever happens to be open. Naming a particular thing and getting the
+            # transport verb is not a near miss, it is a different command, and doing
+            # the wrong thing confidently is worse than saying it cannot be done.
+            return self._suggest(
+                heard,
+                "nothing here can look a track up; start the waytify daemon, "
+                'or say "play" on its own to resume',
+                Intent.MEDIA,
+            )
         if action.workspace == "here":
             # "bring the browser here": the one place a spoken workspace needs live state
             action = replace(action, workspace=str(state.active_workspace_id))

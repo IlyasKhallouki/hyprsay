@@ -666,7 +666,7 @@ def _system(context: Machine) -> list[Ranked]:
     ):
         capability = _capability(intent, SYSTEM, f"{prefix} control", context, None)
         for verb, summary, groups in verbs:
-            if intent is Intent.MEDIA and _names_a_thing_to_play(words):
+            if intent is Intent.MEDIA and names_a_thing_to_play(words):
                 # "play the second live version" is not a transport verb. Measured live,
                 # `media_play_pause` held about a third of the mass beside the adapter
                 # option that was actually right, which came back at 0.38 to 0.44 against
@@ -706,7 +706,7 @@ _A_THING = frozenset(
 )
 
 
-def _names_a_thing_to_play(words: tuple[str, ...]) -> bool:
+def names_a_thing_to_play(words: tuple[str, ...]) -> bool:
     """Did the speaker name something to play, rather than ask for play or pause?
 
     An ordinal counts on its own ("the second one"): nothing about pausing has a second.
