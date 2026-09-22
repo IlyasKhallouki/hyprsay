@@ -283,3 +283,69 @@ def test_a_verdict_that_is_not_an_action_carries_nothing_out():
     for verdict in (Verdict.HINTS, Verdict.REFUSE, Verdict.SUGGEST, Verdict.NOTHING):
         code, calls = carry(verdict)
         assert code == 1 and calls == []
+
+
+# ------------------------------------------------------------------ answering the hints
+
+
+def answer_hints(*, pick=None, typed=None, isatty=True, json=False, monkeypatch=None):
+    """Run cli._answer_hints against a stand-in understander and report what it asked."""
+    import argparse
+    import sys as _sys
+
+    from hyprsay import cli
+    from hyprsay.model import Action, Candidate, Decision, DesktopState, Intent, Verdict
+
+    template = Action(Intent.RUN_RECIPE, verb="find")
+    resolved = Decision(Verdict.ACT, template, tier=1)
+    asked = []
+
+    class Understander:
+        def __init__(self):
+            self.pending = None
+
+        async def understand(self, transcript, state, *, picking=()):
+            asked.append((transcript.text, self.pending, picking))
+            return resolved
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: isatty, raising=False)
+    if typed is not None:
+        monkeypatch.setattr("builtins.input", lambda _prompt: typed)
+    candidates = (Candidate("Google Chrome (workspace 11)"), Candidate("Google Chrome (ws 8)"))
+    step = Decision(Verdict.HINTS, template, candidates, tier=2)
+    got = cli._answer_hints(
+        step, Understander(), DesktopState, pick, argparse.Namespace(json=json), 1, 2
+    )
+    return got, asked
+
+
+def test_a_hinted_step_can_be_answered_with_a_number(monkeypatch):
+    """`say` printed numbered candidates and had nothing that could hear an answer, so
+    a chain whose first clause was hinted carried nothing out and stopped there."""
+    from hyprsay.model import Verdict
+
+    got, asked = answer_hints(pick=2, monkeypatch=monkeypatch)
+    assert got.verdict is Verdict.ACT
+    said, pending, picking = asked[0]
+    assert said == "2"
+    # the number is a target, not a permission: it goes back through the understander
+    # with the template it belongs to, and is judged by the tier function like any other
+    assert pending is not None and len(picking) == 2
+
+
+def test_a_typed_answer_reaches_the_understander(monkeypatch):
+    _got, asked = answer_hints(typed=" two ", monkeypatch=monkeypatch)
+    assert asked[0][0] == "two"
+
+
+def test_an_empty_answer_leaves_the_hints_standing(monkeypatch):
+    got, asked = answer_hints(typed="", monkeypatch=monkeypatch)
+    assert got is None and asked == []
+
+
+def test_nothing_is_asked_when_there_is_nobody_to_ask(monkeypatch):
+    """A pipe and --json are read by something that cannot answer a prompt."""
+    got, asked = answer_hints(isatty=False, monkeypatch=monkeypatch)
+    assert got is None and asked == []
+    got, asked = answer_hints(json=True, monkeypatch=monkeypatch)
+    assert got is None and asked == []

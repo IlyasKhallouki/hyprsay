@@ -202,6 +202,13 @@ UTTERANCES = [
     ("Scroll down.", Intent.SCROLL, Slots(direction=Direction.DOWN)),
     ("scroll up a lot", Intent.SCROLL, Slots(direction=Direction.UP, amount=3)),
     ("scroll the page down", Intent.SCROLL, Slots(direction=Direction.DOWN)),
+    # the amount belongs between the verb and the direction as often as after it, and
+    # the rule used to accept it only on either side, so the commonest way to ask for a
+    # big scroll parsed as nothing at all
+    ("scroll all the way down", Intent.SCROLL, Slots(direction=Direction.DOWN, amount=4)),
+    ("scroll way up", Intent.SCROLL, Slots(direction=Direction.UP, amount=3)),
+    ("scroll a little down", Intent.SCROLL, Slots(direction=Direction.DOWN, amount=1)),
+    ("scroll all the way to the bottom", Intent.PRESS_CHORD, Slots(verb="End")),
     ("page down", Intent.PRESS_CHORD, Slots(verb="Page_Down")),
     ("page up", Intent.PRESS_CHORD, Slots(verb="Page_Up")),
     ("top", Intent.PRESS_CHORD, Slots(verb="Home")),

@@ -20,7 +20,7 @@ Built and verified on one machine (Arch, Hyprland 0.56.2). What that means preci
 
 | Verified | Not yet verified |
 |---|---|
-| 2652 unit tests; lint clean | A human voice through a real microphone, end to end |
+| 3100 unit tests; lint clean | A human voice through a real microphone, end to end |
 | 348 live evaluations, 91 percent correct, no wrong action in any of the 27 hostile-window attacks | `bind` and `bindr` from a real config, rather than injected key events |
 | Real guarded dispatch to the compositor over its socket | The global-shortcuts push-to-talk transport |
 | Recorded audio to a correct decision, through the real recognizer | Hyprland's Lua config provider: detected and reported, its dispatch strings never run |
@@ -45,7 +45,9 @@ Three speeds, fastest first. Most commands never touch the network.
 You can chain commands. "Open firefox and move it to workspace three" is split by code at the
 "and", and Jev only answers whether that "and" really separates two commands, so "type hello and
 goodbye" stays one piece of dictation. A chain stops at the first clause that does not act and
-tells you which one.
+tells you which one. A clause that only asks is not one of those: the numbered badges go up, and
+the number you say finishes that clause and carries the rest of the sentence with it, aimed at
+the window you just chose.
 
 Inside an application it can scroll, page, switch tabs, open a URL, search, and find text. Those
 never come from the model: each one is an exact phrase in the grammar. Clicking a control by name
@@ -140,6 +142,7 @@ uv run hyprsay setup --units    # installs and starts the systemd user units
 ```sh
 uv run hyprsay say "put the browser on workspace three"   # dry run against your live desktop
 uv run hyprsay say "volume down" --act                    # carry it out
+uv run hyprsay say "find lofi and scroll down" --act --pick 1   # answer a numbered hint
 uv run hyprsay replay clip.wav                            # start from recorded audio
 uv run hyprsay record clip.wav                            # record one
 uv run hyprsay inspect                                    # what was heard, decided, sent

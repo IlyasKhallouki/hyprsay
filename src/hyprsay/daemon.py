@@ -65,6 +65,9 @@ class Engine:
         # badges on screen: the next utterance may be a bare number
         self._picking: tuple[Candidate, ...] = ()
         self._picking_until = 0.0
+        # the rest of an utterance whose chain paused on a question (`_ask_on`). It lives
+        # and dies with the badges, because the number is the only thing that resumes it
+        self._resume: tuple | None = None
         # the fingerprint of the desktop the decision in hand was made against, cleared
         # the moment it is used. Empty means nothing is waiting to be carried out.
         self._stamp = ""
@@ -170,6 +173,7 @@ class Engine:
             # NOT on an ordinary key press: the key has to go down to say the number, so
             # clearing here would make every numbered hint and swap impossible to answer
             self._picking = ()
+            self._resume = None
             self._stamp = ""
             # the badges and what the last commands did are one memory with one lifetime
             # (nlu/context.py), so whatever clears one clears the other
@@ -311,7 +315,13 @@ class Engine:
         await self._show("refused", text="session is locked", ttl_ms=1500)
 
     async def _understand(self, transcript: Transcript, pinned: str = "") -> Decision:
-        picking = self._picking if time.monotonic() < self._picking_until else ()
+        live = time.monotonic() < self._picking_until
+        picking = self._picking if live else ()
+        # the clauses waiting on an answer wait exactly as long as the badges do. Once
+        # they are gone the question went unanswered, and the rest of that utterance is
+        # not something to run against a desktop several commands later
+        if not live:
+            self._resume = None
         # one snapshot, read once: the stamp has to be the fingerprint of the very state
         # the decision is made against, and `world.state` moves under a running daemon
         state = self.world.state
@@ -327,6 +337,7 @@ class Engine:
         # consumed before anything is written, so one decision can only act once: a
         # retry, a second key press or a chain restarting finds nothing to spend
         stamp, self._stamp = self._stamp, ""
+        resume, self._resume = self._resume, None
         stale = self._stale(d, stamp)
         if stale:
             await self._show("refused", text=stale, ttl_ms=3000)
@@ -334,7 +345,24 @@ class Engine:
         if d.rest:
             await self._chain(d, pinned)
             return
-        await self._one(d, pinned)
+        if resume is None:
+            await self._one(d, pinned)
+            return
+        await self._resumed(d, resume)
+
+    async def _resumed(self, d: Decision, resume: tuple) -> None:
+        """This decision answered a question a chain stopped on, so it IS that chain's
+        next step: it is carried out as one, and the clauses behind it follow."""
+        rest, done, offset, total, heard, pinned = resume
+        if not await self._one(d, pinned, chained=True):
+            # still not answered: keep the question up rather than dropping the rest
+            if d.verdict is Verdict.HINTS and d.candidates:
+                await self._ask_on(d, rest, done, offset - 1, total, heard, pinned)
+            else:
+                await self._stopped(offset - 1, total, d, done)
+            return
+        done.append(_chip(d))
+        await self._steps(rest, pinned, done=done, offset=offset, heard=heard)
 
     def _stale(self, d: Decision, stamp: str) -> str:
         """Why this decision may no longer be acted on, or "" when it may.
@@ -368,23 +396,69 @@ class Engine:
 
         A later clause is an order that assumes the earlier one happened: "open firefox
         and move it to workspace 3" has nothing to move if the launch was refused. So a
-        refusal, a question, a cancelled countdown or an unconfirmed key ends the chain,
-        and the overlay says which part stopped it and what had already run. Running on
-        and hoping would aim the rest of the utterance at whatever the desktop happens to
+        refusal, a cancelled countdown or an unconfirmed key ends the chain, and the
+        overlay says which part stopped it and what had already run. Running on and
+        hoping would aim the rest of the utterance at whatever the desktop happens to
         look like, which is exactly the failure v1 had, only faster.
+
+        A question is not one of those. See `_ask_on`.
         """
-        clauses = (first, *first.rest)
-        done: list[str] = []
+        await self._steps((first, *first.rest), pinned, done=[], offset=0, heard=first.heard)
+
+    async def _steps(
+        self,
+        clauses: tuple[Decision, ...],
+        pinned: str | None,
+        *,
+        done: list[str],
+        offset: int,
+        heard: str,
+    ) -> None:
+        """The clauses still to run. `offset` is how many ran before this call, so that
+        "part 2 of 3" keeps meaning the same part after a chain pauses for an answer."""
+        total = offset + len(clauses)
         for index, clause in enumerate(clauses):
+            part = offset + index
             # the screen can lock between two clauses as easily as during one
-            if index and await self._locked_now():
+            if part and await self._locked_now():
                 await self._drop_for_lock()
                 return
             if not await self._one(clause, pinned, chained=True):
-                await self._stopped(index, len(clauses), clause, done)
+                if clause.verdict is Verdict.HINTS and clause.candidates:
+                    rest = clauses[index + 1 :]
+                    await self._ask_on(clause, rest, done, part, total, heard, pinned)
+                else:
+                    await self._stopped(part, total, clause, done)
                 return
             done.append(_chip(clause))
-        await self._show("heard", text=first.heard, chip="; ".join(done), ttl_ms=2500)
+        await self._show("heard", text=heard, chip="; ".join(done), ttl_ms=2500)
+
+    async def _ask_on(
+        self,
+        clause: Decision,
+        rest: tuple[Decision, ...],
+        done: list[str],
+        part: int,
+        total: int,
+        heard: str,
+        pinned: str | None,
+    ) -> None:
+        """Ask the question a clause raised, and keep the rest of the utterance waiting.
+
+        Badges used to be hidden mid-chain, because a number could only finish the clause
+        it belonged to and would leave the rest of the utterance unsaid. That reasoning
+        was sound and its conclusion was not: it meant "find the channel and scroll down"
+        with two browsers open showed nothing at all and did nothing at all. The answer
+        instead finishes the utterance. The clauses after this one were understood knowing
+        their window would only be settled at run time (`nlu/understand._carried`), so
+        they are aimed at whichever window the number chooses.
+        """
+        self._arm_picking(clause.candidates, self.cfg.hud.hint_timeout_s)
+        # resolved now: `self._pinned` is the window focused at key down, and answering
+        # takes a key press of its own, which would move it
+        held = self._pinned if pinned is None else pinned
+        self._resume = (rest, list(done), part + 1, total, heard, held)
+        await self.hud.send(self.hud.from_decision(clause, self.world.state))
 
     async def _stopped(self, index: int, total: int, clause: Decision, done: list[str]) -> None:
         ran = f"already did {', '.join(done)}" if done else "nothing was done"

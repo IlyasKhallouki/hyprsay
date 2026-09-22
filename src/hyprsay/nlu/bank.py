@@ -178,9 +178,14 @@ AMOUNT_LEVELS: tuple[str, ...] = (
 
 # what each unsupported kind says on the HUD. "Not understood is never a dead end" (PLAN 6)
 UNSUPPORTED: dict[str, tuple[str, str]] = {
+    # Scrolling, paging, tabs, page navigation, searching and finding text all work now
+    # (grammar only, the in-app reach section of `nlu/grammar.py`), so this must describe
+    # ONLY what is still out of reach. Describing them as unsupported made Jev classify
+    # commands hyprsay can carry out as commands it cannot, and say so.
     "click_inside_app": (
-        "press, click, scroll or pick a control, link, tab or menu inside an application",
-        "clicking inside apps is not supported yet",
+        "drag something, select text with the pointer, or open a right-click menu",
+        "dragging and selecting text are not supported; scrolling, tabs, page "
+        'navigation and "click <name>" are',
     ),
     "long_dictation": (
         "dictate sentences or a message to be typed out",

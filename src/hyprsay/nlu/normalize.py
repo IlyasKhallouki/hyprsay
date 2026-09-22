@@ -158,11 +158,32 @@ COMMAND_WORDS = _words(
     turn increase decrease raise lower percent play pause resume skip song track music
     type say dictate write lock screen undo revert again repeat cancel abort stop help
     commands number pick choose option nope nevermind this that it here current active
+    scroll scrolling page view list top bottom document tab back forward forwards
+    reload refresh find search look google navigate browse click press button link menu
     """
 )
 # The verbs of operations that destroy or inject something. A near miss is never
-# corrected TOWARD one of these: the speaker has to have said the word.
-_NEVER_A_VARIANT = frozenset({"close", "quit", "lock", "type", "say", "dictate", "write"})
+# corrected TOWARD one of these: the speaker has to have said the word. The in-app
+# verbs here put the speaker's own words into an application (a find bar, an address
+# bar, a search box), so they are held to the same rule as dictation: pure navigation
+# ("scroll", "page", "back") is repairable, anything that types is not.
+_NEVER_A_VARIANT = frozenset(
+    {
+        "close",
+        "quit",
+        "lock",
+        "type",
+        "say",
+        "dictate",
+        "write",
+        "find",
+        "search",
+        "look",
+        "google",
+        "navigate",
+        "browse",
+    }
+)
 # ordinary words that must not be "corrected" into an app name
 _PLAIN_WORDS = _words(
     """

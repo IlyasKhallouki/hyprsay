@@ -729,18 +729,74 @@ def test_a_chain_stops_the_moment_a_clause_is_refused():
     assert p["executor"].executed == [LAUNCH]
 
 
-def test_a_chain_stops_when_a_clause_only_asks_and_does_not_leave_badges_up():
-    """A number answered now could only finish the clause it belongs to, and the rest of
-    the utterance would be lost: that is the half-done outcome the chain exists to stop."""
+def test_a_chain_pauses_on_a_question_and_the_answer_finishes_the_utterance():
+    """Badges used to be hidden mid-chain: a number could only finish the clause it
+    belonged to, and the rest of the utterance would be lost. So "find the channel and
+    scroll down" with two browsers open asked nothing and did nothing. The clause still
+    stops the run, but now the question goes up and the answer carries the rest."""
     rivals = (Candidate("a", window=WINDOW), Candidate("b", window=OTHER))
     e, p = chain(
         Decision(Verdict.ACT, LAUNCH),
         Decision(Verdict.HINTS, MOVE, rivals, tier=1, reason="several windows fit"),
         Decision(Verdict.ACT, MUTE),
     )
-    run(utter(e, p))
+    p["understander"].decisions["2"] = Decision(Verdict.ACT, MOVE, tier=1)
+
+    async def go():
+        await utter(e, p)
+        assert p["executor"].executed == [LAUNCH]  # paused, not finished
+        assert e._picking == rivals  # and the question is on screen to be answered
+        p["recognizer"].text = "2"
+        await utter(e, p)
+
+    run(go())
+    assert p["executor"].executed == [LAUNCH, MOVE, MUTE]
+    assert e._picking == () and e._resume is None
+
+
+def test_the_clauses_waiting_on_an_answer_die_with_the_badges():
+    """An unanswered question is not a chain to resume against a desktop several
+    commands later."""
+    rivals = (Candidate("a", window=WINDOW), Candidate("b", window=OTHER))
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.HINTS, MOVE, rivals, tier=1, reason="several windows fit"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    p["understander"].decisions["volume up"] = Decision(Verdict.ACT, MUTE, heard="volume up")
+
+    async def go():
+        await utter(e, p)
+        e._picking_until = 0.0  # the badges time out
+        p["recognizer"].text = "volume up"
+        await utter(e, p)
+
+    run(go())
+    # the later command ran on its own; the abandoned clause did not follow it
+    assert p["executor"].executed == [LAUNCH, MUTE]
+    assert e._resume is None
+
+
+def test_a_question_that_is_still_not_answered_keeps_asking():
+    rivals = (Candidate("a", window=WINDOW), Candidate("b", window=OTHER))
+    e, p = chain(
+        Decision(Verdict.ACT, LAUNCH),
+        Decision(Verdict.HINTS, MOVE, rivals, tier=1, reason="several windows fit"),
+        Decision(Verdict.ACT, MUTE),
+    )
+    p["understander"].decisions["nine"] = Decision(
+        Verdict.HINTS, MOVE, rivals, tier=1, reason="there is no number 9"
+    )
+
+    async def go():
+        await utter(e, p)
+        p["recognizer"].text = "nine"
+        await utter(e, p)
+
+    run(go())
     assert p["executor"].executed == [LAUNCH]
-    assert e._picking == ()
+    assert e._picking == rivals  # still asking, and the rest is still waiting
+    assert e._resume is not None
 
 
 def test_a_chain_that_stopped_says_which_part_stopped_it_and_what_already_ran():

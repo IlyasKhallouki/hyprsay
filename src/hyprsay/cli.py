@@ -48,6 +48,12 @@ def main(argv: list[str] | None = None) -> int:
     say.add_argument(
         "--yes", action="store_true", help="allow a session action that would need a key press"
     )
+    say.add_argument(
+        "--pick",
+        type=int,
+        metavar="N",
+        help="answer the first numbered hint with N, instead of being asked",
+    )
     replay = sub.add_parser("replay", help="run a recorded clip through recognizer and pipeline")
     replay.add_argument("wav")
     replay.add_argument("--act", action="store_true")
@@ -230,10 +236,16 @@ def _say(cfg, args) -> int:
     executor = Executor(cfg, lambda: snapshot(sock), latch, lexicon)
     use_executor(executor)  # recipes reach the executor through this, never around it
     worst = 0
+    total = len(decision.rest) + 1
+    pick = args.pick
     for n, step in enumerate((decision, *decision.rest), 1):
-        code = _carry_out(
-            step, executor, state.active_address, cfg, args, n, len(decision.rest) + 1
-        )
+        if step.verdict is Verdict.HINTS and step.candidates:
+            answered = _answer_hints(
+                step, understander, lambda: snapshot(sock), pick, args, n, total
+            )
+            if answered is not None:
+                step, pick = answered, None
+        code = _carry_out(step, executor, state.active_address, cfg, args, n, total)
         if code:
             # a chain stops at the first step that did not happen, exactly as the engine
             # does: the steps after it were planned against a desktop that never arrived
@@ -242,6 +254,47 @@ def _say(cfg, args) -> int:
             return code
         worst = max(worst, code)
     return worst
+
+
+def _answer_hints(step, understander, snap, pick: int | None, args, n: int, total: int):
+    """Answer numbered hints in a terminal, the way a spoken number answers them on screen.
+
+    When two windows fit equally, nobody can know which was meant, so the engine shows
+    numbered badges and waits. `say` printed the same numbers and then had nothing that
+    could hear an answer, so a chain whose first clause was hinted did nothing at all.
+
+    The number goes back through the understander rather than being applied to the
+    candidate here. A pick names a target; it is not a permission, and the action it
+    lands on is judged by the same tier function as any other. The desktop is read again
+    first, because an earlier clause in the chain may have moved the window being chosen.
+    """
+    from .model import Transcript
+
+    if pick is not None:
+        answer = str(pick)
+    elif args.json or not sys.stdin.isatty():
+        return None  # nothing here can ask, so leave the hints standing
+    else:
+        where = f"part {n} of {total}: " if total > 1 else ""
+        try:
+            answer = input(f"{where}which one? 1-{len(step.candidates)}, Enter to cancel: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return None
+        if not answer:
+            return None
+    understander.pending = step.action
+    picked = asyncio.run(
+        understander.understand(
+            Transcript(answer, backend="typed"), snap(), picking=step.candidates
+        )
+    )
+    print(f"verdict   {picked.verdict.value}   (tier {picked.tier})")
+    if picked.action:
+        print(f"action    {picked.action.describe()}")
+    if picked.reason:
+        print(f"why       {picked.reason}")
+    return picked
 
 
 def _carry_out(step, executor, pinned: str, cfg, args, n: int, total: int) -> int:

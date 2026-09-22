@@ -526,11 +526,16 @@ _RULES: tuple[_Rule, ...] = (
     # kind does not offer, `controls` a name nobody said.
     _rule(
         Intent.SCROLL,
+        # the amount can sit in any of the three places English puts it: before the verb,
+        # between the verb and the direction ("scroll all the way down", the commonest),
+        # or after it. `_said` reads amt, amt2 and amt3 as one slot.
         rf"(?:(?P<amt>{_AMT}) )?scroll(?:ing)?(?: (?:the )?(?:page|view|window|list))?"
+        rf"(?: (?P<amt3>{_AMT}))?"
         rf"(?: (?:to|towards)(?: the)?)? {_DIR}(?: (?P<amt2>{_AMT}))?",
         _slots(),
         "scroll down",
         "scroll up a lot",
+        "scroll all the way down",
     ),
     _rule(
         Intent.PRESS_CHORD,
@@ -546,19 +551,22 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _rule(
         Intent.PRESS_CHORD,
-        r"(?:(?:go|jump|scroll|take me) )?(?:to )?the top(?: of (?:the )?(?:page|list|document))?"
-        r"|top",
+        # "all the way" is redundant before Home or End, but people say it, and without
+        # somewhere to put it the whole phrase matched nothing
+        rf"(?:(?:go|jump|scroll|take me) )?(?:(?:{_AMT}) )?(?:to )?the top"
+        rf"(?: of (?:the )?(?:page|list|document))?|top",
         _slots(verb="Home"),
         "top",
         "go to the top",
     ),
     _rule(
         Intent.PRESS_CHORD,
-        r"(?:(?:go|jump|scroll|take me) )?(?:to )?the bottom"
-        r"(?: of (?:the )?(?:page|list|document))?|bottom",
+        rf"(?:(?:go|jump|scroll|take me) )?(?:(?:{_AMT}) )?(?:to )?the bottom"
+        rf"(?: of (?:the )?(?:page|list|document))?|bottom",
         _slots(verb="End"),
         "bottom",
         "go to the bottom",
+        "scroll all the way to the bottom",
     ),
     # Tabs and page navigation are single chords, so they go through `inapp`'s own
     # closed table rather than through a recipe: that table was written for exactly

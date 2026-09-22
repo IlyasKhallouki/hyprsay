@@ -271,6 +271,21 @@ def test_a_misheard_command_word_is_offered_as_a_variant_not_rewritten():
     assert norm.variants == ("toggle fullscreen",)
 
 
+def test_a_misheard_in_app_verb_is_offered_as_a_variant():
+    """COMMAND_WORDS was written before hyprsay could reach inside a window, and nobody
+    widened it when that landed: "scrool all the way down" had no near word to be
+    corrected toward, so it reached the grammar misspelt and parsed as nothing."""
+    assert normalize("scrool all the way down").variants == ("scroll all the way down",)
+    assert normalize("scrol down").variants == ("scroll down",)
+
+
+def test_a_verb_that_types_is_never_supplied_by_a_repair():
+    """The in-app verbs that put the speaker's own words into an application are held
+    to the same rule as dictation: nothing is ever corrected toward them."""
+    for heard, never in (("finde", "find"), ("serch", "search"), ("navigat", "navigate")):
+        assert all(never not in v for v in normalize(heard + " something").variants)
+
+
 def test_a_misheard_app_name_is_offered_as_a_variant(monkeypatch):
     # moonshine-tiny through a bad laptop microphone
     _lexicon_scoring(monkeypatch, {("firefuck", "firefox"): 0.86})

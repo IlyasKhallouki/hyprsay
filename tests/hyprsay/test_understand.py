@@ -873,9 +873,21 @@ def test_a_near_tie_between_intents_suggests_instead_of_guessing():
 
 def test_an_unsupported_kind_says_so_plainly():
     u, _ = build({**ADDRESSED, "intent": "focus_window", "unsupported_kind": "click_inside_app"})
-    decision = say(u, "press the subscribe button")
+    decision = say(u, "drag that file onto the other one")
     assert decision.verdict is Verdict.SUGGEST
-    assert decision.reason == "clicking inside apps is not supported yet"
+    assert "dragging and selecting text are not supported" in decision.reason
+
+
+def test_what_an_unsupported_kind_describes_is_still_unsupported():
+    """The kinds are the reasons Jev may give for hyprsay being unable to help. When
+    in-app reach landed, `click_inside_app` went on describing scrolling and tabs, so
+    Jev kept choosing it for commands the grammar runs and the answer was a flat
+    untruth: "scrool all the way down" came back "clicking inside apps is not
+    supported yet"."""
+    what, message = bank.UNSUPPORTED["click_inside_app"]
+    reachable = ("scroll", "tab", "page down", "reload", "find ", "search")
+    assert not any(word in what for word in reachable), what
+    assert "scrolling, tabs" in message  # and it names what does work instead
 
 
 def test_a_workspace_number_jev_reports_must_have_been_said():
@@ -1386,6 +1398,26 @@ def test_two_commands_in_one_utterance_come_back_as_one_decision_carrying_the_re
     assert u.last_exchange["clauses"] == ["focus firefox", "close kitty"]
 
 
+def test_a_clause_after_a_question_is_aimed_at_the_window_the_answer_picks():
+    """ "Find the channel and scroll down" with two browsers open: the first clause asks
+    which browser, so the second cannot be aimed at whatever held the key. It used to be,
+    which sent the scroll to the focused terminal and refused it. A hinted clause leaves
+    the same "settled at run time" a launch does, and `ops._authorize_gesture` guards it
+    there."""
+    both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
+    parses = {
+        "go to youtube com": inapp_parse(Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"),
+        "scroll down": inapp_parse(Intent.SCROLL, direction=Direction.DOWN),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "go to youtube com and scroll down", both, pinned_address=TERMINAL.address)
+    assert decision.verdict is Verdict.HINTS
+    scroll = decision.rest[0]
+    assert scroll.action.intent is Intent.SCROLL
+    assert scroll.action.window is None  # not the terminal, and not yet any window
+    assert scroll.verdict is not Verdict.REFUSE
+
+
 def test_three_clauses_come_back_in_the_order_they_were_spoken():
     parses = {
         "open firefox": launch("firefox"),
@@ -1808,3 +1840,32 @@ def test_a_recipe_offers_the_choice_when_two_windows_could_do_it():
     assert decision.verdict is Verdict.HINTS
     assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
     assert "terminal" not in decision.reason
+
+
+def test_picking_a_window_for_a_recipe_keeps_what_the_recipe_is_for():
+    """A template drops dictated text on purpose: it waits in `pending` for a number, and
+    the speaker's private words do not outlive the decision they were cut for. What a
+    recipe is for is not dictation, though. Dropping it too left the hinted recipe with
+    nothing to type, so answering "1" ran a find for "" and refused."""
+    both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
+    u, _ = build(
+        parses={
+            "go to youtube com": inapp_parse(
+                Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"
+            )
+        }
+    )
+    hints = say(u, "go to youtube com", both, pinned_address=TERMINAL.address)
+    assert hints.action.text == "youtube.com"
+    picked = say(u, "1", both, picking=hints.candidates)
+    assert picked.action.window in (FOX_A, FOX_B)
+    assert picked.action.text == "youtube.com"
+    assert picked.verdict is not Verdict.REFUSE
+
+
+def test_a_template_still_never_carries_dictated_text():
+    from hyprsay.nlu.understand import ARGUMENT_TEXT, _template
+
+    assert Intent.TYPE_TEXT not in ARGUMENT_TEXT
+    template = _template(Intent.TYPE_TEXT, Slots(text="my password is hunter2"))
+    assert template.text is None

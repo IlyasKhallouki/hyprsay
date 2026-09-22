@@ -111,6 +111,9 @@ NO_TARGET = frozenset(
 )
 BARE = frozenset({Intent.HELP, Intent.UNDO, Intent.AGAIN, Intent.CANCEL})
 WHILE_PICKING = frozenset({Intent.PICK, Intent.CANCEL, Intent.UNDO})
+# intents whose `text` is an argument the speaker aimed at a target ("find <what>",
+# "click <which>") rather than dictation. Only these keep it in a template (`_template`).
+ARGUMENT_TEXT = frozenset({Intent.RUN_RECIPE, Intent.CLICK_CONTROL})
 # every intent whose Action must carry a window (`ops.Operation.needs_window`). A blank
 # one on these means the target is settled against fresh state when the action runs.
 NEEDS_WINDOW = WINDOW_OPS | tiers.IN_APP | {Intent.FOCUS_WINDOW, Intent.TYPE_TEXT}
@@ -2126,8 +2129,17 @@ def _recipe_evidence(recipe: recipes.Recipe, heard: _Heard) -> Evidence:
 
 
 def _carried(decision: Decision) -> _Chain:
-    """What the next clause may point back at. A clause that did not act leaves nothing."""
+    """What the next clause may point back at. A clause that did not act leaves nothing.
+
+    Hints are the exception. A hinted clause has not acted, but it is a question rather
+    than a failure: it WILL act, on the window the speaker is about to name with a
+    number. So what follows it is aimed at that window, not at whatever happened to hold
+    the key. That is the same "known only at run time" the launch below describes, and
+    `ops._authorize_gesture` is what guards it there.
+    """
     action = decision.action
+    if decision.verdict is Verdict.HINTS and decision.candidates:
+        return _Chain(launched=True)
     if action is None or decision.verdict not in ACTING:
         return _Chain()
     # A launch has no window yet, and neither has a clause that was itself aimed at
@@ -2189,7 +2201,16 @@ def _movable(template: Action, windows: list[Window], state: DesktopState) -> li
 
 
 def _template(intent: Intent, slots: Slots) -> Action:
-    """The operation with every slot but the target. Dictated text is never copied here."""
+    """The operation with every slot but the target.
+
+    Dictated text is never copied here. A template outlives the utterance it came from,
+    waiting in `pending` for a number, and what "type ..." carries is the speaker's own
+    words: they last exactly as long as the decision they were cut for.
+
+    What a recipe searches for is not dictation. "Find the ltt youtube channel" does not
+    hold a private phrase, it holds the command, so dropping it left a hinted recipe with
+    nothing to type: picking a window ran a find for "" and refused. Those keep it.
+    """
     return Action(
         intent,
         workspace=slots.workspace,
@@ -2197,6 +2218,7 @@ def _template(intent: Intent, slots: Slots) -> Action:
         amount=slots.amount,
         verb=slots.verb,
         number=slots.number,
+        text=slots.text if intent in ARGUMENT_TEXT else None,
     )
 
 
