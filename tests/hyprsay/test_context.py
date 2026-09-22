@@ -454,16 +454,18 @@ def test_forgetting_clears_the_pending_template_and_the_memory_together():
     assert u.pending is None and u.context.recent == ()
 
 
-def test_the_context_block_is_built_for_every_fan_out_and_is_still_not_sent():
-    """docs/STRATEGY.md 4.1 wants this evidence in the request. What leaves the machine
-    is pinned by docs/PRIVACY.md and by a test in test_understand.py, so until those
-    change together the block is built and journalled and the request is unchanged.
-    """
+def test_the_context_block_goes_out_with_every_request():
+    """It used to be built, journalled and then withheld, which asked the model the
+    question and kept the evidence: the intent descriptions say launching is "not for
+    going to a window that is already open" while nothing in the request said what was
+    open. That is why "open my browser here" was a coin toss."""
     u, jev = build({**ADDRESSED, "intent": "focus_window", "window": "w1", "is_w1": 0.9})
     say(u, "go to the browser")
     assert u.last_exchange["context"]["open_apps"] == ["kitty", "Firefox", "Spotify"]
     for state, _ in jev.calls:
-        assert set(state) == {"utterance", "variants", "note"}
+        assert state["open_apps"] == ["kitty", "Firefox", "Spotify"]
+        assert state["current_workspace"] == "1"
+        assert state["utterance"] == "go to the browser"
 
 
 # --------------------------------------------------------------------------- the plan

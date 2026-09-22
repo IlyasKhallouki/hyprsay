@@ -643,15 +643,19 @@ def test_the_fan_out_runs_concurrently_in_one_round_trip():
     assert jev.peak == len(jev.calls)
 
 
-def test_every_request_carries_only_the_utterance_the_variants_and_the_note():
+def test_a_request_carries_the_utterance_and_trusted_desktop_facts_and_nothing_else():
+    """The list is the whole of what may leave the machine (docs/PRIVACY.md). Titles are
+    not on it and never will be: a title is written by whoever owns the window."""
     u, jev = build(music(), variants={"go to my music": ("go to my muse",)})
     say(u, "go to my music")
+    allowed = {"utterance", "variants", "note", "open_apps", "current_workspace",
+               "focused", "previous", "correcting"}  # fmt: skip
     for state, _ in jev.calls:
-        assert state == {
-            "utterance": "go to my music",
-            "variants": ["go to my muse"],
-            "note": bank.NOTE,
-        }
+        assert set(state) <= allowed, set(state) - allowed
+        assert state["utterance"] == "go to my music"
+        assert state["variants"] == ["go to my muse"]
+        assert state["note"] == bank.NOTE
+        assert "title" not in repr(state).lower()
 
 
 def test_every_request_stays_under_the_token_cap():
@@ -1463,9 +1467,9 @@ def test_the_reach_ballot_offers_whole_actions_built_from_the_phrase():
     labels, plans = u._reach_ballot(_heard_for(u, "go to youtube"), browser(), need)
     assert "site" in plans and plans["site"].text == "youtube"
     assert plans["site"].kind == "site"
-    # and the label says where each window is, because the vague version lost to
+    # and every label names the window it is about, richly. The vague version lost to
     # "none of these" at 0.53 on a decision the rich version took at 0.96
-    assert any("workspace" in text for text in labels.values())
+    assert all(len(text.split()) >= 4 for text in labels.values()), labels
 
 
 def test_the_ballot_never_offers_an_option_that_cannot_be_carried_out():

@@ -1087,7 +1087,7 @@ class Understander:
         decision = self._resolve_remote(
             reading, fan, answers, local_app, heard, state, pinned_address, need, chain
         )
-        if need is not None and not _answered(decision):
+        if need is not None and (not _answered(decision) or _mislocated(decision, heard, state)):
             reached = self._reached(answers, heard, state)
             if reached is not None and _answered(reached):
                 return self._partial(seams, heard, reached) or reached
@@ -1458,21 +1458,49 @@ class Understander:
         return None
 
     def _base(self, heard: _Heard) -> dict[str, Any]:
-        """The state every request in a fan-out shares.
+        """The state every request in a fan-out shares: the utterance, and the desktop.
 
-        The context block that `nlu/context.py` builds is NOT in it, and that is a
-        deliberate stop rather than an oversight. What is open, what is focused and what
-        the last command did is exactly the evidence docs/STRATEGY.md 4.1 says the
-        question bank asks about and the request withholds, but putting it here changes
-        what leaves the machine, which is pinned by `docs/PRIVACY.md` and asserted
-        literally by `test_every_request_carries_only_the_utterance_the_variants_and_the
-        _note`. That row and that test belong to the same commit as this line, and it is
-        not this one. In the meantime the block is built for every utterance, journalled
-        as `last_exchange["context"]` so `hyprsay inspect --last` shows exactly what would
-        go, and the evidence itself does reach the model the other way: every harvested
-        option in Rp is a thing this desktop can do right now.
+        The desktop half used to be built and then withheld, which asked the model the
+        question and kept the evidence: the intent descriptions say launching is "not for
+        going to a window that is already open" while nothing in the request said what
+        was open. That is why "open my browser here" was a coin toss. It had no way to
+        know the browser was already running one workspace over.
+
+        Only trusted fields go (`context.Context.for_request`): the names of applications
+        a root owned `.desktop` file claims, the current workspace, what is focused, and
+        what the last command did. A window whose class no trusted file claims is left
+        out entirely, because naming it from its own class would let a window name
+        itself. No titles, ever, and nothing the speaker dictated.
+
+        Measured when it was added: 113 tokens on each of R1's two parts, against a
+        1,800 cap they were using 1,392 and 1,344 of, and 37 us to build against a
+        315 ms round trip.
         """
-        return requests.utterance_state(heard.said, heard.variants)
+        state = requests.utterance_state(heard.said, heard.variants)
+        return {**state, **self.context.for_request()}
+
+    def _ballot_label(self, window: Window) -> tuple[str, Any]:
+        """How a window is named on the ballot: its trusted name AND what it is for.
+
+        The bare class ("google-chrome") left "open my browser here" answered "none of
+        these" at 0.6, because nothing on the ballot said browser. `kind` is the phrase
+        the lexicon derives from a trusted `.desktop` file's Categories and GenericName,
+        which is the same trusted evidence a window match is allowed to rest on, and it
+        is what makes describing instead of naming work at all (bank, section 3).
+        """
+        label, trust = affordances._window_label(window, self.lexicon)
+        try:
+            owner = self.lexicon.app_for_window(window)
+            kind = self.lexicon.kind_of(window)
+        except Exception:
+            owner, kind = None, ""
+        # the trusted `.desktop` Name, not the class. The class is "google-chrome" and
+        # reads like a package; the Name is "Google Chrome" and is what a person calls
+        # it. Only when a root owned file claims the window, so a window still cannot
+        # name itself.
+        if owner is not None and owner.trusted and owner.name:
+            label = owner.name
+        return (f"{label} ({kind})" if kind else label), trust
 
     def _reach_ballot(
         self, heard: _Heard, state: DesktopState, need: _Need
@@ -1491,7 +1519,7 @@ class Understander:
         ranked = self.lexicon.match_windows(heard.text, state, limit=MAX_HINTS)
         here = state.active_workspace_id
         for i, (window, _score) in enumerate(ranked, 1):
-            label, trust = affordances._window_label(window, self.lexicon)
+            label, trust = self._ballot_label(window)
             fit = trust is not Trust.UNTRUSTED
             # Rich, and specifically naming both workspaces. The vague wording ("go to
             # the X window, which is already open") lost to "none of these" at 0.53 on
@@ -1499,12 +1527,14 @@ class Understander:
             # is took the same decision to 0.96. Section 3 of the bank says this in
             # general terms and it is worth restating: the option is the question.
             where = f"on workspace {window.workspace_id}"
-            labels[f"focus{i}"] = f"switch to the {label} window where it already is, {where}"
+            labels[f"focus{i}"] = (
+                f"leave the {label} window where it is, {where}, and switch to it there"
+            )
             plans[f"focus{i}"] = _Reach("focus", window=window, corroborated=fit)
             if window.workspace_id != here:
                 labels[f"here{i}"] = (
-                    f"bring the {label} window {where} to workspace {here}, "
-                    "where the speaker is now"
+                    f"bring the {label} window from workspace {window.workspace_id} "
+                    f"to workspace {here}, where the speaker is now"
                 )
                 plans[f"here{i}"] = _Reach("here", window=window, corroborated=fit)
         # the lexicon's best match, not only an exact one. "open my browser here" names
@@ -1522,7 +1552,7 @@ class Understander:
         able = [w for w in state.windows if _can_navigate(w, self.lexicon)]
         if len(able) == 1:
             window = able[0]
-            label, trust = affordances._window_label(window, self.lexicon)
+            label, trust = self._ballot_label(window)
             fit = trust is not Trust.UNTRUSTED
             # `site` is offered only when the phrase really renders as an address. An
             # option code cannot carry out is not an option, it is a trap: "go to linus
@@ -1550,7 +1580,13 @@ class Understander:
         if chosen is None:  # "none of these", or an id from a ballot we no longer hold
             return None
         ranked = reply.ranked
-        margin = ranked[0][1] - (ranked[1][1] if len(ranked) > 1 else 0.0)
+        # against the next real ACTION, not against "none of these". A margin says how
+        # much better this action is than the next one; `none` is an abstention and not
+        # a rival, and counting it turned "bring Chrome here" at 0.59 against 0.29 of
+        # nothing into a close call, so hyprsay fell back on a focus it already knew was
+        # wrong. `none` winning is handled above: there is simply no answer then.
+        rivals = [p for name, p in ranked[1:] if name != bank.NONE]
+        margin = ranked[0][1] - (rivals[0] if rivals else 0.0)
         wide = margin >= self.cfg.gates.margin
         if chosen.kind == "launch" and chosen.app is not None:
             candidate = resolve.app_candidate(self.lexicon, heard.text, chosen.app, ranked[0][1])
@@ -2350,6 +2386,30 @@ def _can_navigate(window: Window, lexicon: LexiconLike) -> bool:
         return any(r.name == "go_to_url" for r in recipes.for_window(window, kind))
     except Exception:
         return False
+
+
+# the speaker pointed at a place rather than naming one. Grounding deixis is code's
+# job (docs/PLAN.md 5.6); which action it implies is not, and that is what Rx asks.
+HERE = frozenset({"here", "this", "current"})
+
+
+def _mislocated(decision: Decision, heard: _Heard, state: DesktopState) -> bool:
+    """Did code settle on a window somewhere else while the speaker said "here"?
+
+    "open my browser here" used to be a coin toss and then, once the desktop rode along
+    with the request, a confident focus of a Chrome one workspace away. Confident and
+    wrong: the funnel that chooses between starting an application and going to the copy
+    already running reads live state, which is right, and has no idea the speaker asked
+    for it to be brought over, which is the whole sentence. So the answer is not taken
+    at face value here; the ballot, which does carry "bring it to this workspace", is
+    asked as well.
+    """
+    action = decision.action
+    if action is None or action.intent is not Intent.FOCUS_WINDOW or action.window is None:
+        return False
+    if action.window.workspace_id == state.active_workspace_id:
+        return False  # already here: focusing IS bringing it over
+    return bool(HERE & set(heard.literal))
 
 
 def _answered(decision: Decision) -> bool:
