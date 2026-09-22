@@ -528,6 +528,18 @@ End-to-end estimate: about 0.7 to 1.0 s after key release with two sequential ne
 close to zero perceived if the search fires on a partial transcript while the key is still held.
 This is the single strongest argument for speculation in the entire plan, and it is a real one.
 
+**Superseded, and by the owner's own code.** `waytify` (`~/projects/waytify`) is a Rust daemon
+for media control built on MPRIS with a Spotify layer, and it already exposes `Search`,
+`PlayTrack` and `PlayContext` over newline-delimited JSON on a Unix socket, with its refresh
+token in the system keyring. It answers this section's question better than the CLI on four
+counts: search results arrive as structured `SearchResult` rows rather than a JSON blob to pick
+apart, there is no process spawn per query, the protocol is the same shape hyprsay already
+speaks to its own overlay, and a defect in it is one the owner can fix. So
+`adapters/waytify.py` is the route, `adapters/spotify.py` is demoted to the fallback its
+`can_serve` stands down from whenever the waytify socket exists, and the systemd unit that was
+going to keep the CLI's client warm is not needed: the daemon already is the warm client. The
+Premium prerequisite is unchanged, because it belongs to Spotify's own playback endpoints.
+
 ### 4.5 "Nowhere near intelligent"
 
 This one has no separate fix, and I am not going to pretend it does. It is the sum of 4.1
@@ -716,9 +728,10 @@ remaining delay.
 
 ### Phase 4. App adapters. Three to five days.
 
-`can_serve` / `capabilities` / `resolve` / `perform`. Spotify over `search` plus
-`start --id`, with a systemd user unit keeping the client warm. MPRIS context reader.
-`FileManager1`. `spectacle`'s six declared actions.
+`can_serve` / `capabilities` / `resolve` / `perform`. Spotify over waytify's `Search` plus
+`PlayTrack` and `PlayContext`, with `spotify_player` kept as the fallback for a machine that
+daemon is not on (see 4.4). MPRIS context reader. `FileManager1`. `spectacle`'s six declared
+actions.
 
 **Proves:** "play the second live version of X" works with no route in any table. Complaint 6,
 answered literally.

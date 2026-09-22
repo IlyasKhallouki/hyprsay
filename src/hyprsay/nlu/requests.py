@@ -177,12 +177,10 @@ def shown_title(window: Window, kind: str, privacy: Privacy) -> str:
     Class alone does not identify sensitive content (a private browser window has the
     browser's class), so patterns and terminal kinds redact too (PLAN section 7).
     """
-    classes = {window.cls.lower(), window.initial_class.lower()}
-    if classes & {c.lower() for c in privacy.redact_classes} or is_terminal(window, kind):
+    if privacy.redacts_class(window.cls, window.initial_class) or is_terminal(window, kind):
         return REDACTED
     title = scrub(window.title)
-    lowered = title.lower()
-    if any(p.lower() in lowered for p in privacy.redact_title_patterns if p):
+    if privacy.redacts_text(title):
         return REDACTED
     return scrub(title, privacy.title_chars)
 

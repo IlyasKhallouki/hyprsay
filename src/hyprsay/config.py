@@ -62,12 +62,38 @@ class Jev:
 
 @dataclass(frozen=True)
 class Privacy:
-    # "never": no window title ever leaves the machine.
-    # "when_needed": only to tell apart several windows of one app, and only theirs.
+    """What may be said about what you are doing, as opposed to what you asked for.
+
+    One key governs two kinds of text, because they are one kind of secret. A window
+    title can hold a mail subject or a bank page; a now-playing track title says what
+    you are watching or listening to, which is the same sentence about the same person
+    (docs/PRIVACY.md). So `titles` gates both, and the redaction lists below are run
+    over both.
+    """
+
+    # "never": no window title and no track title ever leaves the machine.
+    # "when_needed": only to tell apart several windows of one app, or several players
+    # that would otherwise carry the same label, and only theirs.
     titles: str = "when_needed"
     title_chars: int = 60
     redact_classes: tuple[str, ...] = ("keepassxc", "bitwarden", "1password", "org.gnome.seahorse")
     redact_title_patterns: tuple[str, ...] = ("private", "incognito", "vault", "password")
+
+    @property
+    def never(self) -> bool:
+        return self.titles == "never"
+
+    def redacts_class(self, *classes: str) -> bool:
+        """Is any of these window classes or player names one that is never described?"""
+        wanted = {c.lower() for c in self.redact_classes if c}
+        return any(c.lower() in wanted for c in classes if c)
+
+    def redacts_text(self, text: str) -> bool:
+        """Does the text itself say it is private? Class alone does not identify
+        sensitive content: an incognito window carries the browser's own class, and a
+        podcast episode about a diagnosis carries the player's."""
+        lowered = text.lower()
+        return any(p.lower() in lowered for p in self.redact_title_patterns if p)
 
 
 @dataclass(frozen=True)

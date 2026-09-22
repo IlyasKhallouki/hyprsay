@@ -6,6 +6,11 @@ corrections. It records utterances, so it is private by construction:
 - dictated text is never written. It is replaced by its length and a short hash,
   enough to tell two dictations apart and useless for recovering either.
 - window titles are dropped unless HYPRSAY_JOURNAL_TITLES=1.
+- what a media player is playing is dropped under the same flag, and for the same
+  reason: `xesam:title` says what the owner is watching or listening to, which is the
+  same sentence about the same person that a window title carries. The names come from
+  the two places it travels under, `adapters.mpris.Player.playing` and the raw MPRIS
+  `Metadata` dictionary, so a request body carrying either is scrubbed as it is written.
 - the file is created 0600 in a 0700 directory, capped in size, and rotated once.
 - HYPRSAY_JOURNAL=off disables it entirely.
 
@@ -36,9 +41,15 @@ def redact_text(text: str) -> dict[str, Any]:
     return {"redacted": True, "chars": len(text), "sha256_12": digest}
 
 
+# every name a "what is on this person's screen or in their ears" string travels under.
+# `title` is a window's; `playing` is the one `adapters.mpris.Player` carries; `Metadata`
+# and the `xesam:` keys are the raw MPRIS dictionary, in case a probe body is journaled.
+PRIVATE_NAMES = frozenset({"title", "playing", "metadata", "Metadata"})
+
+
 def _omitted(name: str, item: Any, keep_titles: bool) -> bool:
-    if name == "title":
-        return not keep_titles  # written by the window's owner, and often private
+    if name in PRIVATE_NAMES or name.startswith("xesam:"):
+        return not keep_titles  # written by the owner of the window or of the track
     return name in ("pcm", "raw") and isinstance(item, bytes | bytearray)  # audio
 
 
