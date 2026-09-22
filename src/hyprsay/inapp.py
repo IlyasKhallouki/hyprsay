@@ -44,6 +44,7 @@ from hypruse import server
 
 SCROLL = "scroll"
 CHORD = "chord"
+CLICK = "click"
 
 # amount 0 tiny .. 4 maximum, the scale the grammar already uses for resize and volume.
 # A notch is one wheel click, which most toolkits turn into three lines, so the middle
@@ -262,6 +263,24 @@ def refusal(
     # Page Down, Home and End are the keyboard's version of the wheel: they move a view
     # and can cause nothing, which is what tier 0 means in CHORD_TIERS. Refusing them
     # where a scroll is allowed would be a distinction only this file can see.
+    if gesture == CLICK:
+        # A click is not typing and must not be judged by the typing rule. It was, and
+        # the write was refused with "it is not known what kind of app google-chrome is,
+        # so typing is off" on a decision that had already resolved the real button in
+        # the real accessibility tree. The typing rule exists because a shell runs what
+        # it receives and code cannot know what a window will do with a string. A click
+        # is the opposite: the toolkit itself published that control, said it is a
+        # button and said it is enabled, so the window has already declared what will
+        # happen. What still applies is where the POINTER would land, and the one place
+        # a click may never go.
+        if window is None:
+            return "there is no window to click in"
+        grabbing = tiers.grabbing_layer(state, cfg)
+        if grabbing:
+            return f"{grabbing} has the screen, so a click would not reach that window"
+        if tiers._is_auth(window):
+            return "clicking inside an authentication dialog is not allowed"
+        return ""
     navigating = gesture == SCROLL or (keys and CHORD_TIERS.get(keys) == 0)
     if navigating:
         grabbing = tiers.grabbing_layer(state, cfg)

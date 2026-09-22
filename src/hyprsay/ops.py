@@ -599,7 +599,7 @@ def _click_control(action: Action, before: DesktopState) -> str:
     """
     window = _require_window(action)
     _address(window)
-    _authorize_gesture(window, before)
+    _authorize_gesture(window, before, inapp.CLICK)
     name = action.verb or ""
     try:
         found = controls.controls_for(window)
