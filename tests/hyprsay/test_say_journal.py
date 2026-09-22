@@ -216,3 +216,21 @@ def test_a_window_title_inside_a_request_body_is_not_journalled(monkeypatch, tmp
     written = journal.path().read_text()
     assert "Q3 salaries" not in written
     assert "Firefox" in written  # the app name is trusted and stays
+
+
+def test_what_a_media_player_is_playing_is_not_journalled_either(monkeypatch, tmp_path):
+    """docs/PRIVACY.md. `xesam:title` says what the owner is watching, which is the same
+    sentence a window title carries, so it is dropped under the same flag and by the same
+    rule, wherever it travels: as a `Player` field or as raw MPRIS metadata."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.delenv("HYPRSAY_JOURNAL", raising=False)
+    monkeypatch.delenv("HYPRSAY_JOURNAL_TITLES", raising=False)
+    secret = "Dr Smith explains my HIV test results"
+    journal.record(
+        "utterance",
+        players=[{"bus_name": "org.mpris.MediaPlayer2.chromium", "playing": secret}],
+        properties={"Metadata": {"xesam:title": secret, "xesam:album": "A Podcast"}},
+    )
+    written = journal.path().read_text()
+    assert secret not in written and "A Podcast" not in written
+    assert "chromium" in written  # the bus name is the bus daemon's word and stays
