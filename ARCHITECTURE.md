@@ -12,7 +12,8 @@ behind each decision, is [`docs/PLAN.md`](docs/PLAN.md).
  │ world.py        raw-socket client, fail-closed snapshots, live DesktopState            │
  │ activation.py   key down / key up, maximum hold, forced release on lock                │
  │ audio.py        capture, level meter, energy gate, abort() zeroes the buffer           │
- │ stt/            local (sherpa-onnx), gateway, hybrid                                   │
+ │ stt/            local (sherpa-onnx), gateway, hybrid, partials while the key is held   │
+ │ incremental.py  the settle rule: which clause of a half-spoken sentence may go now      │
  │ nlu/            normalize → grammar → Jev fan-out → resolve + corroborate → tiers      │
  │ jev/            the only code that talks to Jev: deadline, one retry, token cap        │
  │ lexicon.py      installed apps with TRUST, phonetic matching, corroboration            │
@@ -75,12 +76,22 @@ different questions.
 
 ```
 key down   locked? refuse.  Pin the focused window.  Open the mic.  Warm the Jev connection.
+held       every stt.chunk_ms: decode what has been said so far, understand it exactly the
+           way key up would, and carry out only the clauses that have SETTLED.
 key up     locked? drop the audio.  No voice? stop here.  Decode.  Understand.
            Local failed real speech? Ask the cloud about the same clip, once.
+           Skip the clauses the held path already carried out.
 decision   the verdict says how much ceremony the action needs
 act        executor: lock again, FRESH state, target still there with the same class,
            typing still on the pinned window.  Then one guarded hypruse call.
 ```
+
+A partial transcript is a prefix, and a prefix is a different sentence that happens to start
+the same way: "close this" becomes "close this tab", "open chrome" becomes "open chrome on
+workspace three". So a clause may go early only at tier 0 or 1, only once something proves it
+has ended (a further clause has begun, or the words stopped changing AND the energy gate says
+the room went quiet), and only once: what has been carried out is a character span of the
+utterance, spent once per hold. `incremental.py` is the whole rule and why each part is there.
 
 A lock at any point drops the utterance, cancels countdowns and badges, closes the microphone
 and zeroes its buffer. Hyprland emits no lock event and skips ordinary binds while locked, so

@@ -46,6 +46,30 @@ class STT:
     # Costs a permanently lit mic indicator; off by default.
     preroll: bool = False
     duck_volume: bool = False
+    # decode the hold as it happens and carry out a clause the moment it has settled,
+    # instead of waiting for the key to come up (`incremental.py` for the settle rule).
+    # False is exactly the old behaviour: buffer, release, decode once.
+    incremental: bool = True
+    # how often the growing buffer is decoded while the key is held. 400 ms is the middle
+    # of the range the owner asked for and roughly one spoken word, so a clause is noticed
+    # about as fast as a person would notice it.
+    chunk_ms: int = 400
+    # how many consecutive decodes must produce the same words before the LAST clause of a
+    # partial counts as finished. Two is about 800 ms of no new word at the default chunk.
+    # Raise it to trade speed for the "open chrome" / "open chrome on workspace three" risk.
+    settle_decodes: int = 2
+    # the streaming model the partials come from, or "" to re-decode the whole buffer with
+    # the ordinary local model. An absent model also falls back, with a log line.
+    #
+    # "" by default, against the first instinct and because of a measurement. The genuine
+    # online recognizer costs 1.5 ms per chunk against 91 ms, but it emits its words about
+    # 1.0 to 1.2 s behind the speaker, so the partial the settle rule reads is a sentence
+    # the speaker finished a second ago. Driven through it, "open chrome on workspace
+    # three" acted on "Open Chrome". Re-decoding is expensive and honest: the partial says
+    # what has been said, and it says it in the words the final decode will use. Set this
+    # to "kroko-en-streaming" for utterances long enough that a re-decode cannot keep up
+    # (past about four seconds), and read stt/stream.py before you do.
+    stream_model: str = ""
 
 
 @dataclass(frozen=True)
@@ -162,9 +186,18 @@ _CHOICES = {
     ("ptt", "transport"): {"event"},
     ("stt", "backend"): {"hybrid", "local", "cloud"},
     ("stt", "local_model"): {"parakeet-110m", "moonshine-tiny"},
+    ("stt", "stream_model"): {"kroko-en-streaming", ""},
     ("jev", "route"): {"typesafe", "evaluate"},
     ("privacy", "titles"): {"never", "when_needed"},
     ("hud", "position"): {"bottom", "top"},
+}
+
+# inclusive bounds for the numbers where an out of range value is not a preference but a
+# broken daemon: a 10 ms chunk would decode continuously and never let the compositor
+# near a core, and one settling decode is no evidence at all, it is the prefix bug.
+_LIMITS: dict[tuple[str, str], tuple[float, float]] = {
+    ("stt", "chunk_ms"): (100, 2000),
+    ("stt", "settle_decodes"): (2, 10),
 }
 
 
@@ -204,6 +237,10 @@ def _build(cls: type, data: dict[str, Any], path: str) -> Any:
         allowed = _CHOICES.get((path, name))
         if allowed and value not in allowed:
             raise ConfigError(f"{path}.{name} must be one of {sorted(allowed)}, got {value!r}")
+        limits = _LIMITS.get((path, name))
+        if limits and not limits[0] <= value <= limits[1]:
+            low, high = limits
+            raise ConfigError(f"{path}.{name} must be between {low:g} and {high:g}, got {value!r}")
         kwargs[name] = value
     return cls(**kwargs)
 

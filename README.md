@@ -157,6 +157,10 @@ than silently ignored.
 [stt]
 backend = "hybrid"          # "local": audio never leaves.  "cloud": always use the gateway
 cloud_model = "fish-audio/transcribe-1"
+incremental = true          # carry out a clause while the key is still held
+chunk_ms = 400              # how often the growing buffer is decoded during a hold
+settle_decodes = 2          # identical decodes before a trailing clause counts as finished
+stream_model = ""           # "kroko-en-streaming" for a genuine online recognizer
 
 [privacy]
 titles = "when_needed"      # or "never"

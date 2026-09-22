@@ -72,6 +72,26 @@ REGISTRY: dict[str, ModelSpec] = {
             license="CC-BY-4.0",
         ),
         ModelSpec(
+            # the ONLY streaming model here, and the one the incremental path wants: its
+            # encoder is causal, so a decode costs the new audio and not the whole buffer
+            # (stt/stream.py has the measurement). It writes cased text with punctuation,
+            # like Parakeet and unlike the LibriSpeech zipformers, which matters because
+            # `understand._seams` proposes a seam at a comma and lower cases before it does.
+            name="kroko-en-streaming",
+            directory="sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06",
+            kind="streaming_transducer",
+            files={
+                "tokens": "tokens.txt",
+                "encoder": "encoder.onnx",
+                "decoder": "decoder.onnx",
+                "joiner": "joiner.onnx",
+            },
+            # NOT one of the permissive licences the other two carry. Banafo publishes the
+            # free Kroko models under a non-commercial licence, so this one is opt-in and
+            # the incremental path falls back to re-decoding when it is absent.
+            license="see https://huggingface.co/Banafo/Kroko-ASR",
+        ),
+        ModelSpec(
             name="moonshine-tiny",
             directory="sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27",
             kind="moonshine_v2",

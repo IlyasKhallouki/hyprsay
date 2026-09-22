@@ -66,8 +66,9 @@ class Ptt:
 
 
 class Recorder:
-    def __init__(self, *, spoke=True, pcm=PCM, fails=False):
+    def __init__(self, *, spoke=True, pcm=PCM, fails=False, quiet=True):
         self.spoke, self.pcm, self.fails = spoke, pcm, fails
+        self.quiet = quiet  # has the room been silent since the last word
         self.started = self.stopped = self.aborted = 0
 
     def start(self):
@@ -79,6 +80,9 @@ class Recorder:
         self.stopped += 1
         return self.pcm
 
+    def snapshot(self):
+        return self.pcm
+
     def abort(self):
         self.aborted += 1
 
@@ -87,6 +91,9 @@ class Recorder:
 
     def voiced_after(self, seconds):
         return self.spoke
+
+    def trailing_silence(self, ms):
+        return self.quiet
 
 
 class Recognizer:
@@ -917,3 +924,403 @@ def test_a_single_decision_still_behaves_exactly_as_it_did_before():
     assert p["executor"].executed == [FOCUS]
     assert p["executor"].pins == ["0x1"]
     assert p["hud"].states[-1] == "act"
+
+
+# ------------------------------------------------------- while the key is still held
+
+DOWN = Action(Intent.VOLUME, verb="down")
+
+
+class Partials:
+    """A recognizer that hands out a scripted sequence of partial transcripts.
+
+    One per chunk, in the order they were written, and then nothing at all. An empty
+    partial is what a decoder returns when no new word has landed, and the held path
+    skips it, so a script can run out without the engine noticing anything unusual.
+    """
+
+    def __init__(self, *texts):
+        self.name = "stream:fake"
+        self.texts = list(texts)
+        self.warmed = self.opened = self.closed = 0
+        self.heard: list[int] = []
+        # set once every scripted partial has been through the WHOLE held path, or once
+        # the held path has given up. Either way there is nothing more to wait for.
+        self.drained = asyncio.Event()
+
+    async def warm(self):
+        self.warmed += 1
+
+    def open(self):
+        self.opened += 1
+        return Listening(self)
+
+
+class Listening:
+    def __init__(self, owner):
+        self.owner = owner
+        self.at = 0
+
+    async def hear(self, pcm, sample_rate=16000):
+        self.owner.heard.append(len(pcm))
+        if self.at >= len(self.owner.texts):
+            self.owner.drained.set()
+            return ""
+        self.at += 1
+        return self.owner.texts[self.at - 1]
+
+    def close(self):
+        self.owner.closed += 1
+        self.owner.drained.set()
+
+
+class Exploding(Partials):
+    def open(self):
+        self.opened += 1
+        return Bursting(self)
+
+
+class Bursting(Listening):
+    async def hear(self, pcm, sample_rate=16000):
+        raise RuntimeError("the streaming model fell over")
+
+
+class Remembering(Understander):
+    """An understander that keeps what it was told, the way the real one keeps turns."""
+
+    def __init__(self, decisions):
+        super().__init__(decisions)
+        self.context = ()
+        self.pending = None
+
+    async def understand(self, transcript, state, *, pinned_address="", picking=()):
+        decision = await super().understand(
+            transcript, state, pinned_address=pinned_address, picking=picking
+        )
+        self.context = (transcript.text, *self.context)
+        return decision
+
+
+class Timing(Executor):
+    """Records whether the key was still down when each action was written."""
+
+    def __init__(self, ptt, **parts):
+        super().__init__(**parts)
+        self.ptt = ptt
+        self.while_held: list[bool] = []
+
+    def execute(self, action, *, pinned_address=""):
+        self.while_held.append(self.ptt.held)
+        return super().execute(action, pinned_address=pinned_address)
+
+
+def chunks(ms=1):
+    """A chunk interval in milliseconds, so a scripted hold runs in about no time."""
+    return replace(Config(), stt=replace(Config().stt, chunk_ms=ms))
+
+
+def held(decisions, *texts, cfg=None, **parts):
+    """An engine whose hold decodes `texts` one chunk at a time."""
+    ptt = parts.pop("ptt", Ptt())
+    built = {"ptt": ptt, "partials": Partials(*texts), "executor": Timing(ptt)}
+    built.update(parts)
+    return engine(decisions, cfg=cfg or chunks(), **built)
+
+
+async def hold(e, p, reason="key"):
+    """Press, let the whole script be decoded and acted on, release."""
+    p["ptt"].held = True
+    await e._key_down()
+    await asyncio.wait_for(p["partials"].drained.wait(), 5)
+    p["ptt"].held = False
+    await e._stop_listening()
+    await e._key_up(reason)
+
+
+def test_the_first_clause_of_a_two_clause_utterance_runs_before_the_key_comes_up():
+    e, p = held(
+        {
+            "open": Decision(Verdict.NOTHING),
+            "open spotify": Decision(Verdict.ACT, LAUNCH, heard="open spotify"),
+            "open spotify and turn": Decision(
+                Verdict.ACT,
+                LAUNCH,
+                heard="open spotify",
+                rest=(Decision(Verdict.ACT, DOWN, heard="turn"),),
+            ),
+            "focus firefox": Decision(
+                Verdict.ACT,
+                LAUNCH,
+                heard="open spotify",
+                rest=(Decision(Verdict.ACT, DOWN, heard="turn it down"),),
+            ),
+        },
+        "open",
+        "open spotify",
+        "open spotify and turn",
+    )
+    run(hold(e, p))
+    assert p["executor"].executed == [LAUNCH, DOWN]
+    # the launch while the key was down, the volume after it came up: the whole point
+    assert p["executor"].while_held == [True, False]
+
+
+def test_a_prefix_whose_meaning_changes_is_never_acted_on_early():
+    # "open chrome" and "open chrome on workspace 3" are different commands that start
+    # the same way, and no two consecutive decodes ever said the same thing
+    e, p = held(
+        {
+            "open chrome": Decision(Verdict.ACT, LAUNCH, heard="open chrome"),
+            "open chrome on": Decision(Verdict.ACT, LAUNCH, heard="open chrome on"),
+            "open chrome on workspace": Decision(
+                Verdict.ACT, LAUNCH, heard="open chrome on workspace"
+            ),
+            "focus firefox": Decision(Verdict.ACT, MOVE, heard="open chrome on workspace 3"),
+        },
+        "open chrome",
+        "open chrome on",
+        "open chrome on workspace",
+    )
+    run(hold(e, p))
+    assert p["executor"].executed == [MOVE]
+    assert p["executor"].while_held == [False]
+
+
+def test_a_tier_two_clause_is_never_carried_out_early():
+    closing = Decision(Verdict.ACT, CLOSE, tier=2, heard="close this")
+    e, p = held(
+        {
+            "close this": closing,
+            "close this and open kitty": replace(
+                closing, rest=(Decision(Verdict.ACT, LAUNCH, heard="open kitty"),)
+            ),
+            "focus firefox": replace(
+                closing, rest=(Decision(Verdict.ACT, LAUNCH, heard="open kitty"),)
+            ),
+        },
+        "close this",
+        "close this",
+        "close this and open kitty",
+    )
+    run(hold(e, p))
+    # two identical decodes settled it and a further clause began behind it. Neither is
+    # enough: a close is not reversible, so it waits for the whole utterance
+    assert p["executor"].while_held == [False, False]
+    assert p["executor"].executed == [CLOSE, LAUNCH]
+
+
+def test_a_clause_carried_out_early_is_never_carried_out_again():
+    same = Decision(
+        Verdict.ACT, LAUNCH, heard="open spotify", rest=(Decision(Verdict.ACT, DOWN, heard="turn"),)
+    )
+    e, p = held(
+        {
+            "open spotify and turn": same,
+            "open spotify and turn it": same,
+            "open spotify and turn it down": same,
+            "focus firefox": replace(
+                same, rest=(Decision(Verdict.ACT, DOWN, heard="turn it down"),)
+            ),
+        },
+        "open spotify and turn",
+        "open spotify and turn it",
+        "open spotify and turn it down",
+    )
+    run(hold(e, p))
+    assert p["executor"].executed.count(LAUNCH) == 1
+    assert p["executor"].executed == [LAUNCH, DOWN]
+
+
+def test_a_lock_in_the_middle_of_an_utterance_drops_everything_after_it():
+    latch = Latch()
+    first = Decision(
+        Verdict.ACT, LAUNCH, heard="open spotify", rest=(Decision(Verdict.ACT, DOWN, heard="turn"),)
+    )
+    e, p = held(
+        {
+            "open spotify and turn": first,
+            "open spotify and turn it down": first,
+            "focus firefox": first,
+        },
+        "open spotify and turn",
+        "open spotify and turn it down",
+        latch=latch,
+    )
+
+    class Locking(Timing):
+        def execute(self, action, *, pinned_address=""):
+            latch.value = True  # the screen goes dark between the two clauses
+            return super().execute(action, pinned_address=pinned_address)
+
+    e.executor = p["executor"] = Locking(p["ptt"])
+    run(hold(e, p))
+    assert p["executor"].executed == [LAUNCH]
+    assert p["hud"].states[-1] == "refused"
+
+
+def test_an_utterance_whose_clauses_all_settle_early_leaves_the_key_up_nothing_to_run():
+    both = Decision(
+        Verdict.ACT,
+        LAUNCH,
+        heard="open spotify",
+        rest=(Decision(Verdict.ACT, DOWN, heard="turn it down"),),
+    )
+    e, p = held(
+        {"open spotify and turn it down": both, "focus firefox": both},
+        "open spotify and turn it down",
+        "open spotify and turn it down",
+    )
+    run(hold(e, p))
+    assert p["executor"].executed == [LAUNCH, DOWN]
+    assert p["executor"].while_held == [True, True]
+    assert p["hud"].sent[-1]["state"] == "heard"
+    assert "launch app" in p["hud"].sent[-1]["chip"]
+
+
+def test_a_clause_the_executor_refuses_early_leaves_the_whole_utterance_to_the_key_up():
+    first = Decision(
+        Verdict.ACT, LAUNCH, heard="open spotify", rest=(Decision(Verdict.ACT, DOWN, heard="turn"),)
+    )
+    e, p = held(
+        {"open spotify and turn": first, "focus firefox": first},
+        "open spotify and turn",
+        "open spotify and turn",
+    )
+    p["executor"].outcomes = {Intent.LAUNCH_APP: Outcome(False, "no such application")}
+    run(hold(e, p))
+    # attempted early, refused, nothing consumed, and the key up tried the chain in full
+    assert p["executor"].executed == [LAUNCH, LAUNCH]
+    assert p["executor"].while_held == [True, False]
+
+
+def test_the_held_path_never_remembers_a_partial_as_a_command():
+    decisions = {
+        "open spotify": Decision(Verdict.ACT, LAUNCH, heard="open spotify"),
+        "open spotify and turn": Decision(
+            Verdict.ACT,
+            LAUNCH,
+            heard="open spotify",
+            rest=(Decision(Verdict.ACT, DOWN, heard="turn"),),
+        ),
+        "focus firefox": Decision(
+            Verdict.ACT,
+            LAUNCH,
+            heard="open spotify",
+            rest=(Decision(Verdict.ACT, DOWN, heard="turn it down"),),
+        ),
+    }
+    e, p = held(
+        decisions,
+        "open spotify",
+        "open spotify and turn",
+        understander=Remembering(decisions),
+    )
+    run(hold(e, p))
+    # one sentence, remembered once. Six copies of it would push the command before it
+    # out of a three turn memory and change what "it" and "again" resolve to
+    assert p["understander"].context == ("focus firefox",)
+
+
+def test_the_stamp_a_partial_made_is_never_left_for_the_key_up_to_spend():
+    e, p = held(
+        {
+            "open spotify": Decision(Verdict.ACT, LAUNCH, heard="open spotify"),
+            "focus firefox": Decision(Verdict.ACT, CLOSE, tier=2, heard="close this"),
+        },
+        "open spotify",
+    )
+    run(hold(e, p))
+    assert e._stamp == ""  # spent by the key up, not carried over from a partial
+
+
+def test_numbered_badges_from_the_last_utterance_keep_the_held_path_quiet():
+    e, p = held({"focus firefox": Decision(Verdict.ACT, FOCUS)}, "two")
+
+    async def go():
+        e._arm_picking((Candidate("Firefox", WINDOW),), 10.0)
+        p["ptt"].held = True
+        await e._key_down()
+
+    run(go())
+    # a partial of "two hundred percent" reads as "two", and a number answers a question
+    assert p["partials"].opened == 0
+
+
+def test_a_partial_decode_that_falls_over_costs_the_shortcut_and_nothing_else():
+    e, p = held({"focus firefox": Decision(Verdict.ACT, FOCUS)}, "open spotify")
+    e.partials = p["partials"] = Exploding("open spotify")
+    run(hold(e, p))
+    assert p["executor"].executed == [FOCUS]
+
+
+def test_the_streaming_model_is_loaded_at_startup_beside_the_offline_one():
+    e, p = held({"focus firefox": Decision(Verdict.ACT, FOCUS)}, "open spotify")
+    run(e._warm_speech())
+    assert p["partials"].warmed == 1
+
+
+def test_nothing_is_decoded_during_a_hold_when_there_is_no_incremental_recognizer():
+    e, p = engine(partials=None)
+    run(utter(e, p))
+    assert p["executor"].executed == [FOCUS]
+    assert e._listening is None
+
+
+async def again(e, p, *texts):
+    """A second hold on the same engine, with its own script."""
+    p["partials"].texts = list(texts)
+    p["partials"].drained.clear()
+    await hold(e, p)
+
+
+def test_each_hold_starts_with_nothing_spent():
+    first = Decision(
+        Verdict.ACT, LAUNCH, heard="open spotify", rest=(Decision(Verdict.ACT, DOWN, heard="turn"),)
+    )
+    e, p = held(
+        {"open spotify and turn": first, "focus firefox": first},
+        "open spotify and turn",
+    )
+
+    async def go():
+        await hold(e, p)
+        assert p["executor"].executed == [LAUNCH, DOWN]
+        await again(e, p, "open spotify and turn")
+
+    run(go())
+    # the second hold must not think the first clause of ITS utterance is already spent
+    assert p["executor"].executed == [LAUNCH, DOWN, LAUNCH, DOWN]
+
+
+def test_the_session_of_one_hold_is_closed_and_never_reused_by_the_next():
+    # the online stream carries the encoder state of ONE utterance, and a stream kept
+    # across holds would let the tail of a released command steer the one being said now
+    e, p = held(
+        {"open spotify": Decision(Verdict.NOTHING), "focus firefox": Decision(Verdict.ACT, FOCUS)},
+        "open spotify",
+    )
+
+    async def go():
+        await hold(e, p)
+        await again(e, p, "open spotify")
+
+    run(go())
+    assert p["partials"].opened == 2 and p["partials"].closed == 2
+
+
+def test_a_clause_that_stopped_changing_while_the_speaker_kept_talking_waits():
+    # the decoder is a second behind and the microphone says so. Two identical decodes
+    # are the decoder standing still, not the speaker, and only the microphone knows
+    e, p = held(
+        {
+            "open chrome": Decision(Verdict.ACT, LAUNCH, heard="open chrome"),
+            "focus firefox": Decision(Verdict.ACT, MOVE, heard="open chrome on workspace 3"),
+        },
+        "open chrome",
+        "open chrome",
+        "open chrome",
+        recorder=Recorder(quiet=False),
+    )
+    run(hold(e, p))
+    assert p["executor"].executed == [MOVE]
+    assert p["executor"].while_held == [False]

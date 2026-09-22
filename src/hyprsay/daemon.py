@@ -8,10 +8,21 @@ process-global state.
 The order of checks is the safety design, not an implementation detail:
 
     key down   -> locked? refuse. Pin the focused window. Open the mic. Warm Jev.
+    held       -> every stt.chunk_ms: locked? drop. Decode what has been said so far,
+                  understand it exactly as key up would, and carry out the clauses that
+                  have SETTLED (incremental.py owns that word, and tiers 2 and 3 never do)
     key up     -> locked? drop the audio. Decode. Understand. (Cloud rescue, once.)
+                  Skip the clauses the held path already carried out.
     decision   -> stamp it with the desktop it was decided against
     act        -> consume the stamp, refuse a moved desktop above tier 1, then the
                   executor re-checks the lock and the target against FRESH state
+
+The held path is a shortcut through the same machine, never around it. It calls the same
+`understand`, with the same pinned address, behind the same lock checks, and carries the
+clause out through the same `_one`, so the executor still re-checks against fresh state
+and the stamp is still consumed once. All it changes is WHEN, and `incremental.Settler`
+is the only thing that decides that. What it must never do is act on a clause twice:
+that is a character span of the utterance, held for one hold, spent once.
 
 A session lock at any point drops the utterance, cancels any countdown, closes the
 microphone and zeroes the buffer. Hyprland skips ordinary binds while locked, so the
@@ -36,7 +47,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from . import journal, ops
+from . import incremental, journal, ops
 from .config import Config
 from .model import Action, Candidate, Decision, Intent, Outcome, Transcript, Verdict
 from .nlu import context
@@ -49,15 +60,22 @@ MIN_UTTERANCE_S = 0.25
 CONFIRM_TAP_S = 0.5
 CONFIRM_WINDOW_S = 4.0
 LOCK_POLL_S = 0.25
+# how long the room must have been quiet before a trailing clause counts as finished.
+# Identical decodes only prove the decoder has not moved; this is the one reading in the
+# system that says the SPEAKER has not. Longer than a gap between words, shorter than a
+# pause anyone would sit through with the key still held.
+SETTLE_SILENCE_MS = 350.0
 
 
 class Engine:
     def __init__(self, cfg: Config, *, world, ptt, recorder, recognizer, understander, executor,
-                 latch, hud, jev=None) -> None:  # fmt: skip
+                 latch, hud, jev=None, partials=None) -> None:  # fmt: skip
         self.cfg = cfg
         self.world, self.ptt, self.recorder = world, ptt, recorder
         self.recognizer, self.understander = recognizer, understander
         self.executor, self.latch, self.hud, self.jev = executor, latch, hud, jev
+        # what decodes the hold as it happens, or None for "buffer, release, decode once"
+        self.partials = partials
         # one thread: the inherited core is not safe to call concurrently
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hyprsay-act")
         self._pinned = ""
@@ -78,6 +96,14 @@ class Engine:
         self._cancelled = False
         self._running: set[asyncio.Task] = set()
         self._pipeline = asyncio.Lock()
+        # the consumed prefix of the hold in progress. Rebuilt on every key down, because
+        # "the first two clauses are spent" is a statement about ONE utterance and
+        # carrying it into the next one would skip a command nobody ever ran.
+        self._settler = incremental.Settler(stable_decodes=cfg.stt.settle_decodes)
+        self._done_early: list[str] = []
+        self._listening: asyncio.Task | None = None
+        self._listen_stop = False
+        self._chunk_ms: list[float] = []
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -99,7 +125,11 @@ class Engine:
                         # second or more. Awaiting it here meant the next key press
                         # opened the microphone that much late and the first word of
                         # the next command was lost, so it runs alongside instead.
-                        self._track(self._key_up(event.reason))
+                        #
+                        # The held path is stopped FIRST and outside the pipeline lock.
+                        # It takes that lock itself to act, so a `_key_up` that waited
+                        # for it while already holding the lock would wait for ever.
+                        self._track(self._key_up(event.reason), first=self._stop_listening())
                 except Exception:  # one bad utterance must never kill the daemon
                     log.exception("utterance failed")
                     await self._show("refused", text="internal error, see the log")
@@ -110,10 +140,16 @@ class Engine:
             with contextlib.suppress(Exception):
                 await self.hud.close()
 
-    def _track(self, coro) -> asyncio.Task:
-        """Run an utterance to its end without holding up the next key press."""
+    def _track(self, coro, *, first=None) -> asyncio.Task:
+        """Run an utterance to its end without holding up the next key press.
+
+        `first` is awaited before the pipeline lock is taken, for the one thing that has
+        to finish before this utterance starts and cannot be waited for from inside it.
+        """
 
         async def guarded() -> None:
+            if first is not None:
+                await first
             # one at a time: the executor has a single worker, and two pipelines racing
             # would interleave their overlay states
             async with self._pipeline:
@@ -137,6 +173,10 @@ class Engine:
         first thing anyone said waited 2 to 6 s, and a SIGTERM during that load hung the
         shutdown. One throwaway inference follows the load because the first real decode
         is the slow one too (450 ms measured, against about 165 ms after it).
+
+        The streaming model is loaded here too, and for a sharper version of the same
+        reason: it measured 5.7 s to load, so a lazy load inside the first chunk would
+        not merely be late, it would swallow the whole first utterance.
         """
         warm = getattr(self.recognizer, "warm", None)
         if warm is None:
@@ -145,6 +185,8 @@ class Engine:
         try:
             await warm()
             await self.recognizer.transcribe(b"\0\0" * 3200, 16000)
+            if self.partials is not None:
+                await self.partials.warm()
         except Exception as exc:
             log.warning("speech model is not ready: %s", exc)
             await self._show("refused", text=f"speech model: {exc}", ttl_ms=6000)
@@ -162,6 +204,10 @@ class Engine:
     _loop: asyncio.AbstractEventLoop | None = None
 
     def _forget_everything(self, why: str) -> None:
+        # the held path drops the rest of the utterance here rather than at its own next
+        # check, because a lock that lands between two clauses must not let the second one
+        # through on the strength of a decode taken before the screen went dark
+        self._listen_stop = True
         self._cancel_pending(why, forget_badges=True)
 
     def _cancel_pending(self, why: str, *, forget_badges: bool = False) -> None:
@@ -186,6 +232,10 @@ class Engine:
     async def _key_down(self) -> None:
         self._loop = asyncio.get_running_loop()
         now = time.monotonic()
+        # the previous hold's held path, if the key came back down before it noticed. It
+        # is stopped here and not in `_key_up` because this is the one place that runs
+        # outside the pipeline lock the held path itself wants.
+        await self._stop_listening()
         # a key press while a tier 3 action waits for its confirming tap
         if self._confirm is not None and not self._confirm.done():
             self._down_at = now
@@ -209,6 +259,7 @@ class Engine:
         await self._show("hearing", level=0.0)
         self._meter = asyncio.create_task(self._run_meter())
         self._ensure_lock_watch()
+        self._start_listening(self._pinned)
 
     def _ensure_lock_watch(self) -> None:
         if self._lock_watch is None or self._lock_watch.done():
@@ -234,6 +285,169 @@ class Engine:
                     {"t": "state", "state": "hearing", "level": self.recorder.level()}
                 )
 
+    # ------------------------------------------------------------------ while it is said
+
+    def _start_listening(self, pinned: str) -> None:
+        """Begin decoding this hold as it happens, if anything is configured to.
+
+        Not while numbered badges are up. The next utterance may be a bare number then,
+        and half of one is still a number: a partial of "two hundred percent" reads as
+        "two" and would answer a question the speaker was not answering.
+        """
+        self._settler.reset()
+        self._done_early = []
+        self._chunk_ms = []
+        self._listen_stop = False
+        live_badges = self._picking and time.monotonic() < self._picking_until
+        if self.partials is None or live_badges:
+            return
+        self._listening = asyncio.create_task(self._listen(pinned))
+
+    async def _stop_listening(self) -> None:
+        """Let the held path finish what it is doing, then leave it stopped.
+
+        Awaited, never cancelled: the task may be part way through writing to the desktop,
+        and a cancellation there would leave the settler saying a clause was not carried
+        out when it was, which is how the same command runs twice. The wait is one decode
+        plus at most one clause, so 1 to 90 ms of decode on the streaming path.
+        """
+        self._listen_stop = True
+        task, self._listening = self._listening, None
+        if task is not None and not task.done():
+            with contextlib.suppress(Exception):
+                await task
+
+    async def _listen(self, pinned: str) -> None:
+        """Decode the growing buffer every chunk and carry out whatever has settled.
+
+        Nothing here decides anything. It gathers a partial transcript, hands it to the
+        same understander `_key_up` uses, and asks `incremental.Settler` which clauses may
+        go now. The loop ends on the key coming up, on a lock, and on the first clause
+        that was offered and did not act: a later clause is an order that assumes the
+        earlier one happened (`_chain` says the same), so once one has not happened the
+        rest of the utterance belongs to the decode on key up and to nothing else.
+        """
+        # not clamped here: `config._LIMITS` already refuses anything outside 100 to
+        # 2000 ms from a config file, and a test wants to run its script in milliseconds
+        interval = self.cfg.stt.chunk_ms / 1000.0
+        session = self.partials.open()
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                if self._listen_stop or not self.ptt.held:
+                    return
+                pcm = self.recorder.snapshot()
+                # the same two bars key up applies before it decodes anything: a stray
+                # press and a held key with nobody talking are not utterances, and above
+                # all they are not audio to hand to a model
+                if len(pcm) / 2 / 16000 < MIN_UTTERANCE_S or not self.recorder.voiced_after(0.0):
+                    continue
+                started = time.perf_counter()
+                text = await session.hear(pcm)
+                self._chunk_ms.append(round((time.perf_counter() - started) * 1000, 1))
+                if self._listen_stop or not self.ptt.held:
+                    # the key came up while that decode was running. Returning rather than
+                    # looping is what keeps `_stop_listening` to one decode instead of one
+                    # decode plus a whole chunk interval of sleeping
+                    return
+                if not text.strip():
+                    continue
+                async with self._pipeline:
+                    if not await self._early(text, pinned):
+                        return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # a fault in the shortcut must cost the shortcut and nothing else: the key is
+            # still down and the decode on key up still has the whole utterance
+            log.exception("the incremental decode failed; the key up still decides")
+        finally:
+            session.close()
+
+    async def _early(self, text: str, pinned: str) -> bool:
+        """One partial: understand it, act on what has settled, say whether to keep going.
+
+        False ends the held path for this hold. Every route to False leaves the rest of
+        the utterance to the decode on key up, which is the safe place for it to be.
+        """
+        if self._picking and time.monotonic() < self._picking_until:
+            # the utterance before this one put badges up while we were holding the key.
+            # A partial answered against them would be read as a number (understand._pick)
+            return False
+        if await self._locked_now():
+            await self._drop_for_lock()
+            return False
+        borrowed = self._borrow()
+        decision = await self._understand(Transcript(text, backend=self.partials.name), pinned)
+        if await self._locked_now():
+            # NOT given back: a lock means nothing said before now is in force, and
+            # `_drop_for_lock` has already told the understander to forget it
+            await self._drop_for_lock()
+            return False
+        chain = (decision, *decision.rest)
+        # asked AFTER the decode, so the silence it reports is the silence that followed
+        # the words the decode just produced rather than the silence before them
+        quiet = self.recorder.trailing_silence(SETTLE_SILENCE_MS)
+        look = self._settler.look(text, chain, quiet=quiet)
+        for ready in look.ready:
+            # the key may have come up, or the screen locked, between two clauses of one
+            # partial as easily as between two partials
+            if self._listen_stop or not self.ptt.held:
+                self._give_back(borrowed)
+                return False
+            if await self._locked_now():
+                await self._drop_for_lock()
+                return False
+            journal.record(
+                "early",
+                # what it did and never what was said: `_chip` makes that cut because a
+                # recipe's spoken span is the speaker's words, exactly as dictation is
+                did=_chip(ready.decision),
+                why=ready.why,
+                span=list(ready.span),
+                tier=ready.decision.tier,
+                backend=self.partials.name,
+            )
+            if not await self._one(ready.decision, pinned, chained=True):
+                self._give_back(borrowed)
+                return False
+            self._settler.take(ready)
+            self._done_early.append(_chip(ready.decision))
+        self._give_back(borrowed)
+        return True
+
+    def _borrow(self) -> tuple:
+        """Everything a partial is about to overwrite that belongs to the real utterance.
+
+        Every `understand` remembers what it decided (`nlu/context.remembered`) and that
+        memory is evidence in the next request and in how "it" and "again" resolve. One
+        sentence decoded six times while the key is held would fill a three turn memory
+        with six copies of itself and push the command before it out, so the held path
+        hands the memory back exactly as it found it. The utterance is remembered once,
+        by the decode on key up, which is also the only decode that saw all of it.
+
+        The stamp goes back for a different reason: it is the fingerprint of the desktop
+        that ONE decision was made against, `_carry_out` spends it, and a partial's
+        decision is never the one that gets spent. Leaving a partial's stamp behind would
+        let a tier 2 action on key up pass a freshness check it never sat for.
+
+        A `provisional=True` on `understand` would be cleaner than reaching in here; it
+        is written up in scratchpad/streaming-asks.md.
+        """
+        held = {
+            name: getattr(self.understander, name)
+            for name in ("context", "pending")
+            if hasattr(self.understander, name)
+        }
+        return held, self._stamp, self._resume
+
+    def _give_back(self, borrowed: tuple) -> None:
+        """Put it all back. Never called on the lock path: there, forgetting is the point."""
+        held, stamp, resume = borrowed
+        for name, value in held.items():
+            setattr(self.understander, name, value)
+        self._stamp, self._resume = stamp, resume
+
     # ------------------------------------------------------------------ key up
 
     async def _key_up(self, reason: str) -> None:
@@ -248,8 +462,10 @@ class Engine:
         # ask BEFORE stopping: stop() wipes the recorder's own buffers
         spoke = self.recorder.voiced_after(0.0)
         pcm = self.recorder.stop()
-        # captured now: a second key press may repin before this utterance is understood
+        # captured now: a second key press may repin before this utterance is understood,
+        # and the same press would hand the next hold a fresh settler
         pinned = self._pinned
+        settler, done_early = self._settler, list(self._done_early)
         if reason == "locked" or self.latch.locked():
             await self._show("refused", text="session is locked", ttl_ms=1500)
             return
@@ -292,6 +508,15 @@ class Engine:
 
         if await self._locked_now():
             return await self._drop_for_lock()
+        # where the held path got to, measured against the FULL utterance rather than
+        # against the partial it acted on: this is the only decode that saw the whole
+        # sentence, so it is the only place the consumed span means anything final
+        spent = settler.look(transcript.text, (decision, *decision.rest), growing=False)
+        if spent.drifted:
+            # the partials and this decode heard the same audio differently. The clause
+            # still counts as spent, because running a command twice is worse than the
+            # overlay naming it with slightly different words
+            log.info("the held path acted on %s, this decode reads them otherwise", spent.drifted)
         journal.record(
             "utterance",
             seconds=round(seconds, 2),
@@ -303,8 +528,11 @@ class Engine:
             decision=decision,
             ms=round((time.perf_counter() - started) * 1000),
             exchange=getattr(self.understander, "last_exchange", None),
+            early=spent.consumed_index,
+            early_chars=spent.consumed_chars,
+            chunk_ms=list(self._chunk_ms),
         )
-        await self._carry_out(decision, pinned)
+        await self._carry_out(decision, pinned, skip=spent.consumed_index, done=done_early)
 
     async def _locked_now(self) -> bool:
         """Ask the latch, off the loop: it may shell out to loginctl."""
@@ -332,7 +560,17 @@ class Engine:
 
     # ------------------------------------------------------------------ decisions
 
-    async def _carry_out(self, d: Decision, pinned: str | None = None) -> None:
+    async def _carry_out(
+        self,
+        d: Decision,
+        pinned: str | None = None,
+        *,
+        skip: int = 0,
+        done: list[str] | None = None,
+    ) -> None:
+        """`skip` is how many leading clauses the held path already carried out, and
+        `done` is what to call them on the overlay. Both are zero and empty for an
+        utterance nobody listened to while it was being said."""
         self._picking = ()
         # consumed before anything is written, so one decision can only act once: a
         # retry, a second key press or a chain restarting finds nothing to spend
@@ -342,8 +580,8 @@ class Engine:
         if stale:
             await self._show("refused", text=stale, ttl_ms=3000)
             return
-        if d.rest:
-            await self._chain(d, pinned)
+        if d.rest or skip:
+            await self._chain(d, pinned, skip=skip, done=done)
             return
         if resume is None:
             await self._one(d, pinned)
@@ -386,7 +624,9 @@ class Engine:
             return "the desktop changed while that was being decided, so nothing was done"
         return ""
 
-    async def _chain(self, first: Decision, pinned: str | None) -> None:
+    async def _chain(
+        self, first: Decision, pinned: str | None, *, skip: int = 0, done: list[str] | None = None
+    ) -> None:
         """One step at a time, on the one worker, stopping the moment one does not act.
 
         A step is a clause the seam Booleans cut out of the utterance, or a slot of the
@@ -402,8 +642,25 @@ class Engine:
         look like, which is exactly the failure v1 had, only faster.
 
         A question is not one of those. See `_ask_on`.
+
+        `skip` is the clauses the held path already carried out while the key was down.
+        They are skipped and not re-run, which is the whole promise of the consumed span:
+        the same command never runs twice. They still count towards "part 3 of 4", because
+        the speaker said four things and one of them happening early does not make it
+        stop being the first one.
         """
-        await self._steps((first, *first.rest), pinned, done=[], offset=0, heard=first.heard)
+        clauses = (first, *first.rest)
+        done = list(done or [])
+        if skip >= len(clauses):
+            # everything settled while the key was still down. Nothing is left to run, and
+            # the utterance is told to the understander as having acted, because the only
+            # calls that would have said so were the steps that are not happening here
+            await self._show("heard", text=first.heard, chip="; ".join(done), ttl_ms=2500)
+            acted = getattr(self.understander, "acted", None)
+            if acted is not None:
+                acted(True)
+            return
+        await self._steps(clauses[skip:], pinned, done=done, offset=skip, heard=first.heard)
 
     async def _steps(
         self,
@@ -650,6 +907,7 @@ def build(cfg: Config) -> Engine:
     from .nlu.grammar import Grammar
     from .nlu.understand import Understander
     from .stt.hybrid import make_recognizer
+    from .stt.stream import make_partials
     from .world import HyprSocket, WorldModel, use_socket_transport
 
     boot()
@@ -677,6 +935,7 @@ def build(cfg: Config) -> Engine:
         )
 
     lexicon = Lexicon.scan(cfg)
+    recognizer = make_recognizer(cfg, key)
     latch = Latch(cfg, lambda: world.state, sock.query)
     acts = Executor(cfg, lambda: world.state, latch, lexicon)
     # recipes reach the executor through this, so a recipe cannot become a second way to
@@ -687,7 +946,10 @@ def build(cfg: Config) -> Engine:
         world=world,
         ptt=PushToTalk(cfg),
         recorder=Recorder(cfg),
-        recognizer=make_recognizer(cfg, key),
+        recognizer=recognizer,
+        # the fallback re-decodes with the recognizer above, so it is handed the same
+        # object rather than a second copy of a model that takes two seconds to load
+        partials=make_partials(cfg, recognizer),
         # the adapters are built ONCE and held: building them per utterance would open
         # the session bus on every word and throw away the handles an adapter minted for
         # the utterance before, which is the half of the contract that makes a handle

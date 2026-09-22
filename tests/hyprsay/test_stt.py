@@ -451,7 +451,19 @@ def test_the_real_parakeet_model_hears_nothing_in_silence():
 
 
 def test_the_registry_offers_exactly_the_models_the_config_accepts():
-    assert set(models.REGISTRY) == config_module._CHOICES[("stt", "local_model")]
+    # two keys now name models: the one that decodes the clip and the one that decodes it
+    # while it is still being spoken. A model in neither is a model nobody can select, and
+    # a choice in neither registry is a daemon that refuses to start on a valid config.
+    offered = (
+        config_module._CHOICES[("stt", "local_model")]
+        | config_module._CHOICES[("stt", "stream_model")]
+    )
+    assert set(models.REGISTRY) == offered - {""}
+
+
+def test_only_the_streaming_model_is_offered_as_a_streaming_model():
+    streaming = {name for name, spec in models.REGISTRY.items() if spec.kind.startswith("stream")}
+    assert streaming == config_module._CHOICES[("stt", "stream_model")] - {""}
 
 
 def test_download_urls_are_the_sherpa_onnx_release_tarballs():

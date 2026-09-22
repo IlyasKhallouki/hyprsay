@@ -1,7 +1,12 @@
-"""Microphone capture for one push-to-talk hold: 16 kHz mono int16, buffered, decoded once.
+"""Microphone capture for one push-to-talk hold: 16 kHz mono int16, buffered, read as it grows.
 
-Streaming recognition measured as not viable on this CPU, so the recorder's whole job is
-to hold the clip until key up (docs/PLAN.md 5.2). Three decisions follow from that:
+The recorder's job is to hold the clip until key up, and to let the incremental path read
+what is in it so far without disturbing that (`snapshot`, and `stt/stream.py` for what
+reads it). The original decision to buffer and decode once came from a measurement that
+streaming recognition was not viable on this CPU; that measurement was of re-decoding the
+whole buffer, and a genuine online recognizer costs 1.2 ms per 400 ms chunk instead, so
+the buffer is now read during the hold as well as at the end of it. Three decisions
+follow from holding the whole clip:
 
 - The buffer is allocated once, at the size of the longest allowed hold. The PortAudio
   callback therefore never allocates, the hard cap is simply "the buffer is full", and
@@ -224,7 +229,14 @@ class Recorder:
         return self._used / 2 / RATE
 
     def snapshot(self) -> bytes:
-        """The PCM so far, without stopping. For the speculative decode (PLAN 5.2)."""
+        """The PCM so far, without stopping. What the incremental decode reads (PLAN 5.2).
+
+        Always a prefix of what `stop` will return, and always a whole number of samples,
+        because `_used` only ever grows by whole blocks under the lock. The incremental
+        recognizer relies on that: it hands the encoder only the bytes that are new since
+        its last call, so a snapshot that had cut a sample in half would shift every
+        sample after it by one byte and turn the rest of the utterance into noise.
+        """
         with self._lock:
             return bytes(memoryview(self._buf)[: self._used])
 
