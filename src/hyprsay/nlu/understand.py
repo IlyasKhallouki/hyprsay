@@ -1062,7 +1062,12 @@ class Understander:
         # different question; a `chain` is a clause of an utterance something has already
         # cut, and a plan inside it would cut it a second time, by a second mechanism,
         # each obeying its own half.
-        offered = await self._harvest(heard) if need is None and chain is None else {}
+        # EVERY utterance, not only the ones the grammar settled nothing about. The old
+        # condition made the harvest a rescue path: code decided first and the live list
+        # of what this machine can actually do was built only after code had failed. That
+        # is backwards. A `chain` is still excluded because its clauses were already cut
+        # by another mechanism and a plan inside one would cut it a second time.
+        offered = await self._harvest(heard) if chain is None else {}
         fan, local_app, offered = self._fan_out(heard, state, need, seams, offered)
         answers = await self._ask(fan)
         taken = [] if seams.asked else self._separating(answers, seams)
@@ -1334,9 +1339,21 @@ class Understander:
         action = self._action_for(affordance, state, first=step.position == 1)
         if action is None:
             return None
-        if tiers.tier(action.intent, action, state, self.cfg) > 1:
-            # a step is chosen from a list, and a list is not evidence from the speaker.
-            # Everything disruptive stays on the paths that read the speaker's own words.
+        level = tiers.tier(action.intent, action, state, self.cfg)
+        if level >= 3:
+            # tier 3 is confirmed by a physical key and is never offered to a model. It
+            # cannot be built as an affordance either (adapters/base, MAX_OFFERABLE_TIER)
+            return None
+        if level > 1 and not _reaching(action, heard):
+            # A step is chosen from a list, and a list is not evidence from the speaker.
+            # That held while the list could only say "close this window": nothing in the
+            # utterance had to mention closing for closing to be picked.
+            #
+            # It does not hold for reaching inside a window, which is the whole of what
+            # hypruse is for. "go to youtube" and "click subscribe" ARE the speaker's own
+            # words, the option was built from them, and the tier keeps its teeth: above
+            # tier 1 the verdict is a countdown that a word cancels. So a disruptive step
+            # is allowed exactly when the utterance asked to reach for something.
             return None
         wide = step.margin >= self.cfg.gates.margin
         verb_said = tiers.verb_said(action.intent, heard.literal)
@@ -2410,6 +2427,19 @@ def _mislocated(decision: Decision, heard: _Heard, state: DesktopState) -> bool:
     if action.window.workspace_id == state.active_workspace_id:
         return False  # already here: focusing IS bringing it over
     return bool(HERE & set(heard.literal))
+
+
+def _reaching(action: Action, heard: _Heard) -> bool:
+    """Did the speaker ask to reach into a window, in their own words?
+
+    The tier 2 guard on a chosen step exists because a list is not evidence. For the
+    in-app intents the option was built out of the utterance itself, so the evidence is
+    the utterance: a verb of reaching, and an intent that can only touch what is already
+    on screen. Closing a window and typing are not on this list and never will be.
+    """
+    if action.intent not in tiers.IN_APP:
+        return False
+    return bool(REACHING_VERBS & set(heard.literal))
 
 
 def _answered(decision: Decision) -> bool:
