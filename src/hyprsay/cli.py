@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import __version__, config, journal
@@ -34,12 +35,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"hyprsay {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", help="run the engine")
-    trial = sub.add_parser("try", help="engine, overlay and a temporary bind, until Ctrl-C")
+    trial = sub.add_parser(
+        "try",
+        help="engine, overlay and a temporary bind, until Ctrl-C",
+        epilog='it listens; it takes no words. To run one by typing it: hyprsay say "..." --act',
+    )
     trial.add_argument("--key", default="", help="MODS, KEY in Hyprland form")
     say = sub.add_parser("say", help="understand a typed sentence against the live desktop")
     say.add_argument("text")
     say.add_argument("--act", action="store_true", help="carry the decision out (default: dry run)")
     say.add_argument("--json", action="store_true")
+    say.add_argument(
+        "--yes", action="store_true", help="allow a session action that would need a key press"
+    )
     replay = sub.add_parser("replay", help="run a recorded clip through recognizer and pipeline")
     replay.add_argument("wav")
     replay.add_argument("--act", action="store_true")
@@ -212,24 +220,62 @@ def _say(cfg, args) -> int:
         if decision.action and decision.verdict in (Verdict.ACT, Verdict.ACT_SWAP):
             print("(dry run: pass --act to carry it out)")
         return 0
-    if decision.rest:
-        print("\nthis is a chain, and only the engine runs those: try it with `hyprsay try`",
-              file=sys.stderr)  # fmt: skip
-        return 1
-    if decision.action is None or decision.verdict not in (Verdict.ACT, Verdict.ACT_SWAP):
-        print("nothing to carry out: only ACT verdicts run from `say`; countdowns and key "
-              "confirmations need the engine", file=sys.stderr)  # fmt: skip
-        return 1
     from .executor import Executor, boot
+    from .executor import use as use_executor
     from .lock import Latch
 
     boot()
     use_socket_transport(sock)
     latch = Latch(cfg, lambda: snapshot(sock), sock.query)
-    outcome = Executor(cfg, lambda: snapshot(sock), latch, lexicon).execute(
-        decision.action, pinned_address=state.active_address
-    )
-    print(("done      " if outcome.ok else "refused   ") + outcome.message)
+    executor = Executor(cfg, lambda: snapshot(sock), latch, lexicon)
+    use_executor(executor)  # recipes reach the executor through this, never around it
+    worst = 0
+    for n, step in enumerate((decision, *decision.rest), 1):
+        code = _carry_out(
+            step, executor, state.active_address, cfg, args, n, len(decision.rest) + 1
+        )
+        if code:
+            # a chain stops at the first step that did not happen, exactly as the engine
+            # does: the steps after it were planned against a desktop that never arrived
+            if len(decision.rest):
+                print(f"stopped at part {n}", file=sys.stderr)
+            return code
+        worst = max(worst, code)
+    return worst
+
+
+def _carry_out(step, executor, pinned: str, cfg, args, n: int, total: int) -> int:
+    """One step, with the ceremony its tier earns, in a terminal instead of an overlay.
+
+    The engine holds a countdown open on screen and takes a physical key press to confirm
+    a session action. A terminal can do both honestly: Ctrl-C is the cancel, and a typed
+    answer is a different channel from the voice that asked, which is the whole point of
+    not accepting a spoken "confirm".
+    """
+    from .model import Verdict
+
+    where = f"part {n} of {total}: " if total > 1 else ""
+    if step.verdict is Verdict.COUNTDOWN:
+        seconds = cfg.safety.countdown_s
+        print(
+            f"{where}{step.action.describe()} in {seconds:g}s, Ctrl-C to cancel", end="", flush=True
+        )
+        try:
+            time.sleep(seconds)
+        except KeyboardInterrupt:
+            print("\ncancelled")
+            return 1
+        print()
+    elif step.verdict is Verdict.CONFIRM_KEY:
+        if not args.yes:
+            print(f"{where}{step.action.describe()} needs confirming. Pass --yes to allow it.",
+                  file=sys.stderr)  # fmt: skip
+            return 1
+    elif step.action is None or step.verdict not in (Verdict.ACT, Verdict.ACT_SWAP):
+        print(f"{where}nothing to carry out: {step.verdict.value}", file=sys.stderr)
+        return 1
+    outcome = executor.execute(step.action, pinned_address=pinned)
+    print(("done      " if outcome.ok else "refused   ") + where + outcome.message)
     return 0 if outcome.ok else 1
 
 
@@ -285,7 +331,7 @@ def _replay(cfg, args) -> int:
     if not transcript.text.strip():
         print("nothing was recognized")
         return 1
-    return _say(cfg, argparse.Namespace(text=transcript.text, act=args.act, json=False))
+    return _say(cfg, argparse.Namespace(text=transcript.text, act=args.act, json=False, yes=False))
 
 
 def _record(cfg, args) -> int:

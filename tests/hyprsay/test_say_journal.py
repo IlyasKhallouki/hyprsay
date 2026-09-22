@@ -234,3 +234,52 @@ def test_what_a_media_player_is_playing_is_not_journalled_either(monkeypatch, tm
     written = journal.path().read_text()
     assert secret not in written and "A Podcast" not in written
     assert "chromium" in written  # the bus name is the bus daemon's word and stays
+
+
+# ------------------------------------------------------------ carrying out from the terminal
+
+
+def carry(verdict, *, tier=0, rest=(), yes=False, countdown=0.01, ok=True):
+    """Run cli._carry_out with a fake executor and see what ceremony it demanded."""
+    import argparse
+    from dataclasses import replace as _replace
+
+    from hyprsay import cli
+    from hyprsay.config import Config, Safety
+    from hyprsay.model import Action, Decision, Intent, Outcome
+
+    calls = []
+
+    class Fake:
+        def execute(self, action, *, pinned_address=""):
+            calls.append(action)
+            return Outcome(ok, "Done." if ok else "the window changed")
+
+    step = Decision(verdict, Action(Intent.CLOSE_WINDOW), tier=tier, rest=rest)
+    cfg = _replace(Config(), safety=Safety(countdown_s=countdown))
+    code = cli._carry_out(step, Fake(), "0x1", cfg, argparse.Namespace(yes=yes), 1, 1)
+    return code, calls
+
+
+def test_a_countdown_runs_in_the_terminal_instead_of_needing_the_engine():
+    from hyprsay.model import Verdict
+
+    code, calls = carry(Verdict.COUNTDOWN, tier=2)
+    assert code == 0 and len(calls) == 1
+
+
+def test_a_session_action_needs_an_explicit_yes():
+    from hyprsay.model import Verdict
+
+    code, calls = carry(Verdict.CONFIRM_KEY, tier=3)
+    assert code == 1 and calls == []  # refused, and nothing ran
+    code, calls = carry(Verdict.CONFIRM_KEY, tier=3, yes=True)
+    assert code == 0 and len(calls) == 1
+
+
+def test_a_verdict_that_is_not_an_action_carries_nothing_out():
+    from hyprsay.model import Verdict
+
+    for verdict in (Verdict.HINTS, Verdict.REFUSE, Verdict.SUGGEST, Verdict.NOTHING):
+        code, calls = carry(verdict)
+        assert code == 1 and calls == []

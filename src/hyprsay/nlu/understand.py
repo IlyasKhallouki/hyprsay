@@ -520,9 +520,20 @@ class Understander:
             # the target has to be settled BEFORE it is authorized: a browser recipe
             # judged against the terminal that held the key refuses every time, and with
             # the typing sentence, which reads as a safety rule rather than a wrong window
+            self._rivals = ()
             elsewhere = self._recipe_elsewhere(parse.slots.verb or "", window, kind, state)
             if elsewhere is not None:
                 window, kind = elsewhere
+            elif len(self._rivals) > 1:
+                # several windows could run it and nothing said which. Refusing here with
+                # the typing sentence blamed the focused terminal for an ambiguity that
+                # has nothing to do with it.
+                shown = tuple(
+                    resolve.window_candidate(self.lexicon, heard.text, w, 1.0)
+                    for w in self._rivals[:MAX_HINTS]
+                )
+                template = _template(parse.intent, parse.slots)
+                return self._hints(template, shown, "several windows can do that", heard, state)
         if window is not None:
             # the only thing that stops a gesture reaching a launcher, a lock prompt, an
             # authentication dialog or a shell: the inherited pointer call merely NOTES a
@@ -609,6 +620,8 @@ class Understander:
         action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name, text=parse.slots.text)
         return self._finish(action, _recipe_evidence(recipe, heard), (), heard, state)
 
+    _rivals: tuple[Window, ...] = ()
+
     def _recipe_elsewhere(
         self, name: str, focused: Window, kind: str, state: DesktopState
     ) -> tuple[Window, str] | None:
@@ -630,7 +643,10 @@ class Understander:
             for k in (self.lexicon.kind_of(w),)
             if any(recipe.name == name for recipe in recipes.for_window(w, k))
         ]
-        return able[0] if len(able) == 1 else None
+        if len(able) == 1:
+            return able[0]
+        self._rivals = tuple(w for w, _ in able)
+        return None
 
     def _deferred_recipe(
         self, name: str, text: str | None, heard: _Heard, state: DesktopState

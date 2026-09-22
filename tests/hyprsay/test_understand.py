@@ -1792,8 +1792,10 @@ def test_a_browser_recipe_goes_to_the_browser_even_when_a_terminal_is_focused():
     assert decision.action.window == FOX_A
 
 
-def test_a_recipe_still_refuses_when_two_windows_could_do_it():
-    """Nobody can know which browser was meant, so the caller says what is missing."""
+def test_a_recipe_offers_the_choice_when_two_windows_could_do_it():
+    """Nobody can know which browser was meant, so it asks. It used to refuse with the
+    typing sentence, which blamed the focused terminal for an ambiguity between two
+    browsers that had nothing to do with it."""
     both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
     u, _ = build(
         parses={
@@ -1803,4 +1805,6 @@ def test_a_recipe_still_refuses_when_two_windows_could_do_it():
         }
     )
     decision = say(u, "go to youtube com", both, pinned_address=TERMINAL.address)
-    assert decision.verdict is Verdict.REFUSE
+    assert decision.verdict is Verdict.HINTS
+    assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
+    assert "terminal" not in decision.reason

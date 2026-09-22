@@ -339,7 +339,16 @@ def _disruptive(evidence: Evidence) -> tuple[Verdict, str]:
     return Verdict.COUNTDOWN, "cancel within the countdown to stop this"
 
 
+# Intents that can only be reached by an exact grammar phrase the speaker said, never by
+# a model choosing them from a list. For these the phrase IS the spoken verb: a recipe is
+# selected by hearing "go to" or "search for", so demanding a word from the destructive
+# lexicon on top of that asks for a verb the command never has.
+SPOKEN_BY_CONSTRUCTION = frozenset({Intent.RUN_RECIPE, Intent.PRESS_CHORD, Intent.SCROLL})
+
+
 def verb_said(intent: Intent, tokens: tuple[str, ...] | list[str]) -> bool:
+    if intent in SPOKEN_BY_CONSTRUCTION:
+        return True
     return bool(LITERAL_VERBS.get(intent, frozenset()) & set(tokens))
 
 
