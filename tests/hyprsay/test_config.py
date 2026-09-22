@@ -11,6 +11,20 @@ def test_an_absent_file_is_a_working_configuration(tmp_path):
     assert cfg.stt.local_model == "parakeet-110m"
     assert cfg.jev.zero_data_retention is True
     assert cfg.privacy.titles == "when_needed"
+    # the interpreter is on by default and every one of its keys is optional
+    assert cfg.interpret.enabled is True
+    assert cfg.interpret.model == "meta/llama-3.1-8b"
+    assert cfg.interpret.deadline_s == 0.8
+
+
+def test_the_interpreter_can_be_turned_off_or_pointed_at_another_model(tmp_path):
+    file = tmp_path / "config.toml"
+    file.write_text('[interpret]\nenabled = false\nmodel = "google/gemini-2.5-flash-lite"\n')
+    cfg = config.load(file, env={})
+    assert cfg.interpret.enabled is False
+    assert cfg.interpret.model == "google/gemini-2.5-flash-lite"
+    overridden = config.load(file, env={"HYPRSAY_INTERPRET_DEADLINE_S": "0.5"})
+    assert overridden.interpret.deadline_s == 0.5
 
 
 def test_the_file_overrides_defaults_and_the_environment_overrides_the_file(tmp_path):
@@ -38,6 +52,8 @@ def test_lists_become_tuples(tmp_path):
         "[nonsense]\nx = 1\n",
         '[jev]\ndeadline_s = "soon"\n',
         "[safety]\ncountdown_s = true\n",
+        "[interpret]\nenabled = 1\n",  # a boolean key that took a number
+        '[interpret]\nmodell = "x"\n',  # a misspelled optional key is still an error
         "this is not toml [",
     ],
 )

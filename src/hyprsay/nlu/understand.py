@@ -66,7 +66,8 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from hyprsay import affordances, controls, inapp, recipes
-from hyprsay.adapters.base import Affordance, Trust
+from hyprsay.adapters import base as adapters
+from hyprsay.adapters.base import Adapter, Affordance, Capability, Trust
 from hyprsay.config import Config
 from hyprsay.jev import tokens
 from hyprsay.jev.client import JevAuthError, JevTimeout
@@ -81,12 +82,24 @@ from hyprsay.model import (
     Evaluator,
     Intent,
     Parse,
+    Service,
     Slots,
     Transcript,
     Verdict,
     Window,
 )
-from hyprsay.nlu import bank, clauses, context, ground, plan, requests, resolve, tiers
+from hyprsay.nlu import (
+    bank,
+    clauses,
+    context,
+    ground,
+    interpret,
+    plan,
+    requests,
+    resolve,
+    tiers,
+    turns,
+)
 from hyprsay.nlu.resolve import MAX_HINTS, LexiconLike, Resolution
 from hyprsay.nlu.tiers import Evidence
 
@@ -191,6 +204,28 @@ _CAPABILITIES = frozenset(
 log = logging.getLogger("hyprsay")
 
 HARVEST_S = 0.25
+
+# Words a capability summary can hold that name nothing. A speaker who said "on" has not
+# named "play a track on Spotify". Closed and short, for `DICTATION_OPENERS`' reason: this
+# decides whether an adapter option is corroborated, and a fuzzy rule would decide it on
+# the strength of a preposition.
+_FILLER = frozenset(
+    {
+        "a", "an", "the", "and", "or", "of", "on", "in", "by", "to", "for", "with",
+        "from", "it", "its", "this", "that", "one", "up", "is", "are", "be",
+    }
+)  # fmt: skip
+
+# Why the second turn's Choice named no step, in this module's vocabulary. `plan.Cut` is
+# about reading one answer and `turns.Stopped` is about an utterance that ended with
+# nothing done, so the two are mapped rather than merged: a cut that has no entry here is
+# read as unanswered, which is the strict direction.
+_GAVE_UP: dict[plan.Cut, turns.Stopped] = {
+    plan.Cut.NONE: turns.Stopped.NO_BETTER,
+    plan.Cut.UNKNOWN: turns.Stopped.UNANSWERED,
+    plan.Cut.UNSURE: turns.Stopped.NO_BETTER,
+    plan.Cut.UNANSWERED: turns.Stopped.UNANSWERED,
+}
 
 
 @dataclass(frozen=True)
@@ -312,7 +347,11 @@ class Understander:
         normalizer: Callable[..., Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
         adapters: tuple[Any, ...] = (),
+        interpreter: Any = None,
     ) -> None:
+        # stage 1, built once and kept warm by the caller: a cold first call measured
+        # about 1.2 s against 395 ms warm (`nlu/interpret.Interpreter`)
+        self.interpreter = interpreter
         self.cfg = cfg
         self.lexicon = lexicon
         self.grammar = grammar
@@ -362,6 +401,7 @@ class Understander:
             "errors": {},
         }
         try:
+            transcript = await self._interpret(transcript, provisional)
             decision = await self._decide(transcript, state, pinned_address, tuple(picking))
         except Exception as exc:  # the engine must never die on one utterance
             self.last_exchange["path"] = "error"
@@ -391,6 +431,39 @@ class Understander:
             )
         )
         return decision
+
+    async def _interpret(self, transcript: Transcript, provisional: bool) -> Transcript:
+        """Stage 1: rambling speech becomes one crisp command, or is left exactly alone.
+
+        Text in, text out. It never chooses an action, and it can only ever hand the next
+        stage a sentence; everything that decides anything is still code and Jev.
+
+        NOT on a provisional decode. While the key is held one sentence is understood six
+        to nine times (`incremental.py`), and paying about 394 ms of network on each draft
+        of a sentence still being spoken would spend the whole point of deciding early.
+        The final decode on key up is the one that gets tidied.
+
+        `interpret` never raises and returns its input unchanged on every failure, so a
+        model that is slow, down or disabled costs the cleanup and never the command.
+        About three quarters of real utterances never reach it at all: the grammar
+        already parses them, so there is nothing to tidy (`already_a_command`).
+        """
+        # inert unless a caller built one and handed it over. Reaching for a shared
+        # client here would put a network call inside every unit test that fakes the
+        # grammar, where nothing can skip it and nothing wants it.
+        if provisional or self.interpreter is None:
+            return transcript
+        said = await interpret.interpret(
+            transcript.text,
+            self.context.recent,
+            self.cfg,
+            interpreter=self.interpreter,
+            vocabulary=self.lexicon.words(),
+        )
+        if said == transcript.text:
+            return transcript
+        self.last_exchange["interpreted"] = {"from": transcript.text, "to": said}
+        return replace(transcript, text=said)
 
     def acted(self, ok: bool) -> None:
         """What the executor made of the last decision. The caller knows, this does not:
@@ -1087,6 +1160,11 @@ class Understander:
             planned = self._planned(answers, offered, heard, state)
             if planned is not None:
                 return planned
+            # one step, and it named an adapter option: act on it if it names its own
+            # target, and otherwise fetch first and decide again (`nlu/turns.py`)
+            second = await self._service_answer(answers, offered, heard, state)
+            if second is not None:
+                return second
         if need is not None:
             reading = _Reading(need.parse.intent, need.parse.slots, [], grammar=True)
         else:
@@ -1235,9 +1313,19 @@ class Understander:
         return drift if isinstance(drift, tokens.Drift) else tokens.Drift()
 
     def _plan_request(
-        self, base: dict[str, Any], offered: dict[str, Affordance]
+        self,
+        base: dict[str, Any],
+        offered: dict[str, Affordance],
+        *,
+        name: str = "rp",
+        count: int = plan.MAX_STEPS,
     ) -> tuple[requests.Request | None, dict[str, Affordance]]:
         """Rp: the step Choices in ONE request, with the options that fit in it.
+
+        `count` is how many step Choices the request carries, and it is a parameter for
+        one reason: the second turn asks ONE, over a list that may be fifty search
+        results. Three Choices carry that list three times and about seven options fit;
+        one carries it once and thirty to forty-three fit (`requests.plan_request`).
 
         Never split across requests. `requests._wire_one` inlines a Choice's options
         inside each question, so `step_1` and `step_2` in two different requests would
@@ -1256,11 +1344,11 @@ class Understander:
         drift = self._drift()
         cap = requests.headroom(self.cfg.jev.token_cap, drift)
         while options:
-            questions = plan.questions(options)
+            questions = plan.questions(options, count)
             estimated = requests.estimate(base, questions)
             if estimated <= cap:
                 built = requests.Request(
-                    "rp", base, questions, estimated, drift.ratio, drift.samples
+                    name, base, questions, estimated, drift.ratio, drift.samples
                 )
                 return built, options
             options.popitem()  # the lowest ranked option goes first
@@ -1326,6 +1414,214 @@ class Understander:
         self.last_exchange["path"] = "plan"
         return replace(decisions[0], rest=tuple(decisions[1:]))
 
+    # --------------------------------------------------- an adapter answered on its own
+
+    async def _service_answer(
+        self,
+        answers: _Answers,
+        offered: dict[str, Affordance],
+        heard: _Heard,
+        state: DesktopState,
+    ) -> Decision | None:
+        """A one-step plan that named an adapter option, in the two shapes one comes in.
+
+        BOUND, an option that names its own target, is acted on here and nowhere else.
+        `_planned` takes only a plan of two steps or more, and its reason is sound for a
+        window: "a single target goes through R2 and R2b, two formulations of one decision
+        that have to agree". There is no second formulation to agree with about a media
+        player. R2 and R2b ask which WINDOW, and nothing else in this file can produce an
+        adapter action at all, so for a service the one-step plan is the only route there
+        is. Dropping it is what kept "pause the browser, not the music" unreachable.
+
+        UNBOUND is the second turn, and there is exactly one case of it: the answer named
+        a capability with NO HANDLE, which is an adapter saying "I can find things by
+        name, ask me". Jev is non-generative, so it cannot write the thing to find or the
+        id of the thing it finds; only the adapter can, and only after somebody asks it.
+        `nlu/turns.py` holds that whole policy and the reasons behind each number.
+
+        WHAT HAPPENS BETWEEN THE TWO TURNS IS A READ. `adapters.base.Adapter.resolve` is
+        read only by contract and therefore always tier 0, so nothing is written before
+        turn two is judged, and this cannot act twice however badly turn two goes: turn
+        one's answer was never something `perform` would accept (`base.Minted`).
+
+        WHY THE SECOND LIST STILL CARRIES THE WHOLE HARVEST when only a fetched candidate
+        may be acted on. A Choice always crowns a winner, which this project measured the
+        hard way ("a forced choice crowns a winner even when the right window is not
+        open"), so a list of nothing but search results would always produce a track. The
+        harvest is in the list as somewhere else for the probability mass to go, and code
+        reads an answer that lands there as "none of these fitted", stops, and says so.
+        None of it is a licence: turn two goes through `_step` and the tier function
+        exactly as turn one did.
+
+        None means this was neither case, and the paths below answer the utterance as
+        they did before there was a second turn.
+        """
+        read = plan.read(answers.steps, offered)
+        if len(read.steps) != 1:
+            return None
+        step = read.steps[0]
+        asked = step.affordance
+        if asked.adapter == affordances.SELF:
+            return None
+        if not turns.needs_fetching(asked):
+            self.last_exchange["path"] = "service"
+            return self._step(step, heard, state, late=answers.late)
+        note = turns.Note(capability=asked.capability)
+        budget = turns.Budget(clock=self._clock).started()
+        adapter = adapters.by_name(self.adapters, asked.adapter)
+        if adapter is None:
+            return self._gave_up(note, turns.Stopped.NO_ADAPTER, heard)
+        capability = self._capability_now(adapter, asked.capability, heard, state)
+        if not turns.fetchable(capability):
+            return self._gave_up(note, turns.Stopped.NO_CAPABILITY, heard)
+        slots = turns.slots_for(capability, heard.text)
+        if slots is None:
+            return self._gave_up(note, turns.Stopped.NO_QUERY, heard)
+        note = replace(note, query_chars=sum(len(v) for v in slots.values()))
+        stop = budget.stop()
+        if stop is not None:
+            return self._gave_up(note, stop, heard)
+        found, why, note = await self._fetch(adapter, capability, slots, heard, state, budget, note)
+        if why is not None:
+            return self._gave_up(note, why, heard)
+        budget = budget.taken()
+        return await self._decide_again(step, turns.renumber(found), heard, state, budget, note)
+
+    async def _fetch(
+        self,
+        adapter: Adapter,
+        capability: Capability,
+        slots: dict[str, str],
+        heard: _Heard,
+        state: DesktopState,
+        budget: turns.Budget,
+        note: turns.Note,
+    ) -> tuple[tuple[Affordance, ...], turns.Stopped | None, turns.Note]:
+        """Ask the adapter for real candidates, under the fetch half of the budget.
+
+        Off the loop, because an adapter reads a socket or a bus and the next key press
+        has to open the microphone on time whatever a socket is doing. The deadline
+        abandons the thread rather than killing it, for `_harvest`'s reason and with
+        `_harvest`'s justification: `resolve` is read only by contract, so a fetch still
+        running when nobody wants it costs a thread and changes nothing.
+
+        Through `base.candidates` and never `adapter.resolve` directly, so that the tier
+        floor, the forced `UNTRUSTED`, the unique ids and the cap are all applied to what
+        comes back, exactly as they are during a harvest.
+        """
+        context = adapters.Context(state=state, heard=heard.text, now=self.context.now)
+        started = self._clock()
+
+        def ask() -> tuple[Affordance, ...]:
+            return adapters.candidates(adapter, capability, slots, context)
+
+        try:
+            async with asyncio.timeout(budget.fetch_seconds()):
+                found = await asyncio.to_thread(ask)
+        except TimeoutError:
+            return (), turns.Stopped.OUT_OF_TIME, self._fetched(note, started, 0)
+        except adapters.AdapterError as exc:
+            # the adapter's own sentence names the repair ("start it with `waytify
+            # daemon`"), which is the one thing a generic failure message cannot do
+            note = replace(self._fetched(note, started, 0), extra={"why": str(exc)})
+            return (), turns.Stopped.FETCH_FAILED, note
+        except Exception as exc:
+            self.last_exchange["errors"]["fetch"] = type(exc).__name__
+            return (), turns.Stopped.FETCH_FAILED, self._fetched(note, started, 0)
+        note = self._fetched(note, started, len(found))
+        if not found:
+            return (), turns.Stopped.NOTHING_FOUND, note
+        return found, None, note
+
+    def _fetched(self, note: turns.Note, started: float, count: int) -> turns.Note:
+        return replace(note, fetch_ms=(self._clock() - started) * 1000, fetched=count)
+
+    async def _decide_again(
+        self,
+        asked: plan.Step,
+        fetched: list[Affordance],
+        heard: _Heard,
+        state: DesktopState,
+        budget: turns.Budget,
+        note: turns.Note,
+    ) -> Decision:
+        """Turn two: one Choice, over a fresh harvest with the fetched candidates in front.
+
+        The fetched ones go FIRST and keep the adapter's own order, for the reason
+        `turns.renumber` gives: "the second live version" is an index into the list
+        Spotify ranked, and this file's own ranker would reshuffle it. First also means
+        they are the last to be dropped when the list has to shrink to fit the token cap,
+        because `_plan_request` pops from the end.
+        """
+        if budget.left <= 0.0:
+            return self._gave_up(note, turns.Stopped.OUT_OF_TIME, heard)
+        # the machine may have moved during the fetch, so it is read again rather than
+        # remembered; the state the STEP is judged against is still this utterance's one,
+        # and the executor re-reads the desktop before it writes, as it does for every
+        # other decision in this file
+        first_harvest = self.last_exchange.get("affordances")
+        again = await self._harvest(heard)
+        note = replace(note, extra={**note.extra, "harvest": self.last_exchange["affordances"]})
+        if first_harvest is not None:
+            self.last_exchange["affordances"] = first_harvest
+        options = plan.offered([*fetched, *again.values()])
+        # "rp.2": the same family as the first plan request, so `_merge` files its answers
+        # in `answers.steps` unchanged, and a distinct name, so `inspect --last` shows two
+        # requests rather than the second overwriting the first (`requests.Request.name`)
+        request, options = self._plan_request(self._base(heard), options, name="rp.2", count=1)
+        if request is None:
+            return self._gave_up(note, turns.Stopped.UNANSWERED, heard)
+        sent = self.last_exchange.get("requests", [])
+        self.last_exchange["requests"] = [*sent, request.as_sent()]
+        elapsed = self.last_exchange.get("elapsed_ms")
+        answers = await self._ask(requests.FanOut((request,)))
+        note = replace(note, asked_ms=self.last_exchange.get("elapsed_ms") or 0.0)
+        if elapsed is not None:
+            self.last_exchange["elapsed_ms"] = elapsed
+        picked = plan.read(answers.steps, options, count=1)
+        if not picked.steps:
+            return self._gave_up(note, _GAVE_UP.get(picked.cut, turns.Stopped.UNANSWERED), heard)
+        chosen = picked.steps[0]
+        note = replace(note, chose=chosen.id)
+        if chosen.id not in {item.id for item in fetched}:
+            # turn two named something turn one had already been offered and passed over,
+            # or another capability that would need its own fetch. Either way nothing the
+            # fetch produced was chosen, so the fetch answered nothing and the honest
+            # move is to stop. Acting on it instead would overrule turn one with evidence
+            # turn one already had.
+            reason = (
+                turns.Stopped.OUT_OF_TURNS
+                if turns.needs_fetching(chosen.affordance)
+                else turns.Stopped.NO_BETTER
+            )
+            return self._gave_up(note, reason, heard)
+        decision = self._step(chosen, heard, state, late=answers.late)
+        if decision is None:
+            return self._gave_up(note, turns.Stopped.NO_BETTER, heard)
+        self.last_exchange["path"] = "second turn"
+        self.last_exchange["turn"] = replace(note, stopped="").describe()
+        # `asked` is kept only so the note can say which capability started this; nothing
+        # about turn one's answer reaches the action, which was built from turn two alone
+        self.last_exchange["turn"]["asked"] = asked.id
+        return decision
+
+    def _gave_up(self, note: turns.Note, why: turns.Stopped, heard: _Heard) -> Decision:
+        """The second turn ended with nothing to do, and says which of the nine reasons.
+
+        A SUGGEST and never a REFUSE: nothing was forbidden, there was simply nothing to
+        act on, and the sentence has to be the one that names the repair rather than one
+        that reads as "there is nothing to play" (`base.Adapter.probe`'s rule).
+        """
+        self.last_exchange["path"] = "second turn"
+        self.last_exchange["turn"] = replace(note, stopped=why.value).describe()
+        spoken = str(note.extra.get("why") or "") if why is turns.Stopped.FETCH_FAILED else ""
+        return self._suggest(
+            heard,
+            spoken or turns.SENTENCE[why],
+            Intent.MEDIA,
+            rehearable=why in turns.REHEARABLE,
+        )
+
     def _step(
         self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool
     ) -> Decision | None:
@@ -1337,11 +1633,7 @@ class Understander:
         """
         affordance = step.affordance
         if affordance.adapter != affordances.SELF:
-            # an adapter performs its own capabilities through `perform(capability,
-            # handle)` and the executor has no route to one yet, so a service option is
-            # a candidate nobody can act on. It is still offered, because leaving it out
-            # of the list would let the model pick the nearest window instead.
-            return None
+            return self._service_step(step, heard, state, late=late)
         action = self._action_for(affordance, state, first=step.position == 1)
         if action is None:
             return None
@@ -1403,6 +1695,102 @@ class Understander:
             late=late,
         )
         return self._finish(action, evidence, (), heard, state)
+
+    # ------------------------------------------------------- an adapter's own capability
+
+    def _service_step(
+        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool
+    ) -> Decision | None:
+        """A chosen adapter option, as an action the executor will actually carry out.
+
+        This used to return None with a comment saying the executor had no route to an
+        adapter, which made every MPRIS, Spotify and waytify option a candidate the model
+        could be offered, could choose, and could never have obeyed. The route is
+        `Intent.SERVICE` and `ops._service`; what is decided here is whether it may run.
+
+        WHAT CORROBORATES ONE, which is the only interesting question. A resolved
+        candidate's label is a track name off the internet, and `adapters/base.py`'s rule
+        is that untrusted text may RAISE what an act costs and may never be the evidence
+        that authorizes it. So the label corroborates nothing. What does is the
+        CAPABILITY'S SUMMARY, which is one line written in this repository beside the
+        capability, and therefore the one piece of text in an adapter option that a tier
+        is allowed to rest on: the speaker said "play", the capability says "play a track
+        on Spotify, found by name", and that is the speaker naming what they wanted.
+
+        TIER 2 IS OFFERABLE AND NOT AUTHORIZABLE, deliberately. `base.MAX_OFFERABLE_TIER`
+        lets an adapter show a tier 2 capability, and `tiers.verb_said` has no entry for
+        `Intent.SERVICE`, so `tiers._disruptive` refuses one. That is the same shape
+        `affordances.MAX_INAPP_TIER` already has: an answer to a Choice is not a verb the
+        speaker said out loud, and no adapter gets to be the exception.
+        """
+        affordance = step.affordance
+        if turns.needs_fetching(affordance):
+            # a capability offered as ITSELF names no target, so there is nothing to
+            # perform: it is fetched from, which is `_service_answer`'s job and never a
+            # step's. `plan.read`'s rule 5 means this can only be a one-step plan anyway.
+            return None
+        adapter = adapters.by_name(self.adapters, affordance.adapter)
+        capability = self._capability_now(adapter, affordance.capability, heard, state)
+        if capability is None:
+            # the adapter is gone, or no longer offers this. Dropping the step is the
+            # same answer `_action_for` gives a window that closed while Jev was thinking
+            return None
+        try:
+            level = max(affordance.tier, adapters.tier_for(capability, affordance.label))
+        except adapters.AdapterError:
+            return None
+        service = Service(
+            adapter=affordance.adapter,
+            capability=affordance.capability,
+            handle=affordance.handle,
+            tier=level,
+            label=affordance.label,
+        )
+        action = Action(Intent.SERVICE, service=service)
+        evidence = Evidence(
+            source="jev",
+            corroborated=self._named_capability(capability, heard),
+            wide_margin=step.margin >= self.cfg.gates.margin,
+            verb_said=tiers.verb_said(Intent.SERVICE, heard.literal),
+            # the handle IS the target and the adapter minted it from what the speaker
+            # asked for, so there is no window to have named. Read only at tier 2, where
+            # `verb_said` above has already refused.
+            explicit_target=True,
+            late=late,
+        )
+        return self._finish(action, evidence, (), heard, state)
+
+    def _capability_now(
+        self, adapter: Adapter | None, capability: str, heard: _Heard, state: DesktopState
+    ) -> Capability | None:
+        """What that adapter says it can do RIGHT NOW, or None.
+
+        Asked again rather than kept from the harvest, which is `base.capability_of`'s
+        own reason: what an application can do now is not what it could do when the key
+        went down. An adapter that throws costs this option and never the utterance, the
+        same bargain `base.offer` makes during the harvest.
+        """
+        if adapter is None:
+            return None
+        context = adapters.Context(state=state, heard=heard.text, now=self.context.now)
+        try:
+            return adapters.capability_of(adapter, capability, context)
+        except Exception as exc:  # a broken adapter degrades the option, not the sentence
+            self.last_exchange["errors"]["adapter"] = type(exc).__name__
+            return None
+
+    def _named_capability(self, capability: Capability, heard: _Heard) -> bool:
+        """Did the speaker use one of this capability's own words?
+
+        `affordances.said` and not `claims`, and against the summary rather than against
+        the label: `said` asks whether the speaker used THIS option's vocabulary, which is
+        the question worth asking of a hand written line, and the summary is the only
+        string in an adapter option that this repository wrote.
+        """
+        words = tuple(w for w in affordances.spoken(capability.summary) if w not in _FILLER)
+        if not words:
+            return False
+        return affordances.said(affordances.spoken(heard.text), (words,)) > 0.0
 
     def _action_for(
         self, affordance: Affordance, state: DesktopState, *, first: bool

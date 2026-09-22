@@ -192,7 +192,11 @@ def _say(cfg, args) -> int:
     # no service options and nothing ever noticed.
     from . import adapters as adapter_pkg
 
-    understander = Understander(cfg, lexicon, Grammar(), client, adapters=adapter_pkg.live(cfg))
+    # ONE tuple for both halves, exactly as `daemon.build` does it: the executor further
+    # down performs through the very objects that minted the handles, because a handle is
+    # only honoured by the `adapters.base.Minted` that issued it
+    services = adapter_pkg.live(cfg)
+    understander = Understander(cfg, lexicon, Grammar(), client, adapters=services)
 
     async def go():
         try:
@@ -239,7 +243,7 @@ def _say(cfg, args) -> int:
     boot()
     use_socket_transport(sock)
     latch = Latch(cfg, lambda: snapshot(sock), sock.query)
-    executor = Executor(cfg, lambda: snapshot(sock), latch, lexicon)
+    executor = Executor(cfg, lambda: snapshot(sock), latch, lexicon, adapters=services)
     use_executor(executor)  # recipes reach the executor through this, never around it
     worst = 0
     total = len(decision.rest) + 1

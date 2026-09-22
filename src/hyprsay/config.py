@@ -85,6 +85,22 @@ class Jev:
 
 
 @dataclass(frozen=True)
+class Interpret:
+    """The rewrite that runs BEFORE Jev: babble and history in, one command out.
+
+    `model` and `deadline_s` are set by measurement, not by taste. From this machine, over
+    50 warm requests on the real prompt, meta/llama-3.1-8b answered in 395 ms p50 and
+    660 ms p90 (nlu/interpret.py holds the whole table). 0.8 s therefore keeps the answers
+    that arrive by p90 with room to spare and throws the tail away: a cleanup that is late
+    costs the cleanup, never the command.
+    """
+
+    enabled: bool = True
+    model: str = "meta/llama-3.1-8b"
+    deadline_s: float = 0.8
+
+
+@dataclass(frozen=True)
 class Privacy:
     """What may be said about what you are doing, as opposed to what you asked for.
 
@@ -175,6 +191,7 @@ class Config:
     ptt: PTT = field(default_factory=PTT)
     stt: STT = field(default_factory=STT)
     jev: Jev = field(default_factory=Jev)
+    interpret: Interpret = field(default_factory=Interpret)
     privacy: Privacy = field(default_factory=Privacy)
     safety: Safety = field(default_factory=Safety)
     gates: Gates = field(default_factory=Gates)

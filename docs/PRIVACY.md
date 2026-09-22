@@ -7,11 +7,12 @@ command, so none of this has to be taken on trust.
 
 ## What leaves the machine
 
-| | Default (`hybrid`) | `stt.backend = "local"` and `jev.enabled = false` |
+| | Default (`hybrid`) | `stt.backend = "local"`, `jev.enabled = false` and `interpret.enabled = false` |
 |---|---|---|
 | Your voice (audio) | stays local, **except** when the local recognizer produced words that could not be placed, or produced nothing from real speech: then that one clip is sent to a speech model through the gateway. Not when the transcript was fine and something else was wrong, and never for a dictation | never leaves |
 | What you said (text) | sent to Jev when the local grammar cannot resolve the command | never leaves |
-| Dictated text ("type ...") | **never sent anywhere**, never shown on the overlay while waiting, and stored in the journal only as a length and a hash. An utterance that opens with any form of type, say, write or dictate is treated as dictation even when the grammar cannot parse it, so a misheard "typed" does not turn it into a request | never leaves |
+| What you said (text), plus your last three commands | sent to a second, small model that tidies a rambling sentence into one command before anything tries to understand it. Only when the local grammar cannot already parse what you said, which covers about three quarters of ordinary commands, and never for a dictation. What goes is the normalized sentence (fillers, casing and punctuation already dropped) and up to three previous commands in the same form, so that "turn it down to 50%" can be read against "play spotify". A command that carried your own text is remembered only as what it did, so it goes as "type text Obsidian" and never as the words. The model returns text and nothing else: it never picks an action | never leaves |
+| Dictated text ("type ...") | **never sent anywhere**, never shown on the overlay while waiting, and stored in the journal only as a length and a hash. An utterance that opens with any form of type, say, write or dictate is treated as dictation even when the grammar cannot parse it, so a misheard "typed" does not turn it into a request. The same test runs before the interpreter above, from the same word list rather than a copy of it, so a dictation is not tidied up by anything either | never leaves |
 | Names and kinds of your open apps, workspace numbers | sent to Jev with a semantic command: the trusted names of the apps you have open, which workspace you are on, the app and kind of the focused window, and what the last command did. Only names a root-owned `.desktop` file claims, so a window cannot name itself | never leaves |
 | Window titles | **not sent**, except to tell apart several windows of the same app, and then only theirs, truncated and redacted | never leaves |
 | What a media player is playing (track, artist, album) | **not sent**, except to tell apart several players that would otherwise carry the same name, and then only theirs, truncated and redacted. Same rule, same switch, same reason: it says what you are watching | never leaves |
@@ -27,6 +28,9 @@ answers is typically Paris), which forwards to the model provider:
 
 - **Jev** (`typesafe-ai/jev`, TypeSafe AI): its API resolves to AWS `us-west-2`.
 - **Speech rescue**, by default `fish-audio/transcribe-1`. Configurable.
+- **The interpreter**, by default `meta/llama-3.1-8b`, chosen because it was the fastest
+  model measured that answers with one usable command (395 ms median from this machine).
+  Configurable, and `interpret.enabled = false` turns it off entirely.
 
 Every Jev request asks for `zeroDataRetention`. The gateway's catalog lists Jev as
 `zdr: all` and `no_training: all`. hyprsay cannot verify what a provider does with data
@@ -70,6 +74,9 @@ backend = "local"      # audio never leaves the machine
 
 [jev]
 enabled = false        # grammar only: nothing is ever sent
+
+[interpret]
+enabled = false        # no sentence is sent anywhere to be tidied up
 ```
 
 You keep every canonical command. You lose paraphrases ("bring up my notes") and

@@ -47,9 +47,19 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
-from . import incremental, journal, ops
+from . import controls, incremental, journal, ops
 from .config import Config
-from .model import Action, Candidate, Decision, Intent, Outcome, Transcript, Verdict
+from .model import (
+    Action,
+    Candidate,
+    Decision,
+    DesktopState,
+    Intent,
+    Outcome,
+    Transcript,
+    Verdict,
+    Window,
+)
 from .nlu import context
 
 log = logging.getLogger("hyprsay")
@@ -104,12 +114,17 @@ class Engine:
         self._listening: asyncio.Task | None = None
         self._listen_stop = False
         self._chunk_ms: list[float] = []
+        # the window whose controls were last asked for. Only a change of focus asks
+        # again, so a terminal whose title spins several times a second cannot turn the
+        # accessibility walk into a treadmill.
+        self._warmed = ""
 
     # ------------------------------------------------------------------ lifecycle
 
     async def run(self) -> None:
         self.latch.on_lock(self._on_lock)
         self.world.on_custom(self.ptt.feed_custom)
+        self.world.subscribe(self._on_desktop)
         tasks = [
             asyncio.create_task(self.world.run()),
             asyncio.create_task(self.hud.start()),
@@ -246,6 +261,7 @@ class Engine:
             await self._show("refused", text="session is locked", ttl_ms=1500)
             return
         self._pinned = self.world.state.active_address
+        self._warm_controls(self.world.state.by_address(self._pinned))
         self._down_at = now
         try:
             # opening the device blocks while PortAudio negotiates; keep the loop free
@@ -256,10 +272,59 @@ class Engine:
         if self.jev is not None:
             # speech outlasts a handshake: 526 ms -> 325 ms on the first call (measured)
             asyncio.create_task(self.jev.warm())
+        stage_one = getattr(self.understander, "interpreter", None)
+        if stage_one is not None:
+            # same trade, measured separately: a cold interpreter took 1219 ms and the
+            # first command of the session came back untidied. The key going down is the
+            # free moment to pay for the handshake (`nlu/interpret.Interpreter`).
+            asyncio.create_task(stage_one.warm())
         await self._show("hearing", level=0.0)
         self._meter = asyncio.create_task(self._run_meter())
         self._ensure_lock_watch()
         self._start_listening(self._pinned)
+
+    # -------------------------------------------------------------- what is in the window
+
+    def _on_desktop(self, state: DesktopState) -> None:
+        """The desktop changed. Start reading the controls of whatever now has focus.
+
+        On the event loop, so it may only START work: `controls.warm` hands the walk to
+        its own worker and returns. Focus is the trigger because it is the earliest honest
+        prediction there is that the next thing said will be about this window, and it
+        arrives seconds before the key goes down, which is what a 3.8 s walk needs.
+
+        Not while the session is locked. A walk reads the names of everything on screen,
+        and the screen belongs to whoever locked it; `DesktopState.locked` fails closed,
+        so a state that could not be read is one nothing is read from either.
+        """
+        if state.locked:
+            return
+        if state.active_address and state.active_address != self._warmed:
+            self._warmed = state.active_address
+            self._warm_controls(state.by_address(state.active_address))
+
+    def _warm_controls(self, window: Window | None) -> None:
+        """Fill the control cache for one window, without waiting for it.
+
+        `affordances.harvest` reads that cache and never walks the tree: a walk is 3.8 s
+        on the live ZapZap window and 16.2 s on KCalc's 48 controls, against a 250 ms
+        harvest budget (`nlu/understand.HARVEST_S`), so the walk has to have happened
+        before the utterance. This is called twice for that: when focus lands somewhere
+        new, and again at key down, which is the moment the pinned window is settled.
+
+        Nothing waits for it and nothing depends on it. A walk that is still running when
+        the speaker finishes talking costs that utterance its control options and nothing
+        else, and it still lands in the cache for the utterance after it.
+        """
+        if window is None:
+            return
+        try:
+            controls.warm(window)
+        except Exception:
+            # a broken accessibility bus must never be able to reach the microphone. It is
+            # a debug line and not a warning because `controls.probe` is where the owner
+            # is told how to repair it, in one sentence, when they ask for a click
+            log.debug("the controls of the focused window could not be warmed", exc_info=True)
 
     def _ensure_lock_watch(self) -> None:
         if self._lock_watch is None or self._lock_watch.done():
@@ -889,6 +954,22 @@ def _chip(decision: Decision) -> str:
     return decision.action.describe() if decision.action is not None else decision.verdict.value
 
 
+def _interpreter(cfg: Config):
+    """Stage 1's client, or None. A missing key or a disabled stage costs the cleanup
+    and never the command, so nothing here may raise on the way to building an engine."""
+    if not cfg.interpret.enabled:
+        return None
+    try:
+        from .jev import load_key
+        from .nlu.interpret import Interpreter
+
+        return Interpreter(load_key(), model=cfg.interpret.model,
+                           deadline=cfg.interpret.deadline_s)  # fmt: skip
+    except Exception as exc:
+        log.info("no interpreter: %s", exc)
+        return None
+
+
 def build(cfg: Config) -> Engine:
     """Wire the real parts together. Imports are local so `hyprsay doctor` can report a
     missing piece instead of the whole CLI failing to import."""
@@ -935,7 +1016,12 @@ def build(cfg: Config) -> Engine:
     lexicon = Lexicon.scan(cfg)
     recognizer = make_recognizer(cfg, key)
     latch = Latch(cfg, lambda: world.state, sock.query)
-    acts = Executor(cfg, lambda: world.state, latch, lexicon)
+    # ONE tuple, handed to both halves. The understander harvests options from these and
+    # the executor performs them through these, and a handle is only ever honoured by the
+    # `adapters.base.Minted` that issued it, so two sets would mean every chosen track
+    # refused as "not a result this command offered".
+    services = adapter_pkg.live(cfg)
+    acts = Executor(cfg, lambda: world.state, latch, lexicon, adapters=services)
     # recipes reach the executor through this, so a recipe cannot become a second way to
     # type that skips the pin, the lock latch and the character cap
     executor_registry(acts)
@@ -952,7 +1038,9 @@ def build(cfg: Config) -> Engine:
         # the session bus on every word and throw away the handles an adapter minted for
         # the utterance before, which is the half of the contract that makes a handle
         # safe to be opaque (adapters/base.Minted)
-        understander=Understander(cfg, lexicon, Grammar(), client, adapters=adapter_pkg.live(cfg)),
+        understander=Understander(
+            cfg, lexicon, Grammar(), client, adapters=services, interpreter=_interpreter(cfg)
+        ),
         executor=acts,
         latch=latch,
         hud=HudServer(hud=cfg.hud, countdown_s=cfg.safety.countdown_s),
