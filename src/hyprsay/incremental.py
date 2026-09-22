@@ -78,12 +78,22 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from .model import Decision, Verdict
+from .model import Decision, Intent, Verdict
 from .nlu.context import SPEAKER_TEXT
+from .nlu.tiers import IN_APP
 
-# the highest tier a half-spoken sentence may act on. 2 and 3 are the tiers whose whole
-# point is that they are not reversible, and a prefix is exactly the case they guard.
-MAX_EARLY_TIER = 1
+# The highest tier a half-spoken sentence may act on. Tier 3 is never here: it takes a
+# physical key and is never offered to a model at all.
+#
+# Tier 2 is, and that is a deliberate reversal. The tier is not a statement that an act
+# is forbidden, it is a statement that it announces itself and can be stopped, which is
+# the cancel window the owner asked for. Keeping it out meant almost everything anyone
+# actually says (navigate, search, find) sat silent until the key came up and then made
+# them wait again. What still protects a prefix is the rule below it: a clause carrying
+# the speaker's own words may only go once a LATER clause has begun, so it can no longer
+# grow. Closing a window and typing are held back by `verb_said` and by the grammar, not
+# by this number.
+MAX_EARLY_TIER = 2
 # how many consecutive decodes must agree before a trailing clause counts as finished
 STABLE_DECODES = 2
 # the verdicts an early clause may carry. HINTS and SUGGEST are questions and a question
@@ -91,7 +101,12 @@ STABLE_DECODES = 2
 # yet; COUNTDOWN and CONFIRM_KEY are the tier 2 and 3 ceremonies the tier rule already
 # refuses. ACT_SWAP acts and offers a retarget, and the daemon suppresses its badges the
 # same way a chained clause does.
-EARLY_VERDICTS = frozenset({Verdict.ACT, Verdict.ACT_SWAP})
+# COUNTDOWN is here because a countdown IS the cancel window the owner chose: the act
+# announces itself and a word stops it. Holding it back until the key came up meant the
+# commonest things anyone says (navigate, search, find, all tier 2 recipes) buffered in
+# silence, then waited another 1.5 s after release. Measured from a real spoken session:
+# 16 partials, 3 acted, and the last two read `clauses: ['countdown'], ready: 0`.
+EARLY_VERDICTS = frozenset({Verdict.ACT, Verdict.ACT_SWAP, Verdict.COUNTDOWN})
 
 _WORD = re.compile(r"\S+")
 
@@ -229,16 +244,39 @@ class Settler:
         clause = chain[index]
         if clause.verdict not in EARLY_VERDICTS or clause.action is None:
             return ""
-        if clause.tier > self.max_tier:
-            # close, type and lock. Their prefix reading is the one that cannot be taken
-            # back, so they wait for the key to come up.
+        bounded = index < len(chain) - 1
+        reaching = clause.action is not None and clause.action.intent in IN_APP
+        if clause.verdict is Verdict.COUNTDOWN and not reaching:
+            # a countdown announces an act and gives a word the chance to stop it, which
+            # is what makes a reach safe to start mid sentence. Nothing else earns it:
+            # a countdown on a close is still a close, whatever tier it was judged at.
             return ""
-        if _speaker_text(clause):
+        if clause.tier > MAX_EARLY_TIER or (clause.tier > 1 and not (reaching and bounded)):
+            # Above tier 1 only a REACH may go early, and only once a later clause has
+            # begun. Navigating, searching and clicking move what is on a screen and
+            # announce themselves with a countdown a word can stop. Closing a window is
+            # tier 2 as well and is nothing like them: a half heard "close this" is gone,
+            # and no cancel window brings it back. Typing and locking are not here for
+            # the same reason.
+            return ""
+        if clause.dictation or (clause.action and clause.action.intent is Intent.TYPE_TEXT):
+            # Dictation and typing NEVER go early, bounded or not. Named here rather
+            # than through `SPEAKER_TEXT`, which also holds the reaching intents: a
+            # recipe's words are a destination, and a dictation's words are the message.
+            # Only the second is still the speaker's after it lands.
+            return ""
+        if _speaker_text(clause) and not (reaching and bounded):
             # a recipe, a control name or a dictation. Half of what someone meant to type
             # is not a shorter version of it, and a recipe has usually already pressed
             # enter on it by the time the rest of the sentence arrives.
+            #
+            # Unless a LATER clause has already begun. Then this one cannot grow another
+            # word: whatever follows belongs to the clause after it, so the span is
+            # finished and the danger this guard exists for cannot happen. That is the
+            # only evidence strong enough, which is why stability plus silence is not
+            # accepted here: quiet says the speaker paused, not that they finished.
             return ""
-        if index < len(chain) - 1:
+        if bounded:
             return "a further clause has begun"
         run = self._runs.get(index, ("", 0))[1]
         if run >= self.stable_decodes and quiet:

@@ -87,18 +87,19 @@ def test_a_tier_two_clause_is_never_ready_however_settled_it_looks():
         assert settler.look("close this and open kitty", closing).ready == ()
 
 
-def test_a_recipe_is_never_ready_early_however_low_its_tier():
-    # "find lofi" is a perfectly good prefix of "find lofi hip hop radio", and a recipe has
-    # usually pressed enter on it by the time the rest of the sentence arrives
+def test_a_recipe_goes_early_only_once_it_can_no_longer_grow():
+    """The old rule was that a recipe never goes early, because half of "find lofi hip
+    hop radio" has already pressed enter by the time the rest arrives. That holds while
+    the clause can still gain a word. Once a LATER clause has begun it cannot: whatever
+    follows belongs to the clause after it."""
     settler = incremental.Settler()
-    recipe = Decision(
-        Verdict.ACT,
-        Action(Intent.RUN_RECIPE, text="lofi"),
-        tier=1,
-        heard="find lofi",
+    find = Decision(
+        Verdict.ACT, Action(Intent.RUN_RECIPE, verb="find", text="lofi"), tier=1, heard="find lofi"
     )
-    look = settler.look("find lofi and scroll down", chain(recipe, act("scroll down")))
-    assert look.ready == ()
+    for _ in range(4):  # still the last clause, still growing, still refused
+        assert settler.look("find lofi", chain(find), quiet=True).ready == ()
+    ready = settler.look("find lofi and scroll down", chain(find, act("scroll down"))).ready
+    assert [r.why for r in ready][:1] == ["a further clause has begun"]
 
 
 def test_a_clause_carrying_the_speakers_own_words_is_never_ready_early():
@@ -139,10 +140,44 @@ def test_a_refusal_in_front_of_an_action_stops_the_whole_offer():
     assert look.ready == ()
 
 
-def test_a_countdown_is_not_an_early_verdict_even_at_tier_zero():
+def test_a_countdown_on_a_close_is_never_early_however_settled_it_looks():
+    """A countdown is the cancel window, so it may go early, but only for a reach. A
+    half heard "close this" is gone and no cancel window brings the window back."""
     settler = incremental.Settler()
     slow = Decision(Verdict.COUNTDOWN, Action(Intent.CLOSE_WINDOW), tier=0, heard="close it")
     assert settler.look("close it and stop", chain(slow, act("stop"))).ready == ()
+
+
+def test_a_countdown_on_a_reach_goes_early_once_a_later_clause_has_begun():
+    """Measured from a real spoken session: 16 partials, 3 acted, and the rest read
+    `clauses: ['countdown'], ready: 0`. Navigating and searching are tier 2, so holding
+    countdowns back meant almost everything anyone says waited for the key to come up
+    and then waited again."""
+    settler = incremental.Settler()
+    go = Decision(
+        Verdict.COUNTDOWN,
+        Action(Intent.RUN_RECIPE, verb="go_to_url", text="youtube"),
+        tier=2,
+        heard="go to youtube",
+    )
+    settler.look("go to youtube", chain(go))  # the first decode, still growing
+    ready = settler.look("go to youtube and scroll down", chain(go, act("scroll down"))).ready
+    assert [r.index for r in ready] == [0]
+    assert ready[0].why == "a further clause has begun"
+
+
+def test_a_reach_still_waits_while_it_could_still_grow():
+    """Unbounded, the span can gain another word, and a recipe has usually pressed enter
+    on it by the time the rest of the sentence arrives."""
+    settler = incremental.Settler()
+    go = Decision(
+        Verdict.COUNTDOWN,
+        Action(Intent.RUN_RECIPE, verb="search_web", text="linus"),
+        tier=2,
+        heard="search for linus",
+    )
+    for _ in range(5):
+        assert settler.look("search for linus", chain(go), quiet=True).ready == ()
 
 
 def test_a_swap_may_act_early_because_a_number_can_still_retarget_it():
