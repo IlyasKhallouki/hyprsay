@@ -33,6 +33,19 @@ Privacy invariants (PLAN section 7), all enforced here rather than trusted to ca
 dictated text never enters a request or `last_exchange`; window titles travel only in
 R2t and only under the three conditions in `_title_windows`.
 
+The context and the plan (docs/STRATEGY.md 2.1 and 4.5). Every R1 request now carries
+what `nlu/context.py` builds from live state: which applications are open, which
+workspace the speaker is on, what they are looking at, and what the last command did.
+That is the evidence the question bank was asking about and the request was withholding.
+When a harvest (`affordances.harvest`) and a plan reader (`nlu/plan.py`) are both
+available, the same fan-out also carries one Choice per step over the options code built
+from that state, and the ordered answer is understood one step at a time against a
+desktop the step before it has advanced (`_projected`), which is the machinery the
+clause chain already uses. The plan is read ONLY when the seam Booleans did not already
+cut the utterance and it names two steps or more: a compound with no connective in it is
+the one thing `nlu/clauses.py` cannot see, and a single step is better served by the
+window agreement above, which a step Choice has no equivalent of.
+
 Picking. HINTS, ACT_SWAP and a launch offer all carry `Decision.action` as a TEMPLATE:
 the pending operation with every slot filled except, for hints, the target. The
 understander remembers the template of the last decision that had candidates
@@ -51,8 +64,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from hyprsay import controls, inapp, recipes
+from hyprsay import affordances, controls, inapp, recipes
+from hyprsay.adapters.base import Affordance
 from hyprsay.config import Config
+from hyprsay.jev import tokens
 from hyprsay.jev.client import JevAuthError, JevTimeout
 from hyprsay.jev.types import BooleanAnswer, ChoiceAnswer, Evaluation, Question, ScoreAnswer
 from hyprsay.model import (
@@ -70,7 +85,7 @@ from hyprsay.model import (
     Verdict,
     Window,
 )
-from hyprsay.nlu import bank, clauses, ground, requests, resolve, tiers
+from hyprsay.nlu import bank, clauses, context, ground, plan, requests, resolve, tiers
 from hyprsay.nlu.resolve import MAX_HINTS, LexiconLike, Resolution
 from hyprsay.nlu.tiers import Evidence
 
@@ -141,8 +156,29 @@ def _sounds_like_dictation(literal: tuple[str, ...] | list[str]) -> bool:
 
 STARTERS = (Intent.FOCUS_WINDOW, Intent.SWITCH_WORKSPACE, Intent.LAUNCH_APP)
 # the verdicts that mean this clause will change the desktop, which is what the clause
-# after it is allowed to assume
-ACTING = frozenset({Verdict.ACT, Verdict.ACT_SWAP, Verdict.COUNTDOWN, Verdict.CONFIRM_KEY})
+# after it, and now the utterance after it, is allowed to assume. Defined once, in the
+# module that has to agree with this one about what "it happened" means.
+ACTING = context.ACTING
+# The capabilities a harvested option may name and this module knows how to build a
+# complete Action for. `affordances.py` mints the option id from an `Intent`, so this is
+# a whitelist over that set: an intent left out of it drops the plan rather than guessing
+# at a slot nobody answered. RESIZE_WINDOW and MOVE_WINDOW are the two left out, because
+# `REQUIRED` says they need a direction or a size word and a step Choice carries neither.
+_CAPABILITIES = frozenset(
+    {
+        Intent.FOCUS_WINDOW.value,
+        Intent.SWITCH_WORKSPACE.value,
+        Intent.LAUNCH_APP.value,
+        Intent.VOLUME.value,
+        Intent.MEDIA.value,
+        Intent.FULLSCREEN.value,
+        Intent.TOGGLE_FLOATING.value,
+    }
+)
+# the harvest is local and measured at 1.4 to 2.2 ms p50, 5.6 ms on the first cold call
+# (affordances.py), but it reads adapters, and an adapter reads a bus. So it runs off the
+# loop with a deadline: an option list is worth a few milliseconds and never an utterance.
+HARVEST_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -242,6 +278,8 @@ class _Answers:
     absolute: dict[str, float] = field(default_factory=dict)
     titled: ChoiceAnswer | None = None
     apps: list[ChoiceAnswer] = field(default_factory=list)
+    # Rp: the step Choices, by question id, which is the shape `plan.read` takes
+    steps: dict[str, Any] = field(default_factory=dict)
     failed: dict[str, Exception] = field(default_factory=dict)
     late: bool = False
 
@@ -259,17 +297,26 @@ class Understander:
         *,
         normalizer: Callable[..., Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        adapters: tuple[Any, ...] = (),
     ) -> None:
         self.cfg = cfg
         self.lexicon = lexicon
         self.grammar = grammar
         self.evaluator = evaluator
         self._clock = clock
+        # built once by the caller and held, never here: building them per utterance
+        # would open the session bus on every word and throw away the handles an adapter
+        # minted for the utterance before (affordances.Machine)
+        self.adapters = tuple(adapters)
         if normalizer is None:
             from hyprsay.nlu.normalize import normalize as normalizer
         self._normalizer = normalizer
         # the operation waiting for a number; see "Picking" in the module docstring
         self.pending: Action | None = None
+        # what the last few utterances did, and the desktop this one is being decided
+        # against. It lives beside `pending` and is cleared on the same paths, because
+        # two memories with two lifetimes is the bug factory docs/STRATEGY.md 4.5 names.
+        self.context = context.Context()
         # what was sent to Jev and what came back, for `inspect --last`. Dictated text
         # never appears here: no request is ever built for an utterance that carries it.
         self.last_exchange: dict[str, Any] = {}
@@ -302,7 +349,29 @@ class Understander:
             )
         waits = decision.verdict in (Verdict.HINTS, Verdict.ACT_SWAP, Verdict.SUGGEST)
         self.pending = decision.action if waits and decision.candidates else None
+        # a chain is remembered by its head: the daemon may stop it part way, and only
+        # the head is certain to have been meant exactly as it was understood
+        self.context = self.context.remember(
+            context.remembered(
+                decision,
+                said=self.context.utterance,
+                now=self.context.now,
+                stamp=self.context.fingerprint,
+                lexicon=self.lexicon,
+            )
+        )
         return decision
+
+    def acted(self, ok: bool) -> None:
+        """What the executor made of the last decision. The caller knows, this does not:
+        a verdict of ACT is a permission, and the write can still refuse it."""
+        self.context = self.context.did(ok)
+
+    def forget(self) -> None:
+        """A lock or a cancel: nothing said before now is in force. Called on the same
+        paths that clear the numbered badges, for the same reason."""
+        self.pending = None
+        self.context = self.context.forgotten()
 
     async def _decide(
         self,
@@ -318,6 +387,18 @@ class Understander:
         if not norm.text.strip():
             self.last_exchange["path"] = "empty"
             return Decision(Verdict.NOTHING, reason="nothing was heard")
+        # the machine as this utterance sees it: what is open, what the last commands
+        # did, and the fingerprint of the desktop everything below is decided against
+        self.context = self.context.about(
+            state,
+            now=self._clock(),
+            utterance=norm.text,
+            tokens=tuple(getattr(token, "text", token) for token in norm.tokens),
+            picking=picking,
+            pinned_address=pinned_address,
+            lexicon=self.lexicon,
+        )
+        self.last_exchange["fingerprint"] = self.context.fingerprint
         if picking:
             self.last_exchange["path"] = "picking"
             return self._pick(norm, _heard(norm, None), picking, state)
@@ -952,7 +1033,13 @@ class Understander:
             return self._degrade(heard, state, need, "Jev is turned off")
 
         self.last_exchange["path"] = "jev"
-        fan, local_app = self._fan_out(heard, state, need, seams)
+        # Only for a whole utterance the grammar settled nothing about. A `need` is a
+        # parse that is complete except for one entity, and a plan would be answering a
+        # different question; a `chain` is a clause of an utterance something has already
+        # cut, and a plan inside it would cut it a second time, by a second mechanism,
+        # each obeying its own half.
+        offered = await self._harvest(heard) if need is None and chain is None else {}
+        fan, local_app, offered = self._fan_out(heard, state, need, seams, offered)
         answers = await self._ask(fan)
         taken = [] if seams.asked else self._separating(answers, seams)
         if seams.at:
@@ -961,6 +1048,10 @@ class Understander:
             chained = await self._chained(seams, state, pinned_address, taken)
             if chained is not None:
                 return chained
+        if offered and not taken and self._addressed(answers):
+            planned = self._planned(answers, offered, heard, state)
+            if planned is not None:
+                return planned
         if need is not None:
             reading = _Reading(need.parse.intent, need.parse.slots, [], grammar=True)
         else:
@@ -1002,8 +1093,12 @@ class Understander:
 
     def _seam_fan(self, heard: _Heard, seams: _Seams) -> requests.FanOut:
         """A request carrying nothing but the seam Booleans, for a parse the grammar
-        already settled: there is nothing else worth asking about it."""
-        base = requests.utterance_state(heard.said, heard.variants)
+        already settled: there is nothing else worth asking about it.
+
+        No context block either. Whether a word separates two commands is a question
+        about the sentence, and what is open on the desktop cannot help answer it.
+        """
+        base = self._base(heard)
         built = requests.split("r1", base, self._seam_questions(seams), self.cfg.jev.token_cap)
         fan = requests.FanOut(tuple(built))
         self.last_exchange["requests"] = [r.as_sent() for r in fan.requests]
@@ -1055,6 +1150,251 @@ class Understander:
         self.last_exchange["clauses"] = [seams.said(clause) for clause in cut]
         return replace(decisions[0], rest=tuple(decisions[1:]))
 
+    # -------------------------------------------------------------- the ordered plan
+
+    async def _harvest(self, heard: _Heard) -> dict[str, Affordance]:
+        """Everything the machine can do right now, as options a model may choose among.
+
+        Off the loop and under a deadline. The harvest itself measured 1.4 to 2.2 ms p50
+        and 5.6 ms cold (`affordances.py`), but it asks every adapter and an adapter asks
+        a bus, and the next key press has to open the microphone on time whatever a bus
+        is doing. A harvest that fails costs the plan and never the utterance.
+
+        The deadline abandons the thread rather than killing it, because nothing can kill
+        a thread blocked in a socket read. That is the right trade here: the work is
+        read-only by contract (`adapters.base.Adapter.resolve`), so a harvest still
+        running when nobody wants it any more costs a thread and changes nothing.
+        """
+        machine = affordances.Machine(
+            state=self.context.state,
+            heard=heard.text,
+            now=self.context.now,
+            lexicon=self.lexicon,
+            cfg=self.cfg,
+            adapters=self.adapters,
+            drift=self._drift(),
+        )
+        try:
+            async with asyncio.timeout(HARVEST_S):
+                found = await asyncio.to_thread(affordances.harvest, machine, copies=plan.MAX_STEPS)
+        except Exception as exc:
+            self.last_exchange["errors"]["harvest"] = type(exc).__name__
+            return {}
+        self.last_exchange["affordances"] = found.note()
+        return plan.offered(found.offered)
+
+    def _drift(self) -> tokens.Drift:
+        """How far the token estimator has been running low this session, from the client
+        that measures it. A caller with no client has measured nothing, which is what a
+        fresh `Drift` says."""
+        drift = getattr(self.evaluator, "drift", None)
+        return drift if isinstance(drift, tokens.Drift) else tokens.Drift()
+
+    def _plan_request(
+        self, base: dict[str, Any], offered: dict[str, Affordance]
+    ) -> tuple[requests.Request | None, dict[str, Affordance]]:
+        """Rp: the step Choices in ONE request, with the options that fit in it.
+
+        Never split across requests. `requests._wire_one` inlines a Choice's options
+        inside each question, so `step_1` and `step_2` in two different requests would
+        carry two copies of the option list, which is the one payload this fan-out cannot
+        afford (`affordances.OPTION_BUDGET`).
+
+        So the list shrinks instead, from the bottom of the ranking, exactly as
+        `window_requests` drops the least recently used window until R2 fits. The harvest
+        already priced three copies against its own budget; this re-prices them against
+        the request they are actually going into, because the fixed part of a step
+        question (`bank.plan_step`'s preamble, repeated verbatim in all three) is a cost
+        only the caller can see. The options that survive are returned, because an option
+        that was never sent must not be resolvable from an answer either.
+        """
+        options = dict(offered)
+        drift = self._drift()
+        cap = requests.headroom(self.cfg.jev.token_cap, drift)
+        while options:
+            questions = plan.questions(options)
+            estimated = requests.estimate(base, questions)
+            if estimated <= cap:
+                built = requests.Request(
+                    "rp", base, questions, estimated, drift.ratio, drift.samples
+                )
+                return built, options
+            options.popitem()  # the lowest ranked option goes first
+        return None, {}
+
+    def _addressed(self, answers: _Answers) -> bool:
+        """Was this said to the computer at all, and is it something hyprsay does?
+
+        The plan is read BEFORE the intent, because a compound utterance is exactly where
+        the intent Choice splits its mass between two commands and `_read_utterance`
+        would answer "not sure what you meant" about a sentence that is perfectly clear
+        and merely double. These two gates are not skipped with it: `addressed` is what
+        keeps a conversation in the room from moving windows, and a plan of two steps is
+        no more addressed than a plan of one. A failed R1 answers neither, so it plans
+        nothing: nothing has said this was a command.
+        """
+        gates = self.cfg.gates
+        addressed = answers.r1.get("addressed")
+        if not isinstance(addressed, BooleanAnswer) or addressed.probability < gates.addressed:
+            return False
+        unsupported = answers.r1.get("unsupported_kind")
+        if isinstance(unsupported, ChoiceAnswer) and unsupported.choice != bank.NONE:
+            # understood perfectly, and it is something hyprsay does not do. An option
+            # list cannot take a screenshot, so a plan here would name the nearest thing
+            # it can do instead, which is the worst possible answer.
+            return unsupported.margin < gates.margin
+        return True
+
+    def _planned(
+        self,
+        answers: _Answers,
+        offered: dict[str, Affordance],
+        heard: _Heard,
+        state: DesktopState,
+    ) -> Decision | None:
+        """The ordered plan as one decision carrying the rest, or None to go on as before.
+
+        Only a plan of two steps or more is taken. One step is what every path below
+        already answers, and answers better: a single target goes through R2 and R2b,
+        two formulations of one decision that have to agree, and a step Choice has no
+        equivalent of that agreement. What a plan adds is the thing nothing else can do,
+        which is to see a second command in an utterance with no connective in it.
+        """
+        read = plan.read(answers.steps, offered)
+        self.last_exchange["plan"] = {
+            "steps": read.describe(),
+            "cut": read.cut.value,
+            "complete": read.complete,
+        }
+        if not read.compound or read.cut is plan.Cut.UNKNOWN:
+            # an id code never minted is a broken answer rather than a finished one, so
+            # nothing in it is used, not even the steps that came before it
+            return None
+        decisions: list[Decision] = []
+        for step in read.steps:
+            built = self._step(step, heard, state, late=answers.late)
+            if built is None:
+                return None
+            decisions.append(built)
+            # each step is understood against the desktop the step before it leaves,
+            # which is the same projection the clause chain is judged against
+            state = _projected(state, built)
+        self.last_exchange["path"] = "plan"
+        return replace(decisions[0], rest=tuple(decisions[1:]))
+
+    def _step(
+        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool
+    ) -> Decision | None:
+        """One step, judged by the tier function exactly as a single command would be.
+
+        None means code cannot carry this step out, and then the whole plan is dropped
+        rather than shortened: obeying the front of an utterance and dropping the rest is
+        the failure this path exists to remove.
+        """
+        affordance = step.affordance
+        if affordance.adapter != affordances.SELF:
+            # an adapter performs its own capabilities through `perform(capability,
+            # handle)` and the executor has no route to one yet, so a service option is
+            # a candidate nobody can act on. It is still offered, because leaving it out
+            # of the list would let the model pick the nearest window instead.
+            return None
+        action = self._action_for(affordance, state, first=step.position == 1)
+        if action is None:
+            return None
+        if tiers.tier(action.intent, action, state, self.cfg) > 1:
+            # a step is chosen from a list, and a list is not evidence from the speaker.
+            # Everything disruptive stays on the paths that read the speaker's own words.
+            return None
+        wide = step.margin >= self.cfg.gates.margin
+        verb_said = tiers.verb_said(action.intent, heard.literal)
+        if action.intent is Intent.LAUNCH_APP and action.app is not None:
+            chosen = resolve.app_candidate(self.lexicon, heard.text, action.app, step.probability)
+            # `_launch` is the one funnel: whether naming an application means starting
+            # one or going to the copy that is already open is `ground.reach`'s decision
+            # against live state, here exactly as everywhere else
+            return self._launch(
+                action.app,
+                (chosen,),
+                Evidence(source="jev", late=late, wide_margin=wide),
+                heard,
+                state,
+                said=heard.text,
+            )
+        if affordance.kind == affordances.WINDOW and action.window is not None:
+            # a focus target is something the utterance was supposed to NAME, so it is
+            # corroborated the same way every other named window is: by a trusted field
+            candidate = resolve.window_candidate(
+                self.lexicon, heard.text, action.window, step.probability
+            )
+            evidence = Evidence(
+                source="jev",
+                corroborated=candidate.corroborated,
+                wide_margin=wide,
+                verb_said=verb_said,
+                explicit_target=candidate.corroborated,
+                late=late,
+            )
+            return self._finish(action, evidence, (candidate,), heard, state)
+        # a layout, workspace, volume or media step names no entity to corroborate: the
+        # option is hyprsay's own text and its target is the window in front of the
+        # speaker, which is pointing rather than naming (`_pointed` reads it the same way)
+        evidence = Evidence(
+            source="jev",
+            corroborated=True,
+            wide_margin=wide,
+            verb_said=verb_said,
+            explicit_target=True,
+            late=late,
+        )
+        return self._finish(action, evidence, (), heard, state)
+
+    def _action_for(
+        self, affordance: Affordance, state: DesktopState, *, first: bool
+    ) -> Action | None:
+        """The operation an option names, dereferenced from its handle by code.
+
+        The model answers an id and nothing else. Everything that turns that id into
+        something the executor will run happens here, out of the map code built in the
+        same breath as the option, which is why no label can ever become a target.
+
+        A step that is not the first leaves a layout target BLANK on purpose: the handle
+        names the window that was focused when the machine was harvested, and by the time
+        a later step runs an earlier one has moved the desktop. A blank target is settled
+        against FRESH state at the moment of the write (`executor._check_window`), which
+        is what a clause after a launch already does (`_bound`).
+        """
+        intent = Intent(affordance.capability) if affordance.capability in _CAPABILITIES else None
+        handle = affordance.handle
+        if intent is None:
+            return None
+        if intent is Intent.FOCUS_WINDOW:
+            window = state.by_address(handle)
+            return Action(intent, window=window) if window is not None else None
+        if intent is Intent.SWITCH_WORKSPACE:
+            return Action(intent, workspace=handle) if handle else None
+        if intent is Intent.LAUNCH_APP:
+            app = self._app_by_id(handle)
+            return Action(intent, app=app) if app is not None else None
+        if intent is Intent.VOLUME:
+            # "set" is the one verb that needs a number, and a step Choice carries none
+            return Action(intent, verb=handle) if handle in bank.VOLUME_VERBS - {"set"} else None
+        if intent is Intent.MEDIA:
+            return Action(intent, verb=handle) if handle in bank.MEDIA_VERBS else None
+        if intent in (Intent.FULLSCREEN, Intent.TOGGLE_FLOATING):
+            window = state.by_address(handle) if first else None
+            return None if first and window is None else Action(intent, window=window)
+        # RESIZE_WINDOW and MOVE_WINDOW need a direction or a size word that a step
+        # Choice does not carry (`REQUIRED`). Rather than invent one, the plan is dropped
+        # and the utterance is understood as one command, exactly as it was before.
+        return None
+
+    def _app_by_id(self, ident: str) -> App | None:
+        listing = getattr(self.lexicon, "apps", ())
+        listing = listing() if callable(listing) else listing
+        if isinstance(listing, dict):
+            listing = listing.values()
+        return next((app for app in listing or () if app.id == ident), None)
+
     def _partial(self, seams: _Seams, heard: _Heard, decision: Decision) -> Decision | None:
         """Words left over after a seam nobody cut, on an utterance about to be acted on.
 
@@ -1084,15 +1424,34 @@ class Understander:
                 )
         return None
 
+    def _base(self, heard: _Heard) -> dict[str, Any]:
+        """The state every request in a fan-out shares.
+
+        The context block that `nlu/context.py` builds is NOT in it, and that is a
+        deliberate stop rather than an oversight. What is open, what is focused and what
+        the last command did is exactly the evidence docs/STRATEGY.md 4.1 says the
+        question bank asks about and the request withholds, but putting it here changes
+        what leaves the machine, which is pinned by `docs/PRIVACY.md` and asserted
+        literally by `test_every_request_carries_only_the_utterance_the_variants_and_the
+        _note`. That row and that test belong to the same commit as this line, and it is
+        not this one. In the meantime the block is built for every utterance, journalled
+        as `last_exchange["context"]` so `hyprsay inspect --last` shows exactly what would
+        go, and the evidence itself does reach the model the other way: every harvested
+        option in Rp is a thing this desktop can do right now.
+        """
+        return requests.utterance_state(heard.said, heard.variants)
+
     def _fan_out(
         self,
         heard: _Heard,
         state: DesktopState,
         need: _Need | None,
         seams: _Seams = NO_SEAMS,
-    ) -> tuple[requests.FanOut, App | None]:
+        offered: dict[str, Affordance] | None = None,
+    ) -> tuple[requests.FanOut, App | None, dict[str, Affordance]]:
         cap = self.cfg.jev.token_cap
-        base = requests.utterance_state(heard.said, heard.variants)
+        base = self._base(heard)
+        self.last_exchange["context"] = self.context.for_request()
         built: list[requests.Request] = []
         windows: dict[str, Window] = {}
         titled: dict[str, Window] = {}
@@ -1105,6 +1464,9 @@ class Understander:
             built += requests.split("r1", base, {**bank.utterance_questions(), **asked}, cap)
         elif asked:
             built += requests.split("r1", base, asked, cap)
+        if offered:
+            one, offered = self._plan_request(base, offered)
+            built += [one] if one is not None else []
         if need is None or need.wants == "window":
             made, windows, dropped_windows = requests.window_requests(
                 base, state.windows, self._describe, cap
@@ -1130,7 +1492,7 @@ class Understander:
         fan = requests.FanOut(tuple(built), windows, titled, apps, dropped_windows, dropped_apps)
         self.last_exchange["requests"] = [r.as_sent() for r in fan.requests]
         self.last_exchange["dropped"] = {"windows": dropped_windows, "apps": dropped_apps}
-        return fan, local_app
+        return fan, local_app, offered or {}
 
     def _describe(self, window: Window) -> dict[str, Any]:
         app = self.lexicon.app_for_window(window)
@@ -1865,6 +2227,10 @@ def _merge(answers: _Answers, family: str, reply: Evaluation) -> None:
             answers.titled = answer
         elif family == "r3" and isinstance(answer, ChoiceAnswer):
             answers.apps.append(answer)
+        elif family == "rp":
+            # by id, unfiltered: `plan.read` is the one place that decides what a step
+            # answer has to look like, and it refuses anything that is not a ChoiceAnswer
+            answers.steps[qid] = answer
 
 
 def _loggable(reply: Evaluation) -> dict[str, Any]:

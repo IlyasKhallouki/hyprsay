@@ -34,16 +34,30 @@ exactly a speculative walk. When in-app options do arrive they take their tier f
 
 THE HARD CONSTRAINT, AND THE NUMBERS BEHIND THE CUT. Jev takes at most 255 options and
 this project caps a request at 1,800 tokens, because latency and HTTP 503s both climb
-past about 2.2k (docs/research/live/, `jev/tokens.py`). Measured on this machine's live
-desktop, read only, on 2026-09-22:
+past about 2.2k (docs/research/live/, `jev/tokens.py`). The binding limit is therefore
+the payload, never the 255. Measured on this machine's live desktop, read only, on
+2026-09-22, with `jev.tokens.estimate` on the wire shape `nlu/requests.wire` builds:
 
-    9 open windows, 10 workspaces, 8 of them ordinary, 236 installed .desktop entries
-    of which 231 are trusted, so a full harvest builds 9 + 10 + 4 + 12 + 8 = 43 options
-    before any adapter is reached
-    the 43 cost 552 tokens as a Choice, and their labels average 24 characters
-    ranking and cutting the 43 takes 1.4 ms, of which 1.2 ms is the lexicon
-    60 options at the measured average label cost 762 tokens; 60 at the full 60 character
-    label cost 1,246, which is 69 percent of the whole request cap
+    the desktop: 10 open windows, 4 workspaces, kitty focused; 234 .desktop files in
+      /usr/share/applications, of which the lexicon keeps 93 launchable and 83 trusted
+    a harvest with nothing said builds 10 + 4 + 4 + 0 + 8 = 26 options at 683 tokens
+    "go to chrome" builds 27, at 709 tokens, with 3 windows and 1 app above 0.9
+    the whole harvest takes 1.4 to 2.2 ms p50, 5.6 ms on the first cold call
+    labels come out at 20.3 characters on average against the 60 character cap
+
+    ONE option costs 17 tokens of scaffolding plus about 1 token per 3 characters of
+      label: 24 tokens at that measured average, 37 at the 60 character cap
+    so 50 options cost 1,241 tokens at the real average and 1,919 at the cap, and the
+      worst case alone is larger than the entire 1,800 token request
+    the rest of a request (fixed overhead, utterance, variants, `bank.NOTE`) measured
+      379 tokens, which leaves about 1,420 for options
+
+That last pair of numbers is why 50 is a ceiling and not a target. It is also why
+`harvest` takes `copies`: docs/STRATEGY.md 2.2 asks `step_1`, `step_2` and `step_3` to be
+a Choice over the SAME list, and `requests._wire_one` inlines a Choice's options inside
+each question, so three steps in one request carry three copies and cost three times.
+A caller that puts all three in one request passes `copies=3`; a caller that shards them
+across the fan-out, which costs about 45 ms for three on one warm connection, passes 1.
 
 So the list is capped twice: at `MAX_OPTIONS` candidates, and at `OPTION_BUDGET` tokens,
 whichever bites first. `budget_for` shrinks the token budget by however much
@@ -125,12 +139,12 @@ QUOTA: dict[str, int] = {
 # same 50, decided in `adapters/base.py` for the same measurement, so it is imported
 # rather than written again.
 MAX_OPTIONS = base.MAX_CANDIDATES
-# Tokens the option block may cost. Half of `config.Jev.token_cap`, which leaves the other
-# half for the utterance, the variants, the note and the questions themselves. Measured
-# above: 43 real options cost 552 tokens, and 60 worst case labels cost 1,246, so the
-# budget is what stops the worst case rather than the ordinary one.
-OPTION_BUDGET = 900
-# whatever `Drift` says, a list this small is still worth sending
+# Tokens ONE copy of the option block may cost. The measurement above: the rest of a
+# request is 379 tokens against a 1,800 cap, so 1,420 are free; 1,200 leaves 220 of
+# headroom for a longer utterance, more variants and a bigger note. At the measured
+# 24 tokens an option that is about 50 options, and at the 37 token worst case about 32.
+OPTION_BUDGET = 1200
+# whatever `Drift` and `copies` say, a list this small is still worth sending
 MIN_BUDGET = 200
 
 # A spoken word must reach this to count as naming a word of an option. This is
@@ -275,19 +289,21 @@ def said(words: Sequence[str], groups: Sequence[Sequence[str]]) -> float:
 
 
 def claims(words: Sequence[str], label: str) -> float:
-    """How much of what the speaker said an UNTRUSTED label accounts for, 0 to 1.
+    """How much of what the speaker said a free text label accounts for, 0 to 1.
 
     The direction is reversed on purpose. `said` asks whether the speaker used this
-    option's own words, which only works when this repository wrote them. A track name
-    came off the internet, so the honest question is the other one: of the words the
-    speaker actually said, how many does this label explain.
+    option's own words, which only works against a short vocabulary written by hand. A
+    track name or a one line capability summary is free text, so the honest question is
+    the other one: of the words the speaker actually said, how many does this label
+    explain.
 
-    THE RULE, which is `controls.best_match`'s rule. A label may win a SLOT in the list
-    and may never win a tier, an authorization or a corroboration: `adapters.base.candidates`
-    forces `trust=UNTRUSTED` on every one of these, `adapters.base.tier_for` lets the
-    label raise its tier and never lower it, and the handle behind it is only ever
-    dereferenced by the adapter that minted it. The worst a hostile label can do here is
-    push another option out of the list, and `Harvest.dropped` counts that out loud.
+    THE RULE, when that label is UNTRUSTED, which is `controls.best_match`'s rule. A label
+    may win a SLOT in the list and may never win a tier, an authorization or a
+    corroboration: `adapters.base.candidates` forces `trust=UNTRUSTED` on everything an
+    adapter resolved, `adapters.base.tier_for` lets a label raise its tier and never lower
+    it, and the handle behind it is only ever dereferenced by the adapter that minted it.
+    The worst a hostile label can do here is push another option out of the list, and
+    `Harvest.dropped` counts that out loud.
     """
     named = [w for w in base.words(label) if not mixed_script(w)]
     if not words or not named:
@@ -425,10 +441,10 @@ def _workspaces(context: Machine) -> list[Ranked]:
 # words this repository uses for it. `Intent` is the id, so the caller rebuilds the Action
 # with `Intent(affordance.capability)` and needs no table of its own.
 #
-# The summaries are short because they are labels, and a label is the one thing in an
-# option that grows without limit: measured below, the scaffolding around one option costs
-# about 13 tokens and every 3 characters of label costs 1 more. "fullscreen the focused
-# window" says as much to a chooser as a sentence would and costs a third of it.
+# The summaries are short because they are labels, and the label is the only part of an
+# option whose size is a choice: measured, the scaffolding around one option costs 17
+# tokens and every 3 characters of label costs 1 more. "fullscreen the focused window"
+# says as much to a chooser as a sentence would and costs 7 tokens instead of 16.
 LAYOUT_OPS: tuple[tuple[Intent, str, tuple[tuple[str, ...], ...]], ...] = (
     (
         Intent.FULLSCREEN,
@@ -486,8 +502,9 @@ def _app_label(app: App) -> str:
 def _apps(context: Machine) -> list[Ranked]:
     """The installed applications the words actually reach, as launch targets.
 
-    Not every installed application: 236 entries were counted on this machine and the
-    whole request budget is 1,800 tokens. `Lexicon.match_apps` is the filter as well as
+    Not every installed application: 234 `.desktop` files were counted on this machine,
+    93 of them launchable, against a whole request budget of 1,800 tokens and a measured
+    24 tokens an option. `Lexicon.match_apps` is the filter as well as
     the ranker, and it is the right one because it scores only against trusted fields of
     a `.desktop` file and drops everything below its own matching floor. An utterance that
     names no application therefore offers none, which is correct rather than thrifty:
@@ -565,14 +582,11 @@ def _services(context: Machine) -> list[Ranked]:
     words = spoken(context.heard)
     out: list[Ranked] = []
     for index, found in enumerate(base.offer(context.adapters, context, limit=QUOTA[SERVICE]), 1):
-        # a capability offered as itself carries a summary written in this repository, so
-        # its own words rank it; a resolved candidate carries text from a service
-        score = (
-            said(words, tuple((w,) for w in base.words(found.label)))
-            if found.trust is Trust.TRUSTED
-            else claims(words, found.label)
-        )
-        out.append(Ranked(replace(found, id=f"x{index}"), SERVICE, score))
+        # `claims` and not `said`, whatever the trust: an adapter's label is free text
+        # either way, a one line summary or a track name, and `said` only works against a
+        # short hand written vocabulary. The trust of the label changes nothing here
+        # because ranking is not authorization; see `claims`.
+        out.append(Ranked(replace(found, id=f"x{index}"), SERVICE, claims(words, found.label)))
     return out
 
 
@@ -602,8 +616,8 @@ def cost(offered: Sequence[Affordance]) -> int:
     return max(tokens.estimate({}, _wire(offered)) - tokens.estimate({}, _wire(())), 0)
 
 
-def budget_for(drift: tokens.Drift, budget: int = OPTION_BUDGET) -> int:
-    """The token budget, shrunk by however much the estimator has been running low.
+def budget_for(drift: tokens.Drift, *, copies: int = 1, budget: int = OPTION_BUDGET) -> int:
+    """The token budget for the options, after the drift and after the copies.
 
     `Drift.ratio` above 1 means the API reported more tokens than were estimated, which
     `jev/tokens.py` names as the dangerous direction: requests believed to be under the
@@ -611,9 +625,13 @@ def budget_for(drift: tokens.Drift, budget: int = OPTION_BUDGET) -> int:
     than into an HTTP 503, and it does nothing at all until a real request has reported a
     count, which is what "wire Drift in from the first request" has to mean to be worth
     anything.
+
+    `copies` is the other divisor and it is measured, not theoretical: `requests._wire_one`
+    inlines a Choice's options inside the question, so `step_1`, `step_2` and `step_3` over
+    one list in one request pay for that list three times.
     """
     ratio = drift.ratio if drift.samples else 1.0
-    return max(int(budget / max(ratio, 1.0)), MIN_BUDGET)
+    return max(int(budget / max(ratio, 1.0) / max(copies, 1)), MIN_BUDGET)
 
 
 def _cut(
@@ -629,15 +647,14 @@ def _cut(
     """
     dropped: Counter[str] = Counter()
     kept: list[Ranked] = []
-    for source in ORDER:
+    # every source that exists, not only the ones ORDER knows about: a source added to a
+    # builder and forgotten here would otherwise vanish without being counted, which is
+    # the exact failure `Harvest.note` exists to make impossible
+    for source in dict.fromkeys([*ORDER, *(r.source for r in built)]):
         group = sorted((r for r in built if r.source == source), key=lambda r: r.key)
         quota = QUOTA.get(source, limit)
         dropped[source] += max(len(group) - quota, 0)
         kept.extend(group[:quota])
-    # a source nobody declared an order for still has to be counted rather than vanish
-    for ranked in built:
-        if ranked.source not in _RANK:
-            kept.append(ranked)
     ranked_all = sorted(kept, key=lambda r: r.key)
     for extra in ranked_all[limit:]:
         dropped[extra.source] += 1
@@ -651,7 +668,13 @@ def _cut(
 # --------------------------------------------------------------------------- the harvest
 
 
-def harvest(context: Machine, *, limit: int = MAX_OPTIONS, budget: int | None = None) -> Harvest:
+def harvest(
+    context: Machine,
+    *,
+    limit: int = MAX_OPTIONS,
+    budget: int | None = None,
+    copies: int = 1,
+) -> Harvest:
     """One ranked list of everything the machine can do right now.
 
     The single entry point, and the whole of docs/STRATEGY.md 2.2: code enumerates, the
@@ -659,6 +682,10 @@ def harvest(context: Machine, *, limit: int = MAX_OPTIONS, budget: int | None = 
     by the module that owns the gesture, and nothing an application wrote can add an
     option, raise its own standing above a trusted one at the same score, or lower what it
     costs.
+
+    `copies` is how many times the caller's request will carry this list; see
+    `budget_for`. `budget` overrides both it and the drift, for a caller that has already
+    priced the rest of its request with `cost`.
 
     Never raises. A lexicon that throws or an adapter that hangs up costs its own options
     and no more, for the reason `adapters.base.offer` gives: a broken source must degrade
@@ -677,7 +704,7 @@ def harvest(context: Machine, *, limit: int = MAX_OPTIONS, budget: int | None = 
             built.extend(gather(context))
         except Exception as exc:  # one source must not cost the whole harvest
             log.debug("the %s affordances could not be built: %s", source, exc)
-    allowed = budget_for(context.drift) if budget is None else budget
+    allowed = budget_for(context.drift, copies=copies) if budget is None else budget
     ranked, dropped = _cut(built, limit, allowed)
     return Harvest(
         ranked=ranked,

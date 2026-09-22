@@ -13,13 +13,21 @@ Why several, and why small (docs/PLAN.md sections 1 and 5.5, all measured):
 - A forced choice always crowns a winner, even when the right window is not open. R2b
   asks the same decision as one absolute Boolean per window; agreement between the two
   formulations is the confidence signal, bought in the same round trip.
+- Rp, the ordered plan, is the one request that must NOT be split: see `plan_request`.
 
-What leaves the machine (PLAN section 7): the utterance, and `{app, kind, workspace,
-recency}` per window. Titles are written by whoever owns the window, including a hostile
-web page, so they travel only in R2t, only for the same-app windows being told apart,
-truncated and redacted, and the caller decides whether R2t exists at all. Dictated text
+What leaves the machine (PLAN section 7): the utterance, `{app, kind, workspace,
+recency}` per window, and, in Rp, the label and kind of each affordance code harvested.
+Titles are written by whoever owns the window, including a hostile web page, so they
+travel only in R2t, only for the same-app windows being told apart, truncated and
+redacted, and the caller decides whether R2t exists at all. An affordance label is
+untrusted for the same reason and is cut to 60 characters by `adapters.Affordance`
+itself; its handle never leaves, because `as_option` does not carry one. Dictated text
 never reaches this module: typing is grammar only and the caller never builds a fan-out
 for it.
+
+Every request built here carries what `jev.tokens.Drift` knew when it was sized, so the
+first real request of a session reports whether the estimator is running low, which is
+the dangerous direction (`headroom`).
 """
 
 from __future__ import annotations
@@ -29,12 +37,13 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from hyprsay.adapters.base import Affordance
 from hyprsay.config import Privacy
 from hyprsay.jev import tokens
 from hyprsay.jev.types import Boolean, Choice, Question, Score
 from hyprsay.lexicon import sanitize
 from hyprsay.model import App, Window
-from hyprsay.nlu import bank
+from hyprsay.nlu import bank, plan
 from hyprsay.nlu.tiers import is_terminal
 
 # R2b is capped by the plan; R2 uses the same set so the two formulations are comparable
@@ -57,10 +66,14 @@ def scrub(text: str, limit: int = 0) -> str:
 
 @dataclass(frozen=True)
 class Request:
-    name: str  # "r1", "r2", "r2b", "r2t", "r3", with ".2", ".3" for further parts
+    name: str  # "r1", "r2", "r2b", "r2t", "r3", "rp", with ".2", ".3" for further parts
     state: dict[str, Any]
     questions: dict[str, Question]
     estimated: int
+    # what `jev.tokens.Drift` knew when this request was sized. 1.0 over 0 samples is the
+    # honest state of the FIRST request of a session: nobody has checked the fit yet.
+    drift: float = 1.0
+    drift_samples: int = 0
 
     def as_sent(self) -> dict[str, Any]:
         """The body as the wire carries it, for `inspect --last`."""
@@ -69,6 +82,7 @@ class Request:
             "state": self.state,
             "questions": wire(self.questions),
             "estimated_tokens": self.estimated,
+            "token_drift": {"ratio": round(self.drift, 3), "samples": self.drift_samples},
         }
 
 
@@ -119,8 +133,41 @@ def estimate(state: dict[str, Any], questions: dict[str, Question]) -> int:
     return tokens.estimate(state, wire(questions))
 
 
-def _request(name: str, state: dict[str, Any], questions: dict[str, Question]) -> Request:
-    return Request(name, state, questions, estimate(state, questions))
+def headroom(cap: int, drift: tokens.Drift | None = None) -> int:
+    """The cap to build against, given how far the estimator has been running low.
+
+    `tokens.estimate` is a linear fit over eight synthetic English requests, and its own
+    docstring says paths, Unicode and long identifiers tokenize worse and that running
+    LOW is the dangerous direction: a request believed to be under the cap is not, so
+    either the client refuses it or the service starts returning 503 (13 of 30 at 11.5k
+    tokens). `JevClient` has recorded every estimate against the count the API reports
+    since it was written, and until now nothing read the tally. Reading it here is the
+    whole wiring: a session whose requests have been coming back 20 percent larger than
+    estimated builds its next request 20 percent smaller, and one whose fit holds builds
+    exactly as before.
+
+    Running HIGH is left alone. The cap already keeps headroom under the measured 2.2k
+    latency knee, and spending that headroom because a few small requests over-estimated
+    is how a fit gets trusted past the point it was measured at.
+    """
+    ratio = drift.ratio if drift is not None else 1.0
+    return int(cap / ratio) if ratio > 1.0 else cap
+
+
+def _request(
+    name: str,
+    state: dict[str, Any],
+    questions: dict[str, Question],
+    drift: tokens.Drift | None = None,
+) -> Request:
+    return Request(
+        name,
+        state,
+        questions,
+        estimate(state, questions),
+        drift.ratio if drift is not None else 1.0,
+        drift.samples if drift is not None else 0,
+    )
 
 
 def _part(prefix: str, index: int) -> str:
@@ -232,11 +279,17 @@ def _plain(item: Any) -> Any:
 
 
 def split(
-    prefix: str, state: dict[str, Any], questions: dict[str, Question], cap: int
+    prefix: str,
+    state: dict[str, Any],
+    questions: dict[str, Question],
+    cap: int,
+    *,
+    drift: tokens.Drift | None = None,
 ) -> list[Request]:
     """Independent questions (R1, R2b) across as few requests as fit the cap."""
+    cap = headroom(cap, drift)
     parts = _pack(questions, lambda part: estimate(state, part) <= cap)
-    return [_request(_part(prefix, i), state, part) for i, part in enumerate(parts)]
+    return [_request(_part(prefix, i), state, part, drift) for i, part in enumerate(parts)]
 
 
 def window_requests(
@@ -244,8 +297,11 @@ def window_requests(
     windows: Sequence[Window],
     describe: Callable[[Window], dict[str, Any]],
     cap: int,
+    *,
+    drift: tokens.Drift | None = None,
 ) -> tuple[list[Request], dict[str, Window], int]:
     """R2 and R2b over the same windows, most recent first. Returns (requests, keys, dropped)."""
+    cap = headroom(cap, drift)
     ordered = sorted(windows, key=lambda w: w.focus_rank)
     kept = ordered[:MAX_WINDOWS]
     while kept:
@@ -258,7 +314,10 @@ def window_requests(
         return [], {}, len(ordered)
     keys = {f"w{i}": w for i, w in enumerate(kept, 1)}
     absolute = {f"is_{key}": bank.absolute_window(options[key]) for key in keys}
-    built = [_request("r2", state, relative), *split("r2b", state, absolute, cap)]
+    built = [
+        _request("r2", state, relative, drift),
+        *split("r2b", state, absolute, cap, drift=drift),
+    ]
     return built, keys, len(ordered) - len(kept)
 
 
@@ -269,8 +328,11 @@ def title_request(
     kind_of: Callable[[Window], str],
     privacy: Privacy,
     cap: int,
+    *,
+    drift: tokens.Drift | None = None,
 ) -> tuple[Request | None, dict[str, Window]]:
     """R2t. The CALLER decides whether this may exist; this only builds it safely."""
+    cap = headroom(cap, drift)
     kept = sorted(windows, key=lambda w: w.focus_rank)[:MAX_WINDOWS]
     while len(kept) >= 2:
         options = {
@@ -280,15 +342,16 @@ def title_request(
         questions = {"titled": bank.titled_window(options)}
         if estimate(state, questions) <= cap:
             keys = {f"t{i}": w for i, w in enumerate(kept, 1)}
-            return _request("r2t", state, questions), keys
+            return _request("r2t", state, questions, drift), keys
         kept.pop()
     return None, {}
 
 
 def app_requests(
-    state: dict[str, Any], apps: Iterable[App], cap: int
+    state: dict[str, Any], apps: Iterable[App], cap: int, *, drift: tokens.Drift | None = None
 ) -> tuple[list[Request], dict[str, App], int]:
     """R3, sharded. Sorting by kind keeps similar apps in one shard, where they compete."""
+    cap = headroom(cap, drift)
     ordered = sorted((a for a in apps if a.trusted), key=lambda a: (a.kind, a.name.lower()))
     keys = {f"a{i}": app for i, app in enumerate(ordered, 1)}
     described = {key: describe_app(app) for key, app in keys.items()}
@@ -296,7 +359,61 @@ def app_requests(
     sent = shards[:MAX_APP_SHARDS]
     offered = {key for shard in sent for key in shard}
     built = [
-        _request(_part("r3", i), state, {"app": bank.application(shard)})
+        _request(_part("r3", i), state, {"app": bank.application(shard)}, drift)
         for i, shard in enumerate(sent)
     ]
     return built, {k: a for k, a in keys.items() if k in offered}, len(keys) - len(offered)
+
+
+def plan_request(
+    state: dict[str, Any],
+    affordances: Sequence[Affordance],
+    cap: int,
+    *,
+    steps: int = plan.MAX_STEPS,
+    drift: tokens.Drift | None = None,
+) -> tuple[Request | None, dict[str, Affordance], int]:
+    """Rp: the whole ordered plan, in ONE request, over ONE affordance list.
+
+    The caller passes the affordances already ranked against the transcript, best first;
+    the tail goes first when the list has to shrink, exactly as R2 drops the least
+    recently used window.
+
+    HOW MANY FIT, measured through this builder at the 1,800 token cap:
+
+        candidates that fit      1 Choice   2 Choices   3 Choices
+        60-character labels         30          12           7
+        real track labels           32          13           7
+        window and app labels       43          18          10
+
+    Three Choices carry the option list three times, because JSON has no references and
+    an option description has to be a rich object: bare labels moved a real window pick
+    from P=0.04 to P=0.96 the other way (`bank.py`). Putting the list in the shared
+    `state` instead and leaving short labels in the options was measured at about 3
+    percent cheaper in the range that fits, and no more, because a state character costs
+    0.4241 tokens against 0.3386 for a question character (`jev/tokens.py`): the
+    cheapest place for the list is inside the questions.
+
+    So STRATEGY.md 2.4's "plan for 50 to 60 candidates" was costed for one Choice and
+    does not survive three. A plan request carries 7 to 10. That is enough for what a
+    plan is over, which is the things this desktop can do right now after ranking, and
+    it is not enough for picking among 50 search results: that pick is a single Choice
+    in a second request, the one that offers what `resolve` returned, where 30 to 43
+    fit.
+
+    AND IT IS NOT SPLIT, although `split` would happily do it and each step Choice is
+    self-contained. A shard that fails would take one step of a compound command with
+    it, and the prefix rule would then read the survivors as a shorter plan: doing the
+    front of an utterance and dropping the rest, silently, which is the exact v1 bug
+    this design removes. One request fails whole, and a whole failure falls back to the
+    path that was there before.
+    """
+    cap = headroom(cap, drift)
+    kept = list(affordances)
+    while kept:
+        options = plan.offered(kept)
+        questions = plan.questions(options, steps)
+        if questions and estimate(state, questions) <= cap:
+            return _request("rp", state, questions, drift), options, len(affordances) - len(options)
+        kept.pop()
+    return None, {}, len(affordances)

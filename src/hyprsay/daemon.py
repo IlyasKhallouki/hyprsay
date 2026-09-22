@@ -9,12 +9,21 @@ The order of checks is the safety design, not an implementation detail:
 
     key down   -> locked? refuse. Pin the focused window. Open the mic. Warm Jev.
     key up     -> locked? drop the audio. Decode. Understand. (Cloud rescue, once.)
-    decision   -> the verdict says how much ceremony the action needs
-    act        -> the executor re-checks the lock and the target against FRESH state
+    decision   -> stamp it with the desktop it was decided against
+    act        -> consume the stamp, refuse a moved desktop above tier 1, then the
+                  executor re-checks the lock and the target against FRESH state
 
 A session lock at any point drops the utterance, cancels any countdown, closes the
 microphone and zeroes the buffer. Hyprland skips ordinary binds while locked, so the
 key-up never arrives in that case; the lock latch forces it.
+
+The stamp is `nlu/context.fingerprint`, and it guards the gap this file owns and nobody
+else can see: between the snapshot an utterance is understood against and the write, a
+decode takes 93 to 165 ms, a Jev fan-out about 315 ms and a tier 2 countdown another
+1.5 s, all measured, so roughly two seconds in which the desktop can become a different
+desktop. It is consumed before anything is written, so one decision can only ever act
+once (docs/STRATEGY.md 2.5). It is not a confidence gate and never replaces one: it
+proves the world has not moved, and says nothing about whether the choice was right.
 """
 
 from __future__ import annotations
@@ -30,6 +39,7 @@ from dataclasses import replace
 from . import journal, ops
 from .config import Config
 from .model import Action, Candidate, Decision, Intent, Outcome, Transcript, Verdict
+from .nlu import context
 
 log = logging.getLogger("hyprsay")
 
@@ -55,6 +65,9 @@ class Engine:
         # badges on screen: the next utterance may be a bare number
         self._picking: tuple[Candidate, ...] = ()
         self._picking_until = 0.0
+        # the fingerprint of the desktop the decision in hand was made against, cleared
+        # the moment it is used. Empty means nothing is waiting to be carried out.
+        self._stamp = ""
         self._pending: asyncio.Task | None = None  # a countdown or a confirm wait
         self._meter: asyncio.Task | None = None
         self._confirm: asyncio.Future | None = None
@@ -157,6 +170,12 @@ class Engine:
             # NOT on an ordinary key press: the key has to go down to say the number, so
             # clearing here would make every numbered hint and swap impossible to answer
             self._picking = ()
+            self._stamp = ""
+            # the badges and what the last commands did are one memory with one lifetime
+            # (nlu/context.py), so whatever clears one clears the other
+            forget = getattr(self.understander, "forget", None)
+            if forget is not None:
+                forget()
 
     # ------------------------------------------------------------------ key down
 
@@ -293,21 +312,59 @@ class Engine:
 
     async def _understand(self, transcript: Transcript, pinned: str = "") -> Decision:
         picking = self._picking if time.monotonic() < self._picking_until else ()
+        # one snapshot, read once: the stamp has to be the fingerprint of the very state
+        # the decision is made against, and `world.state` moves under a running daemon
+        state = self.world.state
+        self._stamp = context.fingerprint(state)
         return await self.understander.understand(
-            transcript, self.world.state, pinned_address=pinned or self._pinned, picking=picking
+            transcript, state, pinned_address=pinned or self._pinned, picking=picking
         )
 
     # ------------------------------------------------------------------ decisions
 
     async def _carry_out(self, d: Decision, pinned: str | None = None) -> None:
         self._picking = ()
+        # consumed before anything is written, so one decision can only act once: a
+        # retry, a second key press or a chain restarting finds nothing to spend
+        stamp, self._stamp = self._stamp, ""
+        stale = self._stale(d, stamp)
+        if stale:
+            await self._show("refused", text=stale, ttl_ms=3000)
+            return
         if d.rest:
             await self._chain(d, pinned)
             return
         await self._one(d, pinned)
 
+    def _stale(self, d: Decision, stamp: str) -> str:
+        """Why this decision may no longer be acted on, or "" when it may.
+
+        Only for what cannot be taken back. A focus or a workspace switch is free to
+        reverse and the executor already re-checks its own target against fresh state
+        (`executor._check_window`); a close, a type or a session action is not, and it is
+        decided against a whole desktop rather than against one window. So above tier 1
+        the desktop it was decided against has to still be there.
+
+        The check is on the whole utterance, before its first step, because that is the
+        only moment at which nothing has happened yet. After that the chain itself is
+        what moves the desktop, which is why the stamp is spent here rather than re-read
+        between steps: a step is not stale because the step before it did its job.
+        """
+        if max((step.tier for step in (d, *d.rest)), default=0) < 2:
+            return ""
+        if not stamp:
+            return "that was already carried out, so nothing was done"
+        if context.moved(stamp, self.world.state):
+            return "the desktop changed while that was being decided, so nothing was done"
+        return ""
+
     async def _chain(self, first: Decision, pinned: str | None) -> None:
-        """One clause at a time, on the one worker, stopping the moment one does not act.
+        """One step at a time, on the one worker, stopping the moment one does not act.
+
+        A step is a clause the seam Booleans cut out of the utterance, or a slot of the
+        ordered plan (`nlu/plan.py`); this file cannot tell them apart and does not need
+        to, because both arrive as `Decision.rest` and both were understood against the
+        desktop the step before them leaves.
 
         A later clause is an order that assumes the earlier one happened: "open firefox
         and move it to workspace 3" has nothing to move if the launch was refused. So a
@@ -422,6 +479,11 @@ class Engine:
             lambda: self.executor.execute(action, pinned_address=target),
         )
         journal.record("action", action=action, ok=outcome.ok, message=outcome.message)
+        # what the next utterance is told about this one: a verdict of ACT is a
+        # permission, and the write can still refuse it (nlu/context.Turn.ok)
+        acted = getattr(self.understander, "acted", None)
+        if acted is not None:
+            acted(outcome.ok)
         if not outcome.ok:
             await self._show("refused", text=outcome.message, ttl_ms=2500)
             return False
@@ -502,6 +564,7 @@ def build(cfg: Config) -> Engine:
     """Wire the real parts together. Imports are local so `hyprsay doctor` can report a
     missing piece instead of the whole CLI failing to import."""
     from . import a11ybus
+    from . import adapters as adapter_pkg
     from . import jev as jev_pkg
     from .activation import PushToTalk
     from .audio import Recorder
@@ -551,7 +614,11 @@ def build(cfg: Config) -> Engine:
         ptt=PushToTalk(cfg),
         recorder=Recorder(cfg),
         recognizer=make_recognizer(cfg, key),
-        understander=Understander(cfg, lexicon, Grammar(), client),
+        # the adapters are built ONCE and held: building them per utterance would open
+        # the session bus on every word and throw away the handles an adapter minted for
+        # the utterance before, which is the half of the contract that makes a handle
+        # safe to be opaque (adapters/base.Minted)
+        understander=Understander(cfg, lexicon, Grammar(), client, adapters=adapter_pkg.live(cfg)),
         executor=acts,
         latch=latch,
         hud=HudServer(hud=cfg.hud, countdown_s=cfg.safety.countdown_s),
