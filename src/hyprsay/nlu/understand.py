@@ -177,6 +177,12 @@ _CAPABILITIES = frozenset(
         Intent.MEDIA.value,
         Intent.FULLSCREEN.value,
         Intent.TOGGLE_FLOATING.value,
+        # reaching inside a window. The handle names the window AND what to touch inside
+        # it, and `affordances.target` takes it apart so no caller does string surgery.
+        Intent.SCROLL.value,
+        Intent.PRESS_CHORD.value,
+        Intent.RUN_RECIPE.value,
+        Intent.CLICK_CONTROL.value,
     }
 )
 # the harvest is local and measured at 1.4 to 2.2 ms p50, 5.6 ms on the first cold call
@@ -1433,6 +1439,23 @@ class Understander:
         if intent in (Intent.FULLSCREEN, Intent.TOGGLE_FLOATING):
             window = state.by_address(handle) if first else None
             return None if first and window is None else Action(intent, window=window)
+        if intent in tiers.IN_APP:
+            # the handle carries the window and the thing inside it, in that order
+            address, inside = affordances.target(handle)
+            window = state.by_address(address)
+            if window is None or not inside:
+                return None
+            if intent is Intent.SCROLL:
+                if inside not in {d.value for d in Direction}:
+                    return None
+                return Action(intent, window=window, direction=Direction(inside))
+            if intent is Intent.CLICK_CONTROL:
+                # `ops._click_control` reads `text` to match the control and `verb` to
+                # check the exact name it resolved to, so both carry the same words. The
+                # option only exists because the speaker's own words were found in that
+                # name (`controls.best_match`), which is what makes it corroborated.
+                return Action(intent, window=window, verb=inside, text=inside)
+            return Action(intent, window=window, verb=inside)
         # RESIZE_WINDOW and MOVE_WINDOW need a direction or a size word that a step
         # Choice does not carry (`REQUIRED`). Rather than invent one, the plan is dropped
         # and the utterance is understood as one command, exactly as it was before.
