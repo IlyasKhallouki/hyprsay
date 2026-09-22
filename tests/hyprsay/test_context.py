@@ -691,7 +691,9 @@ class Understanding:
         self.forgot = 0
         self.outcomes: list[bool] = []
 
-    async def understand(self, transcript, state, *, pinned_address="", picking=()):
+    async def understand(
+        self, transcript, state, *, pinned_address="", picking=(), provisional=False
+    ):
         if self.moves is not None and self.world is not None:
             self.world.state = self.moves
         return self.decision

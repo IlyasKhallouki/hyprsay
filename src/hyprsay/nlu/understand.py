@@ -340,7 +340,14 @@ class Understander:
         *,
         pinned_address: str = "",
         picking: tuple[Candidate, ...] = (),
+        provisional: bool = False,
     ) -> Decision:
+        """`provisional` decides without remembering. While the push-to-talk key is held
+        the same sentence is understood six to nine times as it grows (`incremental.py`),
+        and every ACT along the way used to be written into the three turn memory, so the
+        memory filled with drafts of the sentence being spoken and pushed out the command
+        before it. The memory and `pending` are evidence for the NEXT utterance, and a
+        sentence still being said is not one yet. The decode on key up remembers it."""
         self.last_exchange = {
             "bank": bank.VERSION,
             "path": "",
@@ -362,6 +369,8 @@ class Understander:
                 Verdict.REFUSE,
                 reason=f"internal error while understanding ({type(exc).__name__}); nothing done",
             )
+        if provisional:
+            return decision
         waits = decision.verdict in (Verdict.HINTS, Verdict.ACT_SWAP, Verdict.SUGGEST)
         self.pending = decision.action if waits and decision.candidates else None
         # a chain is remembered by its head: the daemon may stop it part way, and only

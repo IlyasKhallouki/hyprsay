@@ -378,7 +378,12 @@ class Engine:
             await self._drop_for_lock()
             return False
         borrowed = self._borrow()
-        decision = await self._understand(Transcript(text, backend=self.partials.name), pinned)
+        # provisional: a sentence still being spoken is not one to remember. Six to nine
+        # partials of it would otherwise fill the three turn memory with drafts of itself
+        # and push out the command before it (`Understander.understand`).
+        decision = await self._understand(
+            Transcript(text, backend=self.partials.name), pinned, provisional=True
+        )
         if await self._locked_now():
             # NOT given back: a lock means nothing said before now is in force, and
             # `_drop_for_lock` has already told the understander to forget it
@@ -417,36 +422,23 @@ class Engine:
         return True
 
     def _borrow(self) -> tuple:
-        """Everything a partial is about to overwrite that belongs to the real utterance.
+        """The daemon state a partial is about to overwrite and that is not its to spend.
 
-        Every `understand` remembers what it decided (`nlu/context.remembered`) and that
-        memory is evidence in the next request and in how "it" and "again" resolve. One
-        sentence decoded six times while the key is held would fill a three turn memory
-        with six copies of itself and push the command before it out, so the held path
-        hands the memory back exactly as it found it. The utterance is remembered once,
-        by the decode on key up, which is also the only decode that saw all of it.
+        The stamp is the fingerprint of the desktop that ONE decision was made against,
+        `_carry_out` spends it, and a partial's decision is never the one that gets
+        spent. Leaving a partial's stamp behind would let a tier 2 action on key up pass
+        a freshness check it never sat for. `_resume` goes with it because a question a
+        partial raised belongs to the same utterance, not to the one before it.
 
-        The stamp goes back for a different reason: it is the fingerprint of the desktop
-        that ONE decision was made against, `_carry_out` spends it, and a partial's
-        decision is never the one that gets spent. Leaving a partial's stamp behind would
-        let a tier 2 action on key up pass a freshness check it never sat for.
-
-        A `provisional=True` on `understand` would be cleaner than reaching in here; it
-        is written up in scratchpad/streaming-asks.md.
+        What the understander remembers is NOT here any more: partials are understood
+        with `provisional=True`, so the memory and `pending` are never written while the
+        key is held and there is nothing to put back.
         """
-        held = {
-            name: getattr(self.understander, name)
-            for name in ("context", "pending")
-            if hasattr(self.understander, name)
-        }
-        return held, self._stamp, self._resume
+        return self._stamp, self._resume
 
     def _give_back(self, borrowed: tuple) -> None:
-        """Put it all back. Never called on the lock path: there, forgetting is the point."""
-        held, stamp, resume = borrowed
-        for name, value in held.items():
-            setattr(self.understander, name, value)
-        self._stamp, self._resume = stamp, resume
+        """Put it back. Never called on the lock path: there, forgetting is the point."""
+        self._stamp, self._resume = borrowed
 
     # ------------------------------------------------------------------ key up
 
@@ -542,7 +534,9 @@ class Engine:
         self._forget_everything("session locked")
         await self._show("refused", text="session is locked", ttl_ms=1500)
 
-    async def _understand(self, transcript: Transcript, pinned: str = "") -> Decision:
+    async def _understand(
+        self, transcript: Transcript, pinned: str = "", *, provisional: bool = False
+    ) -> Decision:
         live = time.monotonic() < self._picking_until
         picking = self._picking if live else ()
         # the clauses waiting on an answer wait exactly as long as the badges do. Once
@@ -555,7 +549,11 @@ class Engine:
         state = self.world.state
         self._stamp = context.fingerprint(state)
         return await self.understander.understand(
-            transcript, state, pinned_address=pinned or self._pinned, picking=picking
+            transcript,
+            state,
+            pinned_address=pinned or self._pinned,
+            picking=picking,
+            provisional=provisional,
         )
 
     # ------------------------------------------------------------------ decisions

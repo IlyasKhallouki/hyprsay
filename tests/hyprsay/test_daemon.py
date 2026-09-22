@@ -123,9 +123,13 @@ class Understander:
     def __init__(self, decisions):
         self.decisions = decisions  # transcript text -> Decision
         self.seen: list[tuple[str, tuple]] = []
+        self.provisional: list[bool] = []
 
-    async def understand(self, transcript, state, *, pinned_address="", picking=()):
+    async def understand(
+        self, transcript, state, *, pinned_address="", picking=(), provisional=False
+    ):
         self.seen.append((transcript.text, picking))
+        self.provisional.append(provisional)
         return self.decisions[transcript.text]
 
 
@@ -993,11 +997,16 @@ class Remembering(Understander):
         self.context = ()
         self.pending = None
 
-    async def understand(self, transcript, state, *, pinned_address="", picking=()):
+    async def understand(
+        self, transcript, state, *, pinned_address="", picking=(), provisional=False
+    ):
         decision = await super().understand(
             transcript, state, pinned_address=pinned_address, picking=picking
         )
-        self.context = (transcript.text, *self.context)
+        if not provisional:
+            # exactly what the real one does: a provisional decode is a sentence still
+            # being spoken, and it is never written into the memory
+            self.context = (transcript.text, *self.context)
         return decision
 
 
