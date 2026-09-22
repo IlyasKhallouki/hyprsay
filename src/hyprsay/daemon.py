@@ -459,6 +459,24 @@ class Engine:
         # the words the decode just produced rather than the silence before them
         quiet = self.recorder.trailing_silence(SETTLE_SILENCE_MS)
         look = self._settler.look(text, chain, quiet=quiet)
+        # Every partial, not only the ones that fired. A misfire on a real voice is the
+        # one thing this path has never been measured against, and "it felt wrong" is
+        # not a bug report: what is needed afterwards is which decode the sentence was
+        # at, what the clauses looked like then, whether the room had gone quiet, and
+        # which clause was next. Verdicts and tiers only, never the words of a clause,
+        # because a recipe's spoken span and anything dictated are the speaker's own.
+        journal.record(
+            "partial",
+            decode=self._settler.decodes if hasattr(self._settler, "decodes") else None,
+            clauses=[c.verdict.value for c in chain],
+            tiers=[c.tier for c in chain],
+            quiet=quiet,
+            consumed=look.consumed_index,
+            ready=len(look.ready),
+            drifted=len(look.drifted),
+            exact=look.exact,
+            backend=self.partials.name,
+        )
         for ready in look.ready:
             # the key may have come up, or the screen locked, between two clauses of one
             # partial as easily as between two partials
