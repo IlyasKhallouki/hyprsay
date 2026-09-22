@@ -325,6 +325,20 @@ _RULES: tuple[_Rule, ...] = (
         "go to 3",
         "switch to four",
     ),
+    # No workspace of its own: "there" is wherever the clause before this one acted, and
+    # `understand` fills it from the chain. `clauses.BACK_REFERENCES` has counted "there"
+    # as a back reference all along and the understander has always known how to bind it,
+    # but nothing could parse the words, so "put zapzap on three and go there" got as far
+    # as the move and then said it was not sure what you meant. On its own it still asks
+    # which workspace, because on its own nobody can know.
+    _rule(
+        Intent.SWITCH_WORKSPACE,
+        r"(?:go|switch|jump|head|hop|take me|bring me|send me|move me)(?: over)?"
+        r"(?: to)?(?: there| over there)",
+        _NOTHING,
+        "go there",
+        "take me there",
+    ),
     _rule(
         Intent.MOVE_TO_WORKSPACE,
         rf"{_MOVE} {_ONTO} {_WS_TARGET}",
@@ -553,7 +567,7 @@ _RULES: tuple[_Rule, ...] = (
         Intent.PRESS_CHORD,
         # "all the way" is redundant before Home or End, but people say it, and without
         # somewhere to put it the whole phrase matched nothing
-        rf"(?:(?:go|jump|scroll|take me) )?(?:(?:{_AMT}) )?(?:to )?the top"
+        rf"(?:(?:go|jump|scroll|take me) )?(?:back )?(?:(?:{_AMT}) )?(?:to )?the top"
         rf"(?: of (?:the )?(?:page|list|document))?|top",
         _slots(verb="Home"),
         "top",
@@ -561,7 +575,7 @@ _RULES: tuple[_Rule, ...] = (
     ),
     _rule(
         Intent.PRESS_CHORD,
-        rf"(?:(?:go|jump|scroll|take me) )?(?:(?:{_AMT}) )?(?:to )?the bottom"
+        rf"(?:(?:go|jump|scroll|take me) )?(?:back )?(?:(?:{_AMT}) )?(?:to )?the bottom"
         rf"(?: of (?:the )?(?:page|list|document))?|bottom",
         _slots(verb="End"),
         "bottom",

@@ -1418,6 +1418,32 @@ def test_a_clause_after_a_question_is_aimed_at_the_window_the_answer_picks():
     assert scroll.verdict is not Verdict.REFUSE
 
 
+def test_there_is_the_workspace_the_clause_before_acted_on():
+    """`clauses.BACK_REFERENCES` has counted "there" as a back reference all along and
+    this binding has always been here, but no rule could parse the words, so the chain
+    machinery for it was unreachable: "put zapzap on three and go there" made the move
+    and then said it was not sure what you meant."""
+    parses = {
+        "move kitty to workspace 3": Parse(
+            Intent.MOVE_TO_WORKSPACE, Slots(window_ref="kitty", workspace="3")
+        ),
+        "go there": Parse(Intent.SWITCH_WORKSPACE, Slots()),
+    }
+    u, _ = build(SEPARATED, parses=parses)
+    decision = say(u, "move kitty to workspace 3 and go there")
+    assert decision.action.workspace == "3"
+    went = decision.rest[0]
+    assert went.action.intent is Intent.SWITCH_WORKSPACE
+    assert went.action.workspace == "3"
+
+
+def test_there_on_its_own_still_asks_which_workspace():
+    u, _ = real()  # the real grammar: nothing else can parse "there"
+    decision = say(u, "go there")
+    assert decision.verdict is Verdict.SUGGEST
+    assert decision.action is None
+
+
 def test_three_clauses_come_back_in_the_order_they_were_spoken():
     parses = {
         "open firefox": launch("firefox"),
