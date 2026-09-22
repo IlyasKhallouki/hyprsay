@@ -666,9 +666,56 @@ def _system(context: Machine) -> list[Ranked]:
     ):
         capability = _capability(intent, SYSTEM, f"{prefix} control", context, None)
         for verb, summary, groups in verbs:
+            if intent is Intent.MEDIA and _names_a_thing_to_play(words):
+                # "play the second live version" is not a transport verb. Measured live,
+                # `media_play_pause` held about a third of the mass beside the adapter
+                # option that was actually right, which came back at 0.38 to 0.44 against
+                # a floor of 0.5, so the plan read UNSURE and nothing happened. It is the
+                # catch-all this bank's own docstring says must not sit beside real
+                # options: "play" matches every one of them and distinguishes none. When
+                # the speaker named WHAT to play, the transport verbs are not candidates.
+                continue
             option = _option(capability, f"{prefix}_{verb}", summary, verb, Trust.TRUSTED)
             out.append(Ranked(option, SYSTEM, said(words, groups)))
     return out
+
+
+# words that turn "play" from a transport verb into a request for something particular
+ORDINAL_WORDS = frozenset(
+    {"first", "second", "third", "fourth", "fifth", "last", "next", "previous", "other"}
+)
+_A_THING = frozenset(
+    {
+        "version",
+        "song",
+        "track",
+        "album",
+        "playlist",
+        "artist",
+        "by",
+        "live",
+        "remix",
+        "cover",
+        "acoustic",
+        "episode",
+        "podcast",
+        "radio",
+        "mix",
+        "soundtrack",
+    }  # fmt: skip
+)
+
+
+def _names_a_thing_to_play(words: tuple[str, ...]) -> bool:
+    """Did the speaker name something to play, rather than ask for play or pause?
+
+    An ordinal counts on its own ("the second one"): nothing about pausing has a second.
+    """
+    if not words:
+        return False
+    if _A_THING & set(words):
+        return True
+    return any(w in ORDINAL_WORDS for w in words)
 
 
 # --------------------------------------------------------------------------- adapters
