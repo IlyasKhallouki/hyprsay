@@ -530,6 +530,33 @@ def _doctor(cfg, args) -> int:
             "volume and media ready" if not missing else f"missing: {', '.join(missing)}"
         )
 
+    def clicking():
+        """Which open windows publish an accessibility tree, and which do not.
+
+        Silence was the whole problem here. A window that publishes nothing simply
+        never offers a control, so "click send" answers that it cannot find one and
+        nothing anywhere says the tree was empty. Chrome is the common case and the
+        fix is one flag, so the fix is printed rather than left to be discovered.
+        """
+        from . import controls
+        from .world import HyprSocket, snapshot
+
+        usable, why = controls.probe()
+        if not usable:
+            return False, why
+        windows = snapshot(HyprSocket()).windows
+        mute = sorted({w.cls for w in windows if not controls.cached(w)})
+        if not mute:
+            return True, "every open window publishes a tree, or has not been read yet"
+        chrome = [c for c in mute if "chrome" in c.lower() or "chromium" in c.lower()]
+        note = f"no tree read yet from: {', '.join(mute[:4])}"
+        if chrome:
+            note += (
+                f". {chrome[0]} publishes nothing unless it was started with "
+                "--force-renderer-accessibility, so clicking by name cannot work in it"
+            )
+        return True, note
+
     for name, fn in [
         ("compositor", hyprland),
         ("config provider", lua_provider),
@@ -540,6 +567,7 @@ def _doctor(cfg, args) -> int:
         ("hud toolkit", hud),
         ("push to talk bind", bind),
         ("volume and media", tools),
+        ("clicking by name", clicking),
     ]:
         check(name, fn)
     width = max(len(name) for name, _, _ in checks)
