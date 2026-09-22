@@ -26,7 +26,7 @@ from typing import Any
 from hyprsay.jev.types import Boolean, Choice, Question, Score
 from hyprsay.model import JEV_INTENTS, Intent
 
-VERSION = "2026-09-22.2"
+VERSION = "2026-09-22.3"
 
 NOTE = (
     "The utterance is an automatic speech recognition transcript of a short spoken "
@@ -306,6 +306,38 @@ def application(options: dict[str, Any]) -> Choice:
     return Choice(
         "These are some of the installed applications. Which one is the speaker referring to?",
         {**options, NONE: "none of these applications"},
+    )
+
+
+def reach(options: dict[str, Any]) -> Choice:
+    """Rx: what to DO about a phrase the lexicon could not place.
+
+    The question this bank never asked. When the grammar half matches, the utterance
+    becomes a NARROW question, "which of your windows is 'youtube'?", and nothing on the
+    desktop is, so the answer is empty and hyprsay says "pick a number" about a list
+    that cannot contain the answer. The question was wrong, not hard.
+
+    R1 cannot rescue it either, and that is the part worth writing down: `JEV_INTENTS`
+    holds no recipe intent, deliberately, so the widest question in the bank has no way
+    to say "point the browser at it" however sure it is. The answer was not missing from
+    the model, it was missing from the ballot.
+
+    Measured against the real service on 2026-09-22, every one of those utterances is
+    answered at 0.96 to 0.99 once the option exists: "go to youtube" is navigating
+    (0.99), "go to linus tech tips" is navigating (0.98), "go to spotify" is launching
+    (0.96), "open my browser here" is bringing the open window to this workspace (0.96),
+    and "open a new chrome" is a second copy (0.74). None of that is cleverness. It is
+    the option being present.
+
+    Jev generates nothing, so it can never produce the string "youtube.com": it can only
+    choose. So code builds each whole candidate ACTION out of the speaker's own words and
+    offers it, which is what docs/STRATEGY.md 2.2 means by enumerating the action space
+    rather than enumerating rules. The options carry what is open, exactly as the plan's
+    options do, because `_base` sends the utterance and nothing else (docs/PRIVACY.md).
+    """
+    return Choice(
+        "What is the speaker asking the computer to do?",
+        {**options, NONE: "none of these"},
     )
 
 

@@ -1444,6 +1444,43 @@ def test_there_on_its_own_still_asks_which_workspace():
     assert decision.action is None
 
 
+def _heard_for(understander, text):
+    """The `_Heard` the pipeline would build for this utterance, via the real normalizer."""
+    from hyprsay.nlu.understand import _heard
+
+    norm = understander._normalize(text)
+    return _heard(norm, understander.grammar.parse(norm))
+
+
+def test_the_reach_ballot_offers_whole_actions_built_from_the_phrase():
+    """Rx exists because the narrow question cannot contain the answer: nothing on this
+    desktop is called "youtube", and no amount of asking which window is will help when
+    a browser sitting right there can go to it."""
+    from hyprsay.nlu.understand import _Need
+
+    u, _ = real()
+    need = _Need(Parse(Intent.FOCUS_WINDOW, Slots(window_ref="youtube")), wants="window")
+    labels, plans = u._reach_ballot(_heard_for(u, "go to youtube"), browser(), need)
+    assert "site" in plans and plans["site"].text == "youtube"
+    assert plans["site"].kind == "site"
+    # and the label says where each window is, because the vague version lost to
+    # "none of these" at 0.53 on a decision the rich version took at 0.96
+    assert any("workspace" in text for text in labels.values())
+
+
+def test_the_ballot_never_offers_an_option_that_cannot_be_carried_out():
+    """An option code cannot perform is a trap, not a choice. "go to linus tech tips"
+    was answered "navigate" at 0.91 and then died on "that sounded like a phrase rather
+    than an address"."""
+    from hyprsay.nlu.understand import _Need
+
+    u, _ = real()
+    need = _Need(Parse(Intent.FOCUS_WINDOW, Slots(window_ref="linus tech tips")), wants="window")
+    _labels, plans = u._reach_ballot(_heard_for(u, "go to linus tech tips"), browser(), need)
+    assert "site" not in plans  # not an address
+    assert "web" in plans  # but searching for it is a real thing to do
+
+
 def test_three_clauses_come_back_in_the_order_they_were_spoken():
     parses = {
         "open firefox": launch("firefox"),

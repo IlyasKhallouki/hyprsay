@@ -58,6 +58,7 @@ cancellable COUNTDOWN. A number chooses a target; it does not waive a tier.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
 from collections.abc import Callable
@@ -65,7 +66,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from hyprsay import affordances, controls, inapp, recipes
-from hyprsay.adapters.base import Affordance
+from hyprsay.adapters.base import Affordance, Trust
 from hyprsay.config import Config
 from hyprsay.jev import tokens
 from hyprsay.jev.client import JevAuthError, JevTimeout
@@ -181,6 +182,8 @@ _CAPABILITIES = frozenset(
 # the harvest is local and measured at 1.4 to 2.2 ms p50, 5.6 ms on the first cold call
 # (affordances.py), but it reads adapters, and an adapter reads a bus. So it runs off the
 # loop with a deadline: an option list is worth a few milliseconds and never an utterance.
+log = logging.getLogger("hyprsay")
+
 HARVEST_S = 0.25
 
 
@@ -283,6 +286,8 @@ class _Answers:
     apps: list[ChoiceAnswer] = field(default_factory=list)
     # Rp: the step Choices, by question id, which is the shape `plan.read` takes
     steps: dict[str, Any] = field(default_factory=dict)
+    # Rx: what to do about a phrase the lexicon could not place (`_reach_ballot`)
+    reach: ChoiceAnswer | None = None
     failed: dict[str, Exception] = field(default_factory=dict)
     late: bool = False
 
@@ -316,6 +321,8 @@ class Understander:
         self._normalizer = normalizer
         # the operation waiting for a number; see "Picking" in the module docstring
         self.pending: Action | None = None
+        # the Rx ballot this utterance offered, so its answer can be read back
+        self._reach_plans: dict[str, _Reach] = {}
         # what the last few utterances did, and the desktop this one is being decided
         # against. It lives beside `pending` and is cleared on the same paths, because
         # two memories with two lifetimes is the bug factory docs/STRATEGY.md 4.5 names.
@@ -346,6 +353,11 @@ class Understander:
         except Exception as exc:  # the engine must never die on one utterance
             self.last_exchange["path"] = "error"
             self.last_exchange["errors"]["internal"] = type(exc).__name__
+            # The name alone sent me hunting a KeyError by hand for twenty minutes. The
+            # traceback goes to the log and NOT into last_exchange, because the journal
+            # is written to disk and a frame in this module can hold the speaker's own
+            # words (docs/PRIVACY.md); the log is the operator's and is not journalled.
+            log.exception("understanding %r failed", type(exc).__name__)
             decision = Decision(
                 Verdict.REFUSE,
                 reason=f"internal error while understanding ({type(exc).__name__}); nothing done",
@@ -1066,6 +1078,15 @@ class Understander:
         decision = self._resolve_remote(
             reading, fan, answers, local_app, heard, state, pinned_address, need, chain
         )
+        if need is not None and not _answered(decision):
+            reached = self._reached(answers, heard, state)
+            if reached is not None and _answered(reached):
+                return self._partial(seams, heard, reached) or reached
+            # The narrow question could not place the phrase, which is an empty answer
+            # to the wrong question rather than a hard case: nothing here is called
+            # "youtube", but a browser sitting right there can go to it. Rx asked the
+            # open question in the same parallel gather, so the answer is already paid
+            # for.
         if seams.at and not taken:
             return self._partial(seams, heard, decision) or decision
         return decision
@@ -1444,6 +1465,134 @@ class Understander:
         """
         return requests.utterance_state(heard.said, heard.variants)
 
+    def _reach_ballot(
+        self, heard: _Heard, state: DesktopState, need: _Need
+    ) -> tuple[dict[str, str], dict[str, _Reach]]:
+        """Every whole action the speaker's phrase could name, as options Jev may pick.
+
+        Built from live state and from the phrase itself, never from a table of routes.
+        A window is described by the same trusted fields the lexicon matches on, so an
+        application cannot write itself onto the ballot through its title.
+        """
+        phrase = (need.parse.slots.window_ref or need.parse.slots.app_ref or "").strip()
+        if not phrase:
+            return {}, {}
+        labels: dict[str, str] = {}
+        plans: dict[str, _Reach] = {}
+        ranked = self.lexicon.match_windows(heard.text, state, limit=MAX_HINTS)
+        here = state.active_workspace_id
+        for i, (window, _score) in enumerate(ranked, 1):
+            label, trust = affordances._window_label(window, self.lexicon)
+            fit = trust is not Trust.UNTRUSTED
+            # Rich, and specifically naming both workspaces. The vague wording ("go to
+            # the X window, which is already open") lost to "none of these" at 0.53 on
+            # "open my browser here"; naming where the window IS and where the speaker
+            # is took the same decision to 0.96. Section 3 of the bank says this in
+            # general terms and it is worth restating: the option is the question.
+            where = f"on workspace {window.workspace_id}"
+            labels[f"focus{i}"] = f"switch to the {label} window where it already is, {where}"
+            plans[f"focus{i}"] = _Reach("focus", window=window, corroborated=fit)
+            if window.workspace_id != here:
+                labels[f"here{i}"] = (
+                    f"bring the {label} window {where} to workspace {here}, "
+                    "where the speaker is now"
+                )
+                plans[f"here{i}"] = _Reach("here", window=window, corroborated=fit)
+        # the lexicon's best match, not only an exact one. "open my browser here" names
+        # no application exactly, so an exact lookup left the ballot with no way to say
+        # "start one" at all, and Jev answered "none of these" at 0.84 -- correctly,
+        # because the thing being asked about was genuinely not on it.
+        matched = self.lexicon.match_apps(phrase, limit=1)
+        app = matched[0][0] if matched else None
+        if app is not None:
+            labels["launch"] = f"start {app.name}, a second copy of it even if one is already open"
+            plans["launch"] = _Reach("launch", app=app, corroborated=app.trusted)
+        # the browser is the one window that can be sent somewhere by name, and the
+        # phrase is where. Offered only when exactly one window can, so that choosing it
+        # names a target rather than leaving one to be guessed at run time.
+        able = [w for w in state.windows if _can_navigate(w, self.lexicon)]
+        if len(able) == 1:
+            window = able[0]
+            label, trust = affordances._window_label(window, self.lexicon)
+            fit = trust is not Trust.UNTRUSTED
+            # `site` is offered only when the phrase really renders as an address. An
+            # option code cannot carry out is not an option, it is a trap: "go to linus
+            # tech tips" was answered "navigate" at 0.91 and then died on "that sounded
+            # like a phrase rather than an address", which is the ballot's fault and not
+            # the answer's. Searching stays on it, so the sentence still has a home.
+            if _renders(window, "go_to_url", phrase, self.lexicon):
+                labels["site"] = f"point {label} at the website {phrase}"
+                plans["site"] = _Reach("site", window=window, text=phrase, corroborated=fit)
+            if _renders(window, "search_web", phrase, self.lexicon):
+                labels["web"] = f"search the web for the words {phrase}, using {label}"
+                plans["web"] = _Reach("web", window=window, text=phrase, corroborated=fit)
+        # one real option plus "none of these" is still a question worth asking: it is
+        # "is this what you meant", and pre-validating the recipes often leaves exactly
+        # one. Requiring two threw the ballot away for "go to linus tech tips", where
+        # searching was the only thing that could be done and was the right answer.
+        return (labels, plans) if labels else ({}, {})
+
+    def _reached(self, answers: _Answers, heard: _Heard, state: DesktopState) -> Decision | None:
+        """The Rx answer as a decision, or None when there is not one to be had."""
+        reply, plans = answers.reach, self._reach_plans
+        if reply is None or not plans:
+            return None
+        chosen = plans.get(reply.choice)
+        if chosen is None:  # "none of these", or an id from a ballot we no longer hold
+            return None
+        ranked = reply.ranked
+        margin = ranked[0][1] - (ranked[1][1] if len(ranked) > 1 else 0.0)
+        wide = margin >= self.cfg.gates.margin
+        if chosen.kind == "launch" and chosen.app is not None:
+            candidate = resolve.app_candidate(self.lexicon, heard.text, chosen.app, ranked[0][1])
+            evidence = Evidence(source="jev", wide_margin=wide, late=answers.late)
+            return self._launch(chosen.app, (candidate,), evidence, heard, state, said=heard.text)
+        window = state.by_address(chosen.window.address) if chosen.window else None
+        if window is None:
+            return None
+        if chosen.kind in ("site", "web"):
+            name = "go_to_url" if chosen.kind == "site" else "search_web"
+            offered = {r.name: r for r in recipes.for_window(window, self.lexicon.kind_of(window))}
+            recipe = offered.get(name)
+            if recipe is None:
+                return None
+            try:
+                recipes.render(recipe, chosen.text, window)
+            except recipes.RecipeError:
+                # "that sounded like a phrase rather than an address" is not a refusal
+                # here, it is this option being the wrong one. Searching is on the same
+                # ballot, so say nothing and let the narrow reading stand.
+                return None
+            action = Action(Intent.RUN_RECIPE, window=window, verb=name, text=chosen.text)
+            # NOT tiers.verb_said: this recipe was chosen from a list, which is exactly
+            # the case `SPOKEN_BY_CONSTRUCTION` excludes (nlu/tiers.py). The speaker has
+            # to have asked to go somewhere in their own words.
+            said = bool(REACHING_VERBS & set(heard.literal))
+            evidence = Evidence(
+                source="jev",
+                corroborated=chosen.corroborated,
+                verb_said=said,
+                explicit_target=True,  # offered only when exactly one window can do it
+                wide_margin=wide,
+                late=answers.late,
+            )
+            return self._finish(action, evidence, (), heard, state)
+        candidate = resolve.window_candidate(self.lexicon, heard.text, window, ranked[0][1])
+        evidence = Evidence(
+            source="jev",
+            corroborated=candidate.corroborated,
+            wide_margin=wide,
+            explicit_target=candidate.corroborated,
+            late=answers.late,
+        )
+        if chosen.kind == "here":
+            action = Action(
+                Intent.MOVE_TO_WORKSPACE, window=window, workspace=str(state.active_workspace_id)
+            )
+        else:
+            action = Action(Intent.FOCUS_WINDOW, window=window)
+        return self._finish(action, evidence, (candidate,), heard, state)
+
     def _fan_out(
         self,
         heard: _Heard,
@@ -1470,6 +1619,12 @@ class Understander:
         if offered:
             one, offered = self._plan_request(base, offered)
             built += [one] if one is not None else []
+        self._reach_plans = {}
+        if need is not None:
+            # small, and it rides in the same parallel gather, so it costs no latency
+            labels, self._reach_plans = self._reach_ballot(heard, state, need)
+            if labels:
+                built += requests.split("rx", base, {"do": bank.reach(labels)}, cap)
         if need is None or need.wants == "window":
             made, windows, dropped_windows = requests.window_requests(
                 base, state.windows, self._describe, cap
@@ -2128,6 +2283,82 @@ def _recipe_evidence(recipe: recipes.Recipe, heard: _Heard) -> Evidence:
     return Evidence(source="grammar", corroborated=True, verb_said=said, explicit_target=True)
 
 
+@dataclass(frozen=True)
+class _Reach:
+    """One option on the Rx ballot, with everything needed to build its Action."""
+
+    kind: str  # "focus" | "here" | "launch" | "site" | "web"
+    window: Window | None = None
+    app: App | None = None
+    text: str = ""
+    corroborated: bool = False
+
+
+# A recipe reached this way was chosen from a list, so `tiers.SPOKEN_BY_CONSTRUCTION`
+# does NOT apply: that shortcut exists because a recipe is normally only reachable by an
+# exact phrase, and here it is not. The speaker still has to have asked to go somewhere.
+REACHING_VERBS = frozenset(
+    {
+        "go",
+        "open",
+        "show",
+        "take",
+        "bring",
+        "pull",
+        "navigate",
+        "browse",
+        "visit",
+        "search",
+        "look",
+        "find",
+        "google",
+    }  # fmt: skip
+)
+
+
+def _renders(window: Window, name: str, phrase: str, lexicon: LexiconLike) -> bool:
+    """Would this recipe actually produce something for these words? Asked of `recipes`,
+    which owns the answer, and asked BEFORE the option is offered rather than after it
+    is chosen."""
+    try:
+        recipe = next(
+            (r for r in recipes.for_window(window, lexicon.kind_of(window)) if r.name == name),
+            None,
+        )
+        if recipe is None:
+            return False
+        recipes.render(recipe, phrase, window)
+        return True
+    except Exception:
+        return False
+
+
+def _can_navigate(window: Window, lexicon: LexiconLike) -> bool:
+    """Can this window be pointed at a website? Asked of the recipe table that owns the
+    answer, never of a list of class names kept here."""
+    try:
+        kind = lexicon.kind_of(window)
+        return any(r.name == "go_to_url" for r in recipes.for_window(window, kind))
+    except Exception:
+        return False
+
+
+def _answered(decision: Decision) -> bool:
+    """Did this decide something, or is it a shrug?
+
+    An action decided it. So did a refusal, which here is always a safety rule and
+    never a failure to understand. So did a tie on something that cannot be taken back,
+    where asking IS the answer (docs/PLAN.md 5.6). A suggestion is not an answer, and
+    neither is a tie on something free to reverse: those are hyprsay saying it does not
+    know, and a caller with another reading to try should try it.
+    """
+    if decision.verdict in ACTING or decision.verdict in (Verdict.REFUSE, Verdict.NOTHING):
+        return True
+    if decision.verdict is Verdict.HINTS:
+        return decision.tier >= 2
+    return False
+
+
 def _carried(decision: Decision) -> _Chain:
     """What the next clause may point back at. A clause that did not act leaves nothing.
 
@@ -2249,6 +2480,8 @@ def _merge(answers: _Answers, family: str, reply: Evaluation) -> None:
             answers.titled = answer
         elif family == "r3" and isinstance(answer, ChoiceAnswer):
             answers.apps.append(answer)
+        elif family == "rx" and isinstance(answer, ChoiceAnswer):
+            answers.reach = answer
         elif family == "rp":
             # by id, unfiltered: `plan.read` is the one place that decides what a step
             # answer has to look like, and it refuses anything that is not a ChoiceAnswer
