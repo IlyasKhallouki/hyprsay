@@ -5,7 +5,7 @@ always-on microphone. This page says exactly what leaves your machine, when, and
 make it nothing at all. `hyprsay inspect` prints the real request bodies of your last
 command, so none of this has to be taken on trust.
 
-## The short version
+## What leaves the machine
 
 | | Default (`hybrid`) | `stt.backend = "local"` and `jev.enabled = false` |
 |---|---|---|
@@ -19,7 +19,7 @@ command, so none of this has to be taken on trust.
 Common commands ("workspace three", "close this", "open firefox") are resolved entirely on
 your machine by a grammar. Nothing is sent for them in any mode.
 
-## Where it goes
+## Where it goes, when it goes
 
 Requests go to the Vercel AI Gateway (`ai-gateway.vercel.sh`; from Europe the edge that
 answers is typically Paris), which forwards to the model provider:

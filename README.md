@@ -3,9 +3,10 @@
 Voice control for [Hyprland](https://hypr.land). Hold a key, say what you want, let go.
 
 ```
-"workspace three"                 "bring up my notes"            "close this"
-"open the file manager"           "put the music on five"        "make it a bit bigger"
-"focus the browser"               "bring the browser here"       "volume down"
+"workspace three"              "bring up my notes"          "close this"
+"open the file manager"        "put the music on five"      "make it a bit bigger"
+"focus the browser"            "scroll down"                "volume down"
+"open chrome and go to youtube.com"        "search youtube for linus tech tips"
 ```
 
 It acts; it does not talk back. A small overlay shows what it heard and what it did, in your
@@ -19,8 +20,8 @@ Built and verified on one machine (Arch, Hyprland 0.56.2). What that means preci
 
 | Verified | Not yet verified |
 |---|---|
-| 2088 unit tests; lint clean | A human voice through a real microphone, end to end |
-| Understanding: 348 live evaluations, 90 percent correct, **0 wrong actions in 27 hostile-window attacks** | `bind` / `bindr` from a real config (tested with injected key events) |
+| 2652 unit tests; lint clean | A human voice through a real microphone, end to end |
+| 348 live evaluations, 91 percent correct, no wrong action in any of the 27 hostile-window attacks | `bind` and `bindr` from a real config, rather than injected key events |
 | Real guarded dispatch to the compositor over its socket | The global-shortcuts push-to-talk transport |
 | Recorded audio to a correct decision, through the real recognizer | Hyprland's Lua config provider: detected and reported, its dispatch strings never run |
 | Engine and overlay running live: overlay maps while listening, focus untouched, clean shutdown | Multi-monitor and fractional scaling |
@@ -37,9 +38,18 @@ Three speeds, fastest first. Most commands never touch the network.
    a model that does not generate text: it answers typed questions with probabilities. hyprsay
    asks several small questions at once (which action, which of *your* open windows, which
    installed app) and only ever lets it choose among candidates built from your real desktop.
-3. **Hints.** When two windows fit equally, nobody can know which you meant. For a focus it takes
-   the most recently used one and shows numbered badges so "two" switches; for anything less
-   reversible it shows the badges and waits.
+3. **Hints** (no network). When two windows fit equally, nobody can know which you meant. For a
+   focus it takes the most recently used one and shows numbered badges, so saying "two" switches.
+   For anything less reversible it shows the badges and waits.
+
+You can chain commands. "Open firefox and move it to workspace three" is split by code at the
+"and", and Jev only answers whether that "and" really separates two commands, so "type hello and
+goodbye" stays one piece of dictation. A chain stops at the first clause that does not act and
+tells you which one.
+
+Inside an application it can scroll, page, switch tabs, open a URL, search, and find text. Those
+never come from the model: each one is an exact phrase in the grammar. Clicking a control by name
+also works, but only for applications that publish an accessibility tree.
 
 Speech recognition is local by default ([Parakeet 110M](https://huggingface.co/nvidia/parakeet-tdt_ctc-110m)
 through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)). If the local transcript leads
@@ -73,15 +83,19 @@ Voice is an unauthenticated channel: anyone in the room, or a video, can speak. 
 | 2 | close a window, type text | the verb said literally, an explicit target, then a cancellable countdown. Press the key again to cancel |
 | 3 | lock the screen | grammar only, and a physical tap of the key to confirm. Never offered to the model |
 
-- **A window title can never authorize anything.** Titles are written by whoever owns the window,
-  including a hostile web page. Targets are corroborated only against system `.desktop` files and
-  your own aliases.
-- **Typing** comes only from "type ..." in the grammar, never from the model. It is refused in
-  terminals, launchers and password dialogs, pinned to the window focused when the key went
-  down, and stripped of every control character, not just Enter.
-- **Nothing runs while the session is locked**, the microphone closes, and the audio buffer is
-  zeroed. Hyprland does not gate its own IPC on the lock, so hyprsay does.
-- Every write goes through hypruse's guarded functions, on fresh state, to an exact window address.
+A window title can never authorize anything. Titles are written by whoever owns the window, a
+hostile web page included, so a target has to be corroborated against a system `.desktop` file or
+one of your own aliases. The same goes for the name of a button: it can raise what an action
+costs, never lower it.
+
+Typing comes only from "type ..." in the grammar. The model cannot ask for it. It is refused in
+terminals, launchers and password dialogs, pinned to the window that had focus when the key went
+down, and stripped of every control character rather than just Enter.
+
+Nothing runs while the session is locked. The microphone closes and the buffer is zeroed, and
+because Hyprland does not gate its own IPC on the lock, hyprsay checks it again between every
+step. Every write goes through hypruse's guarded functions, against fresh state, to an exact
+window address.
 
 ## Privacy
 
@@ -159,7 +173,7 @@ uv run python evals/run.py --offline                     # 116 labelled cases, n
 uv run python evals/run.py --reps 3                      # against live Jev
 ```
 
-The evaluation keeps the **wrong-action rate** apart from merely asking when it could have
+The evaluation keeps the wrong-action rate apart from merely asking when it could have
 acted. Those are different failures, and for the hostile-title cases the only acceptable value
 is zero. [`docs/PLAN.md`](docs/PLAN.md) is the plan of record, with every figure labelled as
 measured, verified, documented or assumed; [`docs/research/`](docs/research/) holds the research

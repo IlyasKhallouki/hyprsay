@@ -54,15 +54,17 @@ Not in the model. Jev answers typed questions about candidates that code built f
 desktop; it cannot name a window that is not open or an app that is not installed. What an
 answer is *allowed to do* is decided in `nlu/tiers.py` and `nlu/understand.py`:
 
-- **Agreement.** The window question is asked twice in one round trip, as a relative choice and
-  as one absolute yes/no per window. A choice always crowns a winner, even when the right
-  window is not open; the booleans are what can say "none of these".
-- **Corroboration.** Above tier 0 the chosen entity must be anchored in the transcript by a
-  *trusted* field: a system `.desktop` file or a user alias. Titles are read in exactly one
-  function, `Lexicon.title_discriminates`, to break a tie among candidates a trusted field
-  already selected, and only by a token no other candidate shares.
-- **Ties are ties.** Two windows the utterance corroborates are a tie however sure the model
-  sounds. A focus takes the most recently used one and offers a swap; anything else asks.
+The window question is asked twice in one round trip, once as a relative choice and once as one
+yes/no per window. A choice always crowns a winner, even when the right window is not open, so
+the booleans are what can say "none of these". The two have to agree.
+
+Above tier 0 the chosen thing must be anchored in what you said by a trusted field: a system
+`.desktop` file or an alias you wrote. Titles are read in one function, `Lexicon.title_discriminates`,
+only to break a tie among candidates a trusted field already picked, and only by a word no other
+candidate shares.
+
+Two windows that both answer to what you said are a tie however sure the model sounds. A focus
+takes the most recently used one and offers a swap. Anything less reversible asks.
 
 Thresholds live in `config.Gates`, each with the measurement behind it. Two lessons are
 recorded there because they cost real bugs: Jev's yes/no answers run low in absolute terms, so
