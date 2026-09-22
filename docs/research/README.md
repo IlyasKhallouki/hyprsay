@@ -50,3 +50,13 @@ Known weaknesses of these measurements: one account, one morning, one network lo
 option-order and independence tests are underpowered against the measured run-to-run noise;
 `design.py` used a different state from the earlier determinism test, so its "baseline" row
 does not chain to it.
+
+## `vision/`: the second round, 2026-09-22
+
+Seven lanes plus a skeptic each, run after the owner said the working app was still far from
+what they wanted: splitting on "and", no ability to click in pages, no sense of context, and
+nothing happening until they stop speaking. `../STRATEGY.md` is what came out of it. These are
+the reports behind it, and they carry the same caveat as the first round: a report is one
+agent's reading, and the Verification section at the end of each is another agent trying to
+knock it down. Several of the most quotable numbers are single-author self-reports on
+repositories less than a week old, which the strategy flags as a risk in its own right.
