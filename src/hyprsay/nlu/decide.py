@@ -31,6 +31,7 @@ from typing import Any
 
 from hyprsay.adapters.base import Affordance
 from hyprsay.jev.types import BooleanAnswer, ChoiceAnswer, Question
+from hyprsay.model import Decision, Intent, Parse, Verdict
 from hyprsay.nlu import bank, plan
 
 MAX_SPAN_WORDS = 6
@@ -127,13 +128,76 @@ def read(
     return Reading(addressed=heard, step=step, words=said, words_p=said_p, runner_up=runner_up)
 
 
+# ------------------------------------------------------------------ the grammar's fast path
+
+# Grammar only by design: a number while badges show, the session verbs, and typing,
+# whose words must never reach a model (docs/PLAN.md 5.6).
+GRAMMAR_ONLY = frozenset(
+    {
+        Intent.PICK,
+        Intent.CANCEL,
+        Intent.UNDO,
+        Intent.AGAIN,
+        Intent.HELP,
+        Intent.LOCK_SCREEN,
+        Intent.TYPE_TEXT,
+    }
+)
+# commands about the desktop whose every slot the grammar filled from the speaker's own
+# words, where the only reading is the one the grammar found
+COMPLETE = frozenset(
+    {
+        Intent.SWITCH_WORKSPACE,
+        Intent.FOCUS_DIRECTION,
+        Intent.MOVE_WINDOW,
+        Intent.RESIZE_WINDOW,
+        Intent.FULLSCREEN,
+        Intent.TOGGLE_FLOATING,
+        Intent.MOVE_TO_WORKSPACE,
+        Intent.VOLUME,
+        Intent.MEDIA,
+        Intent.SCROLL,
+    }
+)
+_ACTS = frozenset({Verdict.ACT, Verdict.ACT_SWAP})
+
+
+def fast(parse: Parse, decision: Decision) -> bool:
+    """May the grammar's decision stand without asking Jev?
+
+    The old path let ANY grammar decision stand, including "pick a number" and "did you
+    mean", and 9 of the 25 failures in the first voice session never reached Jev at all:
+    "search for a depth punk on spotify" parsed as a web search with every word after
+    "for" as its text. So the grammar keeps only what it can be sure of: its own intents,
+    refusals, complete commands about the desktop, going to a window that is open, and
+    closing a window the speaker named. Starting an application is not on the list,
+    because "open spotify" can mean a browser tab or a website as well, and only the
+    harvest knows which of those exist.
+    """
+    if parse.intent in GRAMMAR_ONLY or decision.verdict is Verdict.REFUSE:
+        return True
+    action = decision.action
+    if action is None:
+        return False
+    if decision.verdict in _ACTS:
+        return action.intent is Intent.FOCUS_WINDOW or (
+            action.intent is parse.intent and parse.intent in COMPLETE
+        )
+    if decision.verdict is Verdict.COUNTDOWN and action.intent is Intent.CLOSE_WINDOW:
+        return bool(parse.slots.window_ref or parse.slots.app_ref)
+    return False
+
+
 __all__ = [
     "ACTION",
     "ADDRESSED",
+    "COMPLETE",
+    "GRAMMAR_ONLY",
     "MAX_SPAN_WORDS",
     "SPAN_PREFIX",
     "WORDS",
     "Reading",
+    "fast",
     "questions",
     "read",
     "spans",

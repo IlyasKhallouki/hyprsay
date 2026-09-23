@@ -82,6 +82,10 @@ class Jev:
     token_cap: int = 1800
     zero_data_retention: bool = True
     enabled: bool = True  # False: grammar only, fully offline
+    # "single": one request per command, an action and the words it needs
+    # (nlu/decide.py). "fanout": the seven-request path it replaces, kept only until the
+    # checkpoint has measured the two side by side, then deleted.
+    path: str = "fanout"
 
 
 @dataclass(frozen=True)
@@ -205,6 +209,7 @@ _CHOICES = {
     ("stt", "local_model"): {"parakeet-110m", "moonshine-tiny"},
     ("stt", "stream_model"): {"kroko-en-streaming", ""},
     ("jev", "route"): {"typesafe", "evaluate"},
+    ("jev", "path"): {"single", "fanout"},
     ("privacy", "titles"): {"never", "when_needed"},
     ("hud", "position"): {"bottom", "top"},
 }

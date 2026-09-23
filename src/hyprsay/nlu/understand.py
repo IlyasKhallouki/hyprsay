@@ -92,6 +92,7 @@ from hyprsay.nlu import (
     bank,
     clauses,
     context,
+    decide,
     ground,
     interpret,
     plan,
@@ -542,8 +543,16 @@ class Understander:
             self.last_exchange["path"] = "grammar"
             outcome = await self._from_grammar(parse, heard, state, pinned_address, chain)
             if isinstance(outcome, Decision):
-                return self._partial(seams, heard, outcome) or outcome
-            need = outcome
+                if not self._single() or decide.fast(parse, outcome):
+                    return self._partial(seams, heard, outcome) or outcome
+                # parsed, but not completely enough to answer alone: the grammar's reading
+                # is one of the options Jev will see, not the answer (`decide.fast`)
+                self.last_exchange["grammar"] = {
+                    "intent": parse.intent.value,
+                    "verdict": outcome.verdict.value,
+                }
+            elif not self._single():
+                need = outcome
         return await self._semantic(heard, state, pinned_address, need, seams=seams, chain=chain)
 
     # ----------------------------------------------------------------------- language
@@ -1116,6 +1125,10 @@ class Understander:
 
     def _jev_on(self) -> bool:
         return self.cfg.jev.enabled and self.evaluator is not None
+
+    def _single(self) -> bool:
+        """One request per command (`nlu/decide.py`), which needs Jev to be reachable."""
+        return self._jev_on() and self.cfg.jev.path == "single"
 
     async def _semantic(
         self,

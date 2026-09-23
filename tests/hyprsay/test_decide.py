@@ -4,6 +4,7 @@ import pytest
 
 from hyprsay.adapters.base import Affordance, Trust
 from hyprsay.jev.types import BooleanAnswer, ChoiceAnswer
+from hyprsay.model import Action, Decision, Intent, Parse, Slots, Verdict
 from hyprsay.nlu import decide
 
 
@@ -138,3 +139,66 @@ def test_a_harvest_sized_request_fits_the_token_cap():
     words = decide.spans("search spotify for hold the line please")
     state = requests.utterance_state("search spotify for hold the line please")
     assert requests.estimate(state, decide.questions(options, words)) <= Config().jev.token_cap
+
+
+# ------------------------------------------------------------------ the grammar fast path
+
+
+def _decided(verdict, intent, **action):
+    return Decision(verdict, Action(intent, **action))
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [Intent.PICK, Intent.CANCEL, Intent.UNDO, Intent.AGAIN, Intent.HELP, Intent.LOCK_SCREEN,
+     Intent.TYPE_TEXT],
+)  # fmt: skip
+def test_the_grammar_only_intents_are_always_fast(intent):
+    assert decide.fast(Parse(intent), Decision(Verdict.SUGGEST))
+
+
+def test_a_refusal_stands_without_asking():
+    parse = Parse(Intent.LAUNCH_APP, Slots(app_ref="gimp"))
+    assert decide.fast(parse, Decision(Verdict.REFUSE, reason="session is locked"))
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [Intent.SWITCH_WORKSPACE, Intent.FOCUS_DIRECTION, Intent.MOVE_WINDOW, Intent.RESIZE_WINDOW,
+     Intent.FULLSCREEN, Intent.TOGGLE_FLOATING, Intent.MOVE_TO_WORKSPACE, Intent.VOLUME,
+     Intent.MEDIA, Intent.SCROLL],
+)  # fmt: skip
+def test_a_complete_command_about_the_desktop_is_fast(intent):
+    assert decide.fast(Parse(intent), _decided(Verdict.ACT, intent))
+
+
+def test_going_to_an_open_window_is_fast_even_when_it_was_said_as_open():
+    # "open chrome" with chrome running: ground.reach turned the launch into a focus
+    parse = Parse(Intent.LAUNCH_APP, Slots(app_ref="chrome"))
+    assert decide.fast(parse, _decided(Verdict.ACT, Intent.FOCUS_WINDOW))
+    assert decide.fast(parse, _decided(Verdict.ACT_SWAP, Intent.FOCUS_WINDOW))
+
+
+def test_starting_an_app_is_not_fast_because_a_tab_or_a_site_may_be_what_was_meant():
+    parse = Parse(Intent.LAUNCH_APP, Slots(app_ref="spotify"))
+    assert not decide.fast(parse, _decided(Verdict.ACT, Intent.LAUNCH_APP))
+
+
+def test_closing_a_named_window_is_fast_and_closing_this_is_not():
+    named = Parse(Intent.CLOSE_WINDOW, Slots(app_ref="spotify"))
+    assert decide.fast(named, _decided(Verdict.COUNTDOWN, Intent.CLOSE_WINDOW))
+    pointed = Parse(Intent.CLOSE_WINDOW, Slots(deictic=True))
+    assert not decide.fast(pointed, _decided(Verdict.COUNTDOWN, Intent.CLOSE_WINDOW))
+
+
+def test_a_search_the_grammar_swallowed_whole_is_not_fast():
+    # "search for a depth punk on spotify" became a web search with every word as text
+    parse = Parse(Intent.RUN_RECIPE, Slots(text="a depth punk on spotify"))
+    assert not decide.fast(parse, _decided(Verdict.COUNTDOWN, Intent.RUN_RECIPE))
+
+
+@pytest.mark.parametrize("verdict", [Verdict.HINTS, Verdict.SUGGEST, Verdict.NOTHING])
+def test_a_grammar_that_could_not_settle_it_is_not_fast(verdict):
+    assert not decide.fast(
+        Parse(Intent.FOCUS_WINDOW, Slots(window_ref="youtube")), Decision(verdict)
+    )

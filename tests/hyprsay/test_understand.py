@@ -1936,3 +1936,33 @@ def test_a_template_still_never_carries_dictated_text():
     assert Intent.TYPE_TEXT not in ARGUMENT_TEXT
     template = _template(Intent.TYPE_TEXT, Slots(text="my password is hunter2"))
     assert template.text is None
+
+
+# ------------------------------------------------------ the single request's grammar rule
+
+
+SINGLE = replace(CFG, jev=replace(CFG.jev, path="single"))
+
+
+def test_on_the_single_path_starting_an_app_asks_jev_first():
+    u, jev = build(
+        parses={"open gimp": Parse(Intent.LAUNCH_APP, Slots(app_ref="gimp"))}, cfg=SINGLE
+    )
+    say(u, "open gimp")
+    assert len(jev.calls) >= 1
+
+
+def test_on_the_single_path_a_workspace_still_never_touches_jev():
+    u, jev = build(
+        parses={"workspace 3": Parse(Intent.SWITCH_WORKSPACE, Slots(workspace="3"))}, cfg=SINGLE
+    )
+    assert say(u, "workspace 3").verdict is Verdict.ACT
+    assert len(jev.calls) == 0
+
+
+def test_the_fanout_path_keeps_the_grammar_answering_a_launch():
+    cfg = replace(CFG, jev=replace(CFG.jev, path="fanout"))
+    u, jev = build(parses={"open gimp": Parse(Intent.LAUNCH_APP, Slots(app_ref="gimp"))}, cfg=cfg)
+    decision = say(u, "open gimp")
+    assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
+    assert len(jev.calls) == 0
