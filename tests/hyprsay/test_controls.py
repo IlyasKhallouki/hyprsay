@@ -84,8 +84,18 @@ def raising(exc):
     return boom
 
 
+def _fresh_worker() -> None:
+    """Each test gets its own walk worker. There is one per process, and a walk an earlier
+    test queued, or a real accessibility read from another test file, could still be
+    holding it, which under a loaded machine outlasted `until`'s five seconds."""
+    old, controls._POOL = controls._POOL, None
+    if old is not None:
+        old.shutdown(wait=False, cancel_futures=True)
+
+
 @pytest.fixture(autouse=True)
 def _empty_cache():
+    _fresh_worker()
     controls.invalidate()
     controls._PENDING.clear()
     controls._WARMING = None
@@ -93,6 +103,7 @@ def _empty_cache():
     controls.invalidate()
     controls._PENDING.clear()
     controls._WARMING = None
+    _fresh_worker()
 
 
 def until(predicate, seconds=5.0):
