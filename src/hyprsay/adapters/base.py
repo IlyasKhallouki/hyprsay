@@ -152,6 +152,10 @@ class Capability:
     # all: finding something to play needs "play" (or "watch"), and without it the same
     # words are a search of the site, which `nlu/decide.family` counts as the same vote
     said_with: tuple[str, ...] = ()
+    # capabilities of the same adapter whose harvested options a fetch of this one
+    # replaces in the second turn: a find on a page brings back that page's links, one per
+    # thing, and the page's raw links beside them would split the vote
+    replaces: tuple[str, ...] = ()
     # how long `resolve` may take when it is fetched, when the default is too short: a
     # search typed into a page has to wait for the results to render. 0 means the default.
     fetch_s: float = 0.0

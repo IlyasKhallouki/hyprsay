@@ -1808,7 +1808,10 @@ class Understander:
         if why is not None:
             return self._gave_up(note, why, heard)
         budget = budget.taken()
-        return await self._decide_again(step, turns.renumber(found), heard, state, budget, note)
+        replaced = frozenset(capability.replaces) if capability is not None else frozenset()
+        return await self._decide_again(
+            step, turns.renumber(found), heard, state, budget, note, replaced=replaced
+        )
 
     async def _fetch(
         self,
@@ -1868,6 +1871,8 @@ class Understander:
         state: DesktopState,
         budget: turns.Budget,
         note: turns.Note,
+        *,
+        replaced: frozenset[str] = frozenset(),
     ) -> Decision:
         """Turn two: one Choice, over a fresh harvest with the fetched candidates in front.
 
@@ -1888,6 +1893,14 @@ class Understander:
         note = replace(note, extra={**note.extra, "harvest": self.last_exchange["affordances"]})
         if first_harvest is not None:
             self.last_exchange["affordances"] = first_harvest
+        # what came back replaces what the harvest had that it was curated from
+        # (`Capability.replaces`): live, "result 1: Hold The Line" beside "Hold the Line
+        # TOTO" split the vote and turn two chose neither
+        again = {
+            key: option
+            for key, option in again.items()
+            if not (option.adapter == asked.affordance.adapter and option.capability in replaced)
+        }
         options = plan.offered([*fetched, *again.values()])
         # "rp.2": the same family as the first plan request, so `_merge` files its answers
         # in `answers.steps` unchanged, and a distinct name, so `inspect --last` shows two

@@ -799,3 +799,46 @@ def test_asking_to_search_names_a_capability_that_finds_by_name():
     decision = say(u, "search for bohemian rhapsody")
     assert service.asked == [("fake.play_track", {"query": "bohemian rhapsody"})]
     assert decision.verdict is Verdict.ACT
+
+
+class PageLike(FakeService):
+    """A page: its links are harvested eagerly, and a find returns links of the same kind."""
+
+    CLICK = Capability(id="fake.click", summary="click something on this page", tier=1,
+                       kind="page")  # fmt: skip
+    FIND = Capability(id="fake.find", summary="find and play something on this site by name",
+                      tier=1, kind="page search", params=(Param("query", "text", required=True),),
+                      needs_query=True, replaces=("fake.click",))  # fmt: skip
+
+    def __init__(self):
+        super().__init__(caps=(self.FIND, self.CLICK))
+
+    def resolve(self, capability, slots, context):
+        self.asked.append((capability, dict(slots)))
+        labels = (
+            [label for label, _ in FOUND]
+            if capability == "fake.find"
+            else [f"result {n}: {label}" for n, (label, _) in enumerate(FOUND, 1)]
+        )
+        return tuple(
+            Affordance(id=f"c{n}", label=label, kind="page", tier=1,
+                       handle=self._minted.mint(f"click {n}", label), adapter=self.name,
+                       capability=capability, trust=Trust.UNTRUSTED)
+            for n, label in enumerate(labels, 1)
+        )  # fmt: skip
+
+
+def test_turn_two_offers_what_the_find_brought_back_and_not_the_pages_raw_links_beside_it():
+    page = PageLike()
+
+    def first_the_find(question, state):
+        if any(key.startswith(turns.FETCHED) for key in question.options):
+            return "s1"
+        return next(k for k, v in question.options.items()
+                    if isinstance(v, dict) and "find and play" in v.get("label", ""))  # fmt: skip
+
+    u, jev = build({"step_1": first_the_find}, adapters=(page,))
+    say(u, "play bohemian rhapsody")
+    second = [q for _, q in jev.calls if "s1" in getattr(q.get("step_1"), "options", {})][0]
+    labels = [v.get("label", "") for v in second["step_1"].options.values() if isinstance(v, dict)]
+    assert not any(label.startswith("result ") for label in labels)

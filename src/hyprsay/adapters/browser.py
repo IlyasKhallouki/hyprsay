@@ -90,6 +90,7 @@ FIND = Capability(
     # "search for linus tech tips" split Jev 0.58 to 0.31 between this and a search; a
     # search is what was asked, and finding would have clicked a result nobody chose
     said_with=("play", "watch", "listen", "hear", "put"),
+    replaces=("browser.click",),
 )
 SCROLL = Capability("browser.scroll", "scroll this page", tier=0, kind="page")
 HISTORY = Capability("browser.history", "go back or forward a page", tier=1, kind="page")
@@ -123,6 +124,10 @@ MAX_TABS = 8
 # on Spotify's), while results that match show up well inside this
 FIND_WAIT_S = 3.0
 FIND_POLL_S = 0.35
+# how long a scroll waits for a page that is still too short to scroll, and how often it
+# tries again while it waits
+RENDER_WAIT_S = 2.5
+RENDER_POLL_S = 0.4
 # a failed refresh is not retried for this long, so one slow page costs one wait per
 # harvest instead of one per capability
 RETRY_AFTER_S = 3.0
@@ -427,7 +432,20 @@ class Browser:
         if kind == "scroll":
             tab, way = rest.split(" ", 1)
             heading = self._call(client.scroll, way, int(tab))
+            deadline = time.monotonic() + RENDER_WAIT_S
+            # "down" heading for 0 is a page no taller than the window: measured live, the
+            # YouTube results page three seconds after a search, not yet rendered. It is
+            # asked again while it renders, and a page that never grows says so.
+            while (
+                way in ("down", "bottom")
+                and not heading.get("scroll_y")
+                and time.monotonic() < deadline
+            ):
+                time.sleep(RENDER_POLL_S)
+                heading = self._call(client.scroll, way, int(tab))
             log.debug("scrolling %s: the page says it is heading for %s", way, heading)
+            if way in ("down", "bottom") and not heading.get("scroll_y"):
+                return Outcome(False, "This page has nothing further down to scroll to.")
             return Outcome(True, "Scrolled.")
         if kind == "history":
             tab, way = rest.split(" ", 1)

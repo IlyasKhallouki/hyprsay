@@ -51,6 +51,7 @@ class FakeClient:
         self.calls: list[tuple] = []
         self.snapshots = [RESULTS]
         self.stale_once = False
+        self.headings: list[dict] = []
 
     def call(self, op, args=None, *, timeout=None):
         """The one generic call the adapter makes when it wants its own timeout."""
@@ -88,7 +89,7 @@ class FakeClient:
 
     def scroll(self, direction, tab_id=None):
         self.calls.append(("scroll", direction, tab_id))
-        return {}
+        return self.headings.pop(0) if self.headings else {"scroll_y": 756, "scroll_height": 7188}
 
     def click(self, snapshot_id, element_id):
         if self.stale_once:
@@ -103,6 +104,7 @@ class FakeClient:
 @pytest.fixture
 def adapter(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, "FIND_POLL_S", 0.0)
+    monkeypatch.setattr(browser, "RENDER_POLL_S", 0.0)
     (tmp_path / "hypruse").mkdir()
     (tmp_path / "hypruse" / "browser.sock").touch()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
@@ -492,3 +494,22 @@ def test_an_extensions_own_page_is_not_offered_as_a_tab(adapter):
     adapter._client.tabs = lambda: [*TABS, page]
     labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
     assert not any("ojjomngeodf" in label for label in labels)
+
+
+def _scroll_down(adapter):
+    down = by_label(offered(adapter, IN_FRONT, "browser.scroll"), "down")
+    return adapter.perform(down.capability, down.handle, Context(state=IN_FRONT))
+
+
+def test_a_scroll_on_a_page_still_too_short_to_scroll_waits_for_it_to_render(adapter):
+    adapter._client.headings = [{"scroll_y": 0, "scroll_height": 945}] * 2
+    outcome = _scroll_down(adapter)
+    assert outcome.ok
+    assert sum(1 for call in adapter._client.calls if call[0] == "scroll") == 3
+
+
+def test_a_page_that_never_grows_says_there_is_nothing_to_scroll(adapter, monkeypatch):
+    monkeypatch.setattr(browser, "RENDER_WAIT_S", 0.05)
+    adapter._client.headings = [{"scroll_y": 0, "scroll_height": 945}] * 1000
+    outcome = _scroll_down(adapter)
+    assert not outcome.ok and "nothing further" in outcome.message

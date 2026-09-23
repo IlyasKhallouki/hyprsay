@@ -346,11 +346,19 @@ class Probe:
         if name == "watching":
             return host == "youtube.com" and "/watch" in url, f"url: {url[:80]}"
         if name == "youtube_quiet":
-            loud = any(
-                t.get("audible") and _host(t.get("url", "")) == "youtube.com"
-                for t in self.browser.tabs()
-            )
-            return not loud, f"youtube audible: {loud}"
+            # Chrome's `audible` means "made sound over the past couple of seconds", so a
+            # tab paused a moment ago still reads audible: look again for a few seconds
+            loud = True
+            for _ in range(8):
+                loud = any(
+                    t.get("audible") and _host(t.get("url", "")) == "youtube.com"
+                    for t in self.browser.tabs()
+                )
+                if not loud:
+                    break
+                time.sleep(0.5)
+            playing = sorted(n for n, st in _players().items() if st == "Playing")
+            return not loud, f"youtube audible: {loud}; playing: {', '.join(playing) or 'none'}"
         if name == "quieter":
             now = _volume()
             return now < self.volume, f"volume {self.volume:.2f} -> {now:.2f}"
