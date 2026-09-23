@@ -216,6 +216,43 @@ def _moved_away(own: Own, browser: BrowserClient) -> str:
     return ""
 
 
+# The laptop's own keyboard and touchpad, as the kernel counts their interrupts. The demo
+# drives the machine through Hyprland and the extension, which raise none of these, so a
+# count that moves means a person. A USB keyboard shares its interrupt with everything else
+# on the bus and is not seen.
+_INPUT_DEVICES = ("i8042", "elan_i2c", "touchpad", "keyboard")
+
+
+def _input_count() -> int:
+    total = 0
+    try:
+        lines = Path("/proc/interrupts").read_text().splitlines()
+    except OSError:
+        return 0
+    for line in lines[1:]:
+        fields = line.split()
+        if fields and any(d in fields[-1].lower() for d in _INPUT_DEVICES):
+            total += sum(int(f) for f in fields[1:] if f.isdigit())
+    return total
+
+
+def _wait_idle(idle_s: float, max_wait_s: float) -> bool:
+    """Wait until nobody has touched the keyboard or touchpad for `idle_s`."""
+    if idle_s <= 0:
+        return True
+    started = quiet_since = time.monotonic()
+    last = _input_count()
+    print(f"waiting for {idle_s:.0f} s with nobody at the keyboard", flush=True)
+    while time.monotonic() - started < max_wait_s:
+        time.sleep(1.0)
+        now = _input_count()
+        if now != last:
+            last, quiet_since = now, time.monotonic()
+        elif time.monotonic() - quiet_since >= idle_s:
+            return True
+    return False
+
+
 def _focused_class() -> str:
     return str(_hyprctl("activewindow").get("class", ""))
 
@@ -462,8 +499,12 @@ async def run(args: argparse.Namespace) -> int:
     executor = Executor(cfg, lambda: snapshot(sock), latch, lexicon, adapters=services)
     use_executor(executor)
 
+    if not _wait_idle(args.wait_idle, args.max_wait):
+        print("the machine never went quiet, so the demo did not run")
+        return 2
     probe_client = BrowserClient(timeout=4.0)
     before = _record(probe_client)
+    touched = _input_count()
     probe = Probe(probe_client)
     own = Own()
     results: list[dict[str, Any]] = []
@@ -512,6 +553,10 @@ async def run(args: argparse.Namespace) -> int:
         subprocess.run(["hyprctl", "dispatch", "workspace", str(free[1])], capture_output=True)
         time.sleep(0.6)
         for n, line in enumerate(LINES):
+            if _input_count() != touched:
+                print("STOP  someone used the keyboard or touchpad; the demo stopped here")
+                results.append({"said": line.said, "passed": None, "skipped": True})
+                break
             # every line after the first happens in the demo's own window; anything else in
             # front is someone at the machine, and the engine is not let near their tabs
             moved = _moved_away(own, probe_client) if n else ""
@@ -652,6 +697,13 @@ def main() -> int:
     parser.add_argument("--voice", action="store_true", help="speak each line with a test voice")
     parser.add_argument("--dry", action="store_true", help="decide, but carry nothing out")
     parser.add_argument("--keep", action="store_true", help="leave the machine as the demo left it")
+    parser.add_argument(
+        "--wait-idle",
+        type=float,
+        default=60.0,
+        help="seconds of nobody at the keyboard before starting (0: start at once)",
+    )
+    parser.add_argument("--max-wait", type=float, default=3600.0, help="give up waiting after")
     parser.add_argument("--clips", default=str(Path(__file__).parent / "results" / "demo-clips"))
     parser.add_argument("--out", default=str(Path(__file__).parent / "results" / "demo.json"))
     return asyncio.run(run(parser.parse_args()))
