@@ -766,3 +766,25 @@ def test_a_daemon_that_is_not_there_says_how_to_start_it_and_plays_nothing(actin
 class Unlocked:
     def locked(self) -> bool:
         return False
+
+
+# --------------------------------------------------------------------------- the single request
+
+SINGLE = Config(jev=replace(Config().jev, path="single"))
+
+
+def test_on_the_single_path_the_words_answer_is_the_query():
+    service = FakeService()
+    # w6_8 is "bohemian rhapsody": the second turn asks step_1 over what came back
+    u, _ = build({"action": "x1", "words": "w6_8", "step_1": "s2"}, adapters=(service,), cfg=SINGLE)
+    decision = say(u)
+    assert service.asked == [("fake.play_track", {"query": "bohemian rhapsody"})]
+    assert decision.action is not None and decision.action.service.handle == "uri:2"
+
+
+def test_on_the_single_path_an_unsure_words_answer_falls_back_to_cutting_the_verb():
+    service = FakeService()
+    words = {"w6_8": 0.3, "w3_8": 0.3, "none": 0.4}
+    u, _ = build({"action": "x1", "words": words, "step_1": "s2"}, adapters=(service,), cfg=SINGLE)
+    say(u)
+    assert service.asked == [("fake.play_track", {"query": "live version of bohemian rhapsody"})]

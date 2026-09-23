@@ -334,7 +334,7 @@ def strip_carrier(heard: str, literal: Sequence[str] = ()) -> str:
 
 
 def slots_for(
-    capability: Capability, heard: str, literal: Sequence[str] = ()
+    capability: Capability, heard: str, literal: Sequence[str] = (), *, query: str = ""
 ) -> dict[str, str] | None:
     """The slots this capability needs, filled from the utterance by code.
 
@@ -344,7 +344,9 @@ def slots_for(
     second turn, and filling one here would be code guessing at the answer it is about
     to ask for.
     """
-    query = strip_carrier(heard, literal)
+    # the words the single request pointed at, when it was sure of them; otherwise the
+    # utterance with the asking words cut off
+    query = query.strip() or strip_carrier(heard, literal)
     out: dict[str, str] = {}
     for param in capability.params:
         if param.kind != "text":

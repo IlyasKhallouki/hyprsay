@@ -205,6 +205,11 @@ _CAPABILITIES = frozenset(
 log = logging.getLogger("hyprsay")
 
 HARVEST_S = 0.25
+# the words answer names the query for a fetch only when it is at least this sure; below
+# it, code cuts the asking words off the utterance instead (`turns.slots_for`)
+WORDS_FLOOR = 0.5
+# how far the single request shrinks its option list before it shortens the spans instead
+MIN_SINGLE_OPTIONS = 12
 
 # Words a capability summary can hold that name nothing. A speaker who said "on" has not
 # named "play a track on Spotify". Closed and short, for `DICTATION_OPENERS`' reason: this
@@ -330,6 +335,8 @@ class _Answers:
     steps: dict[str, Any] = field(default_factory=dict)
     # Rx: what to do about a phrase the lexicon could not place (`_reach_ballot`)
     reach: ChoiceAnswer | None = None
+    # R: the single request's answers, by question id (`nlu/decide.py`)
+    single: dict[str, Any] = field(default_factory=dict)
     failed: dict[str, Exception] = field(default_factory=dict)
     late: bool = False
 
@@ -1152,6 +1159,8 @@ class Understander:
         if not self._jev_on():
             # nobody can judge the seams, so the utterance stays whole: exactly v1
             return self._degrade(heard, state, need, "Jev is turned off")
+        if self._single():
+            return await self._one_request(heard, state, pinned_address, seams=seams)
 
         self.last_exchange["path"] = "jev"
         # Only for a whole utterance the grammar settled nothing about. A `need` is a
@@ -1206,6 +1215,120 @@ class Understander:
         if seams.at and not taken:
             return self._partial(seams, heard, decision) or decision
         return decision
+
+    # -------------------------------------------------------------- the single request
+
+    async def _one_request(
+        self,
+        heard: _Heard,
+        state: DesktopState,
+        pinned_address: str,
+        *,
+        seams: _Seams = NO_SEAMS,
+    ) -> Decision:
+        """Harvest, ask once, act on the reading (`nlu/decide.py` says why).
+
+        The seam Booleans ride in the same request, so a compound utterance costs no extra
+        round trip; each clause it is cut into comes back through `_clause` and therefore
+        through here, with its own harvest and its own request.
+        """
+        self.last_exchange["path"] = "single"
+        offered = await self._harvest(heard, copies=1)
+        if not offered:
+            return self._degrade(heard, state, None, "nothing on this desktop could be offered")
+        extra = self._seam_questions(seams) if seams.at and not seams.asked else {}
+        request, options, words = self._single_request(self._base(heard), offered, heard, extra)
+        if request is None:
+            return self._degrade(heard, state, None, "the request would not fit")
+        self.last_exchange["context"] = self.context.for_request()
+        self.last_exchange["requests"] = [request.as_sent()]
+        answers = await self._ask(requests.FanOut((request,)))
+        failure = answers.failure("r")
+        if failure is not None:
+            return self._degrade(heard, state, None, _plain(failure), failure)
+        taken = [] if seams.asked else self._separating(answers, seams)
+        if taken:
+            chained = await self._chained(replace(seams, asked=True), state, pinned_address, taken)
+            if chained is not None:
+                return chained
+        reading = decide.read(answers.single, options, words)
+        step = reading.step
+        self.last_exchange["decided"] = {
+            "source": "single",
+            "id": step.id if step else "",
+            "p": round(step.probability, 3) if step else 0.0,
+            "margin": round(step.margin, 3) if step else 0.0,
+            "runner_up": reading.runner_up,
+            "words_p": round(reading.words_p, 3),
+            "addressed": round(reading.addressed, 3),
+        }
+        if reading.addressed < self.cfg.gates.addressed:
+            return Decision(
+                Verdict.NOTHING, reason="that did not sound like a command", heard=heard.said
+            )
+        if step is None or step.probability < plan.MIN_PROBABILITY or step.margin < plan.MIN_MARGIN:
+            return self._unsure(reading, options, heard)
+        affordance = step.affordance
+        if affordance.adapter != affordances.SELF and turns.needs_fetching(affordance):
+            query = reading.words if reading.words_p >= WORDS_FLOOR else ""
+            return await self._fetch_and_decide(step, heard, state, query=query)
+        decision = self._step(step, heard, state, late=answers.late, words=reading.words)
+        if decision is None:
+            return self._suggest(heard, "that cannot be done from here", rehearable=False)
+        return decision
+
+    def _single_request(
+        self,
+        base: dict[str, Any],
+        offered: dict[str, Affordance],
+        heard: _Heard,
+        extra: dict[str, Question],
+    ) -> tuple[requests.Request | None, dict[str, Affordance], dict[str, str]]:
+        """The one request, with the options and spans that fit under the token cap.
+
+        Options go from the bottom of the ranking first, as in `_plan_request`, down to
+        `MIN_SINGLE_OPTIONS`. Past that, shorter spans are cheaper than fewer options: a
+        twenty word sentence has over a hundred six word spans, and the thing the speaker
+        named is rarely six words long. The options that were never sent are not returned,
+        so an answer cannot name one.
+        """
+        drift = self._drift()
+        cap = requests.headroom(self.cfg.jev.token_cap, drift)
+        for longest in (decide.MAX_SPAN_WORDS, 4, 3, 2, 0):
+            words = decide.spans(heard.text, longest) if longest else {}
+            options = dict(offered)
+            while options:
+                questions = decide.questions(options, words, extra)
+                estimated = requests.estimate(base, questions)
+                if estimated <= cap:
+                    built = requests.Request(
+                        "r", base, questions, estimated, drift.ratio, drift.samples
+                    )
+                    return built, options, words
+                if len(options) <= MIN_SINGLE_OPTIONS:
+                    break
+                options.popitem()
+        return None, {}, {}
+
+    def _unsure(
+        self, reading: decide.Reading, options: dict[str, Affordance], heard: _Heard
+    ) -> Decision:
+        """Addressed, but no option won clearly: say the two it was torn between.
+
+        Hearing it again can only help when the model was unsure of everything, which is
+        when a misheard word is the likely cause (`Decision.rehearable`).
+        """
+        first = reading.step.affordance if reading.step else options.get(reading.runner_up)
+        second = options.get(reading.runner_up) if reading.step else None
+        labels = [a.label for a in (first, second) if a is not None]
+        low = reading.step is None or reading.step.probability < plan.MIN_PROBABILITY
+        if len(labels) == 2:
+            reason = f"did you mean {labels[0]} or {labels[1]}?"
+        elif labels:
+            reason = f"did you mean {labels[0]}?"
+        else:
+            reason = "not sure what you meant"
+        return self._suggest(heard, reason, rehearable=low)
 
     # -------------------------------------------------------------- compound utterances
 
@@ -1500,6 +1623,17 @@ class Understander:
         if not turns.needs_fetching(asked):
             self.last_exchange["path"] = "service"
             return self._step(step, heard, state, late=answers.late)
+        return await self._fetch_and_decide(step, heard, state)
+
+    async def _fetch_and_decide(
+        self, step: plan.Step, heard: _Heard, state: DesktopState, *, query: str = ""
+    ) -> Decision:
+        """Turn one named a capability that has to be asked; ask it, then choose again.
+
+        `query` is the words the single request pointed at. Without one, code cuts the
+        asking words off the utterance, which is what the old path always did.
+        """
+        asked = step.affordance
         note = turns.Note(capability=asked.capability)
         budget = turns.Budget(clock=self._clock).started()
         adapter = adapters.by_name(self.adapters, asked.adapter)
@@ -1508,7 +1642,7 @@ class Understander:
         capability = self._capability_now(adapter, asked.capability, heard, state)
         if not turns.fetchable(capability):
             return self._gave_up(note, turns.Stopped.NO_CAPABILITY, heard)
-        slots = turns.slots_for(capability, heard.text, heard.raw.split())
+        slots = turns.slots_for(capability, heard.text, heard.raw.split(), query=query)
         if slots is None:
             return self._gave_up(note, turns.Stopped.NO_QUERY, heard)
         note = replace(note, query_chars=sum(len(v) for v in slots.values()))
@@ -1659,7 +1793,7 @@ class Understander:
         )
 
     def _step(
-        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool
+        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool, words: str = ""
     ) -> Decision | None:
         """One step, judged by the tier function exactly as a single command would be.
 
@@ -1670,7 +1804,7 @@ class Understander:
         affordance = step.affordance
         if affordance.adapter != affordances.SELF:
             return self._service_step(step, heard, state, late=late)
-        action = self._action_for(affordance, state, first=step.position == 1)
+        action = self._action_for(affordance, state, first=step.position == 1, words=words)
         if action is None:
             return None
         level = tiers.tier(action.intent, action, state, self.cfg)
@@ -1829,7 +1963,7 @@ class Understander:
         return affordances.said(affordances.spoken(heard.text), (words,)) > 0.0
 
     def _action_for(
-        self, affordance: Affordance, state: DesktopState, *, first: bool
+        self, affordance: Affordance, state: DesktopState, *, first: bool, words: str = ""
     ) -> Action | None:
         """The operation an option names, dereferenced from its handle by code.
 
@@ -3079,6 +3213,11 @@ def _merge(answers: _Answers, family: str, reply: Evaluation) -> None:
             # by id, unfiltered: `plan.read` is the one place that decides what a step
             # answer has to look like, and it refuses anything that is not a ChoiceAnswer
             answers.steps[qid] = answer
+        elif family == "r":
+            answers.single[qid] = answer
+            if qid.startswith(SEPARATES):
+                # the seam Booleans ride in the single request; `_separating` reads R1
+                answers.r1[qid] = answer
 
 
 def _loggable(reply: Evaluation) -> dict[str, Any]:

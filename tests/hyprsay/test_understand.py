@@ -1966,3 +1966,62 @@ def test_the_fanout_path_keeps_the_grammar_answering_a_launch():
     decision = say(u, "open gimp")
     assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
     assert len(jev.calls) == 0
+
+
+# --------------------------------------------------------------------------- the single request
+
+
+def _option_labelled(text):
+    """A script that picks whichever option's label holds `text`, since ids are minted."""
+
+    def choose(question, state):
+        return next(
+            key
+            for key, value in question.options.items()
+            if isinstance(value, dict) and text in value.get("label", "")
+        )
+
+    return choose
+
+
+def test_the_single_path_sends_exactly_one_request_with_the_three_questions():
+    u, jev = build({**ADDRESSED, "action": _option_labelled("Spotify")}, cfg=SINGLE)
+    say(u, "take me to my music")
+    assert len(jev.calls) == 1
+    _, questions = jev.calls[0]
+    assert {"addressed", "action", "words"} <= set(questions)
+    assert u.last_exchange["path"] == "single"
+    assert [r["name"] for r in u.last_exchange["requests"]] == ["r"]
+
+
+def test_the_single_path_acts_on_a_clear_choice():
+    u, _ = build({**ADDRESSED, "action": _option_labelled("Spotify")}, cfg=SINGLE)
+    decision = say(u, "take me to my music")
+    assert decision.verdict in (Verdict.ACT, Verdict.ACT_SWAP)
+    assert decision.action.intent is Intent.FOCUS_WINDOW
+    assert decision.action.window.address == MUSIC.address
+    assert u.last_exchange["decided"]["source"] == "single"
+
+
+def test_the_single_path_stays_silent_when_it_was_not_said_to_the_computer():
+    u, _ = build({"addressed": 0.1, "action": _option_labelled("Spotify")}, cfg=SINGLE)
+    assert say(u, "take me to my music").verdict is Verdict.NOTHING
+
+
+def test_a_near_tie_does_nothing_and_names_both():
+    def tie(question, state):
+        keys = [k for k in question.options if k != "none"]
+        return {keys[0]: 0.45, keys[1]: 0.40, "none": 0.15}
+
+    u, _ = build({**ADDRESSED, "action": tie}, cfg=SINGLE)
+    decision = say(u, "take me to my music")
+    assert decision.verdict is Verdict.SUGGEST
+    assert decision.reason.startswith("did you mean")
+    assert " or " in decision.reason
+
+
+def test_the_single_path_degrades_when_jev_times_out():
+    u, _ = build(evaluator=FakeEvaluator(fail=JevTimeout("late")), cfg=SINGLE)
+    decision = say(u, "take me to my music")
+    assert decision.action is None
+    assert u.last_exchange["path"] == "degraded"
