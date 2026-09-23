@@ -1093,3 +1093,9 @@ def test_the_second_video_ranks_result_two_first():
     m = machine(INSIDE, heard="click the 2 video", adapters=(_Listing(),))
     browser_options = sourced(harvest(m), affordances.BROWSER)
     assert browser_options[0].affordance.label == "result 2: Another one"
+
+
+def test_the_results_around_the_one_named_are_offered_with_it():
+    m = machine(INSIDE, heard="click the 2 video", adapters=(_Listing(),))
+    labels = [r.affordance.label for r in sourced(harvest(m), affordances.BROWSER)]
+    assert labels[:2] == ["result 2: Another one", "result 1: A video"]

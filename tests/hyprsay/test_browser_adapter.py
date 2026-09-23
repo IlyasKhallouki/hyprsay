@@ -483,3 +483,12 @@ def test_the_results_are_numbered_and_not_the_filter_tabs_or_the_footer(adapter)
     assert "result 2: A long video title number 2" in labels
     assert not any(label.startswith("result") and "Filter" in label for label in labels)
     assert not any(label.startswith("result") and "Footer" in label for label in labels)
+
+
+def test_an_extensions_own_page_is_not_offered_as_a_tab(adapter):
+    url = "chrome-extension://ojjomngeodfmogkcdfalfiijbgibcklh/o.html"
+    page = {"id": 5, "window_id": 1, "index": 2, "active": False, "audible": False,
+            "title": "Options", "url": url}  # fmt: skip
+    adapter._client.tabs = lambda: [*TABS, page]
+    labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
+    assert not any("ojjomngeodf" in label for label in labels)

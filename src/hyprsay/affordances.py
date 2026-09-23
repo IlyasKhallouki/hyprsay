@@ -934,18 +934,30 @@ def _browser(context: Machine) -> list[Ranked]:
     found = base.offer((browser,), context, limit=base.MAX_CANDIDATES)
     # "click the second video": the normalizer wrote "second" as "2", and the page's list
     # items are labelled "result 2: ..." by the adapter, so the number picks the item
-    numbers = {f"result {w}:" for w in words if w.isdigit()}
+    named = {int(w) for w in words if w.isdigit()}
     ranked: list[Ranked] = []
     for index, item in enumerate(found, 1):
         score = claims(words, item.label)
-        if numbers and any(item.label.startswith(n) for n in numbers):
+        number = _result_number(item.label)
+        if number in named:
             score = 1.0
+        elif number and any(abs(number - n) <= 2 for n in named):
+            # the ones around it, so "the second" is read against a list and not alone
+            score = max(score, 0.3)
         again = claims(earlier, item.label) if earlier and score <= 0.0 else 0.0
         if again > 0.0:
             # graded, so "scroll ... down" after "scroll down" beats "scroll ... up"
             score = AGAIN_SCORE * again
         ranked.append(Ranked(replace(item, id=f"b{index}"), BROWSER, score, index))
     return ranked
+
+
+def _result_number(label: str) -> int:
+    """N for the adapter's "result N: ..." labels, else 0."""
+    if not label.startswith("result "):
+        return 0
+    head = label[len("result ") :].split(":", 1)[0]
+    return int(head) if head.isdigit() else 0
 
 
 def _extension_serves(context: Machine) -> bool:

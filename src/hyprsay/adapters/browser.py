@@ -481,7 +481,15 @@ class Browser:
         """The tabs worth offering: not the one already in front, the ones whose site was
         said first, at most MAX_TABS."""
         said = set(heard.lower().split())
-        others = [t for t in tabs if t.get("id") is not None and t is not in_front]
+        # an extension's own page is named by a 32 letter id nobody can say ("switch to the
+        # ojjomngeodf... tab" was offered live), so it is not offered
+        others = [
+            t
+            for t in tabs
+            if t.get("id") is not None
+            and t is not in_front
+            and not str(t.get("url", "")).startswith("chrome-extension:")
+        ]
         named = [t for t in others if _site_name(_host(str(t.get("url", "")))) in said]
         rest = [t for t in others if t not in named]
         return tuple(self._tab(t, tabs) for t in (named + rest)[:MAX_TABS])

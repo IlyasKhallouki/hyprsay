@@ -2350,3 +2350,60 @@ def test_a_bare_more_with_nothing_before_it_names_nothing():
     u = _single_with((PageScroller(),), script)
     decision = asyncio.run(u.understand(Transcript("a bit more", "test"), BROWSING_CHROME))
     assert decision.verdict not in ACTING
+
+
+class PageClicker(TabsOnly):
+    """A browser adapter whose page is a numbered list of results."""
+
+    def __init__(self):
+        super().__init__()
+        from hyprsay.adapters.browser import CLICK
+
+        self.click = CLICK
+
+    def capabilities(self, context):
+        return (self.click, self.cap)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        if capability != "browser.click":
+            return super().resolve(capability, slots, context)
+        labels = ["Guide", "result 1: A video", "result 2: Another video", "Subscribe"]
+        return tuple(
+            Affordance(f"c{n}", label, "page", 1, self.minted.mint(f"click 7 s1 e{n}", label),
+                       "browser", "browser.click", Trust.UNTRUSTED)
+            for n, label in enumerate(labels, 1)
+        )  # fmt: skip
+
+
+def test_clicking_the_second_video_clicks_the_pages_second_result_without_asking_jev():
+    parses = {"click the second video": Parse(Intent.CLICK_CONTROL, Slots(text="the second video"))}
+    evaluator = FakeEvaluator({**ADDRESSED})
+    u = Understander(
+        SINGLE, FakeLexicon(APPS), FakeGrammar(parses), evaluator,
+        normalizer=FakeNormalizer(), adapters=(PageClicker(),),
+    )  # fmt: skip
+    decision = asyncio.run(
+        u.understand(Transcript("click the second video", "test"), BROWSING_CHROME)
+    )
+    assert decision.verdict in ACTING
+    assert decision.action.service.handle == "click 7 s1 e3"
+    assert evaluator.calls == []
+
+
+def test_a_click_that_names_more_than_a_list_item_is_not_taken_as_a_result_number():
+    parses = {
+        "click the second subscribe button": Parse(
+            Intent.CLICK_CONTROL, Slots(text="the second subscribe button")
+        )
+    }
+    u = _single_with((PageClicker(),), {**ADDRESSED}, parses=parses)
+    decision = asyncio.run(
+        u.understand(Transcript("click the second subscribe button", "test"), BROWSING_CHROME)
+    )
+    assert (
+        decision.action is None
+        or decision.action.service is None
+        or (decision.action.service.handle != "click 7 s1 e3")
+    )

@@ -567,6 +567,9 @@ class Understander:
                     if chained is not None:
                         return chained
             self.last_exchange["path"] = "grammar"
+            clicked = self._page_click(parse, heard, state)
+            if clicked is not None:
+                return self._partial(seams, heard, clicked) or clicked
             outcome = await self._from_grammar(parse, heard, state, pinned_address, chain)
             if isinstance(outcome, Decision):
                 if not self._single() or decide.fast(parse, outcome):
@@ -1334,6 +1337,37 @@ class Understander:
         step = plan.Step(position=1, id=chosen.id, affordance=chosen, probability=1.0, margin=1.0)
         routed = self._service_step(step, heard, state, late=False)
         return routed if routed is not None else decision
+
+    def _page_click(self, parse: Parse, heard: _Heard, state: DesktopState) -> Decision | None:
+        """ "click the second video" with a browser in front clicks the page's second result.
+
+        The verb and the number are all that was asked, and the page's own list is what
+        "second" counts in (`adapters/browser._main_group`), so nothing is left for a model
+        to weigh: live, Jev put 0.43 on "result 2" and most of the rest on nothing. Only
+        an ordinal with a word that names a list item; "the second subscribe button" is
+        left to the grammar's click and to Jev.
+        """
+        if parse.intent is not Intent.CLICK_CONTROL:
+            return None
+        number = _ordinal_item(parse.slots.text or "")
+        if number is None:
+            return None
+        from hyprsay.adapters.browser import is_browser
+
+        adapter = adapters.by_name(self.adapters, "browser")
+        if adapter is None or not is_browser(state.focused):
+            return None
+        context = adapters.Context(state=state, heard=heard.text, now=self.context.now)
+        try:
+            capability = adapters.capability_of(adapter, "browser.click", context)
+            found = adapters.candidates(adapter, capability, {}, context) if capability else ()
+        except Exception:  # a broken extension leaves the click to the paths below
+            return None
+        chosen = next((f for f in found if f.label.startswith(f"result {number}:")), None)
+        if chosen is None:
+            return None
+        step = plan.Step(position=1, id=chosen.id, affordance=chosen, probability=1.0, margin=1.0)
+        return self._service_step(step, heard, state, late=False)
 
     def _reach_tab(
         self,
@@ -3442,6 +3476,40 @@ def _cut_one(options: dict[str, Affordance]) -> None:
                 del options[key]
                 return
     options.popitem()
+
+
+# what "the second ___" may count when it means an item of the page's list
+_LIST_ITEMS = frozenset(
+    {
+        "video", "result", "one", "link", "item", "song", "track", "entry", "option",
+        "article", "post", "episode", "hit", "match",
+    }
+)  # fmt: skip
+_ORDINAL_DIGITS = re.compile(r"(\d+)(?:st|nd|rd|th)?")
+_ORDINAL_NUMBERS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7,
+    "eighth": 8, "ninth": 9, "tenth": 10,
+}  # fmt: skip
+
+
+def _ordinal_item(text: str) -> int | None:
+    """N for "the second video", "the 3rd result", "number 2": an ordinal and at most a
+    word naming a list item, nothing else."""
+    number: int | None = None
+    rest: list[str] = []
+    for word in text.lower().replace(".", " ").split():
+        digits = _ORDINAL_DIGITS.fullmatch(word)
+        if word in _ORDINAL_NUMBERS and number is None:
+            number = _ORDINAL_NUMBERS[word]
+        elif digits and number is None:
+            number = int(digits.group(1))
+        elif word not in _FILLER and word != "number":
+            rest.append(word)
+    if number is None or number < 1 or len(rest) > 1:
+        return None
+    if rest and rest[0].removesuffix("s") not in _LIST_ITEMS:
+        return None
+    return number
 
 
 def _words_fit(capability: Capability, words: str) -> bool:
