@@ -1337,3 +1337,23 @@ def test_a_harvest_of_the_real_adapters_never_raises_whatever_the_machine_has(tm
         Spotify(FakeRunner(), binary="nope", cache=tmp_path),
     )
     assert base.offer(adapters, CONTEXT) == ()
+
+
+def test_a_socket_file_left_behind_by_a_dead_daemon_is_not_a_daemon(tmp_path):
+    import socket
+
+    path = tmp_path / "sock"
+    dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    dead.bind(str(path))
+    dead.close()  # the file stays; nothing listens
+    adapter = Waytify(FakeDial(), path=path)
+    assert adapter.listening() is False
+    alive = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    path.unlink()
+    alive.bind(str(path))
+    alive.listen(1)
+    try:
+        adapter._alive_until = 0.0  # the answer is cached for a moment; ask again now
+        assert adapter.listening() is True
+    finally:
+        alive.close()

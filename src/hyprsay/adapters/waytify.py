@@ -304,6 +304,10 @@ def authorized(state: Mapping[str, Any]) -> bool:
     return bool(isinstance(spotify, Mapping) and spotify.get("authorized"))
 
 
+# how long one liveness answer holds (`Waytify.listening`)
+LIVENESS_S = 2.0
+
+
 class Waytify:
     """The adapter that can search, over the owner's own daemon."""
 
@@ -321,6 +325,9 @@ class Waytify:
         self._clock = clock
         self._minted = Minted()
         self._searches: dict[str, tuple[float, tuple[Found, ...]]] = {}
+        # the last liveness answer and until when it holds (`listening`)
+        self._alive = False
+        self._alive_until = 0.0
 
     # ------------------------------------------------------------------ the machine
 
@@ -329,16 +336,33 @@ class Waytify:
         return socket_path() if self._path is None else self._path
 
     def listening(self) -> bool:
-        """Is there a socket at that path at all? A stat, with no connect behind it.
+        """Is a daemon listening on that socket? A stat, then a local connect.
 
-        This is what `can_serve` is allowed to cost (`base.Adapter`: a pure local
-        predicate, no network and no spawn), and it is also what decides whether the
-        `spotify_player` fallback runs, so it may not depend on a daemon answering.
+        A stat alone was not enough: a daemon that died leaves its socket file behind,
+        and on the live demo that offered three Spotify options nothing could serve,
+        which then beat the browser's own. A connect to a unix socket is local and takes
+        microseconds, and it is refused at once when nobody listens, so it is still a
+        pure local predicate (`base.Adapter`: no network, no spawn). The answer holds for
+        a moment so that a harvest asking several times connects once. Nothing is sent;
+        the connection is closed as soon as it opens.
         """
+        now = self._clock()
+        if now < self._alive_until:
+            return self._alive
+        alive = False
         try:
-            return self.path.is_socket()
+            if self.path.is_socket():
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                probe.settimeout(0.05)
+                try:
+                    probe.connect(str(self.path))
+                    alive = True
+                finally:
+                    probe.close()
         except OSError:
-            return False
+            alive = False
+        self._alive, self._alive_until = alive, now + LIVENESS_S
+        return alive
 
     def probe(self) -> tuple[bool, str]:
         """(usable, one sentence). Never raises: probe is how a caller finds out that
