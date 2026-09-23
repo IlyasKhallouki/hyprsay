@@ -438,11 +438,15 @@ class Browser:
     ) -> tuple[Affordance, ...]:
         elements = elements if elements is not None else _clickable(snap)
         main = _main_group(elements)
+        leads = _leads(elements, main)
         out: list[Affordance] = []
         for element in elements[:MAX_CLICKS]:
             listed = element.get("list") or {}
             name = str(element.get("name", ""))
-            label = f"result {listed['index']}: {name}" if listed.get("group") == main else name
+            # only the item's main link is "result 2": its channel link and its menu keep
+            # their own names, or "the second video" could land on a channel page
+            numbered = listed.get("group") == main and leads.get(listed.get("index")) is element
+            label = f"result {listed['index']}: {name}" if numbered else name
             handle = f"click {snap['tab_id']} {snap['snapshot_id']} {element['id']}"
             self._remember(handle, element)
             out.append(self._option(CLICK, f"c{element['id']}", label, handle))
@@ -523,6 +527,22 @@ def _main_group(elements: list[dict[str, Any]]) -> str:
         if listed.get("group"):
             sizes[listed["group"]] = max(sizes.get(listed["group"], 0), int(listed.get("size", 0)))
     return max(sizes, key=lambda g: sizes[g]) if sizes else ""
+
+
+def _leads(elements: list[dict[str, Any]], group: str) -> dict[Any, dict[str, Any]]:
+    """Each item of the main list, and its main link: the link with the longest name,
+    which on a results page is the title rather than the channel or a menu button."""
+    leads: dict[Any, dict[str, Any]] = {}
+    for element in elements:
+        listed = element.get("list") or {}
+        if not group or listed.get("group") != group:
+            continue
+        index = listed.get("index")
+        best = leads.get(index)
+        rank = (element.get("kind") == "link", len(str(element.get("name", ""))))
+        if best is None or rank > (best.get("kind") == "link", len(str(best.get("name", "")))):
+            leads[index] = element
+    return leads
 
 
 def _ranked_for(query: str, elements: list[dict[str, Any]]) -> list[dict[str, Any]]:

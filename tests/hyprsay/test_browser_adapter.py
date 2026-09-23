@@ -275,3 +275,13 @@ def test_never_withholds_titles_and_what_is_on_the_page(adapter):
     assert offered(adapter, IN_FRONT, "browser.close_tab")[0].label == "close this tab"
     # the page's own search box is still usable: its label is the site, not page text
     assert offered(adapter, IN_FRONT, "browser.search")[0].label == "search youtube.com for words"
+
+
+def test_only_the_main_link_of_a_result_is_named_by_its_number(adapter):
+    channel = element("e6", "Linus Tech Tips", group="g1", index=2, size=3)
+    menu = element("e7", "Action menu", kind="button", role="button", group="g1", index=2, size=3)
+    adapter._client.snapshots = [dict(RESULTS, elements=[*RESULTS["elements"], channel, menu])]
+    labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
+    assert labels.count("result 2: The new GPU is here") == 1
+    assert "Linus Tech Tips" in labels and "Action menu" in labels
+    assert not any(label.startswith("result 2: Linus") for label in labels)
