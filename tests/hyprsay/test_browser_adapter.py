@@ -52,6 +52,17 @@ class FakeClient:
         self.snapshots = [RESULTS]
         self.stale_once = False
 
+    def call(self, op, args=None, *, timeout=None):
+        """The one generic call the adapter makes when it wants its own timeout."""
+        args = args or {}
+        if op == "tabs.list":
+            return {"tabs": self.tabs()}
+        if op == "sites.top":
+            return {"sites": self.top_sites()}
+        if op == "page.snapshot":
+            return self.snapshot(args.get("tab_id"), settle_ms=args.get("settle_ms", 0))
+        raise AssertionError(f"unexpected call {op}")
+
     def tabs(self):
         return TABS
 
@@ -136,10 +147,12 @@ def test_every_tab_is_something_to_switch_to_named_by_its_site(adapter):
     assert all(o.trust is base.Trust.UNTRUSTED for o in tabs)
 
 
-def test_top_sites_are_offered_as_new_tabs(adapter):
-    assert [o.label for o in offered(adapter, BEHIND, "browser.open")] == [
+def test_a_top_site_is_offered_when_it_is_named_and_not_otherwise(adapter):
+    heard = Context(state=BEHIND, heard="open youtube")
+    assert [o.label for o in base.candidates(adapter, browser.OPEN, {}, heard)] == [
         "open youtube.com in a new tab"
     ]
+    assert offered(adapter, BEHIND, "browser.open") == ()
 
 
 def test_the_items_of_the_main_list_are_numbered(adapter):
@@ -180,7 +193,9 @@ def test_choosing_a_tab_switches_to_it(adapter):
 
 
 def test_choosing_a_site_opens_it_in_a_new_tab(adapter):
-    option = offered(adapter, BEHIND, "browser.open")[0]
+    option = base.candidates(
+        adapter, browser.OPEN, {}, Context(state=BEHIND, heard="open youtube")
+    )[0]
     adapter.perform(option.capability, option.handle, Context(state=BEHIND))
     assert ("open", "https://www.youtube.com/", "new") in adapter._client.calls
 
@@ -321,3 +336,15 @@ def test_a_tab_is_named_by_the_site_in_its_address_and_never_by_its_title(adapte
     assert adapter.corroborates("browser.tab", youtube.handle, "go to youtube")
     # and it vouches for nothing but a tab switch
     assert not adapter.corroborates("browser.close_tab", "close 7", "close youtube")
+
+
+def test_with_the_browser_in_front_the_tab_in_front_is_not_offered_and_named_tabs_lead(adapter):
+    tabs = offered(adapter, IN_FRONT, "browser.tab")
+    # tab 7 is active in front; only Spotify's is left to switch to
+    assert [o.label for o in tabs] == ["switch to the spotify tab (open.spotify.com)"]
+
+
+def test_the_pages_own_options_come_before_tabs_and_sites(adapter):
+    order = [c.id for c in adapter.capabilities(Context(state=IN_FRONT))]
+    assert order.index("browser.close_tab") < order.index("browser.tab")
+    assert order.index("browser.search") < order.index("browser.open")

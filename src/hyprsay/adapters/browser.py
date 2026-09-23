@@ -93,15 +93,21 @@ CLOSE = Capability(
     "browser.close_tab", "close this browser tab", tier=2, kind="browser tab", verbs=("close",)
 )
 ANYWHERE = (TAB, OPEN, ADDRESS)
-IN_FRONT = (CLICK, SEARCH, FIND, SCROLL, HISTORY, CLOSE)
+# the page's own options come first when a browser is in front: measured live, 14 tabs and
+# 10 top sites filled the browser's quota and "close this tab" never reached Jev
+IN_FRONT = (SEARCH, FIND, CLOSE, SCROLL, HISTORY, CLICK)
 BY_ID = {cap.id: cap for cap in (*ANYWHERE, *IN_FRONT)}
 
 # how old a reading may be before a harvest refreshes it itself
-TABS_FRESH_S = 1.5
-SNAPSHOT_FRESH_S = 2.0
+# the engine refreshes at key down, on focus and after every act (`daemon._warm_browser`),
+# so a reading this young is current in practice
+TABS_FRESH_S = 5.0
+SNAPSHOT_FRESH_S = 5.0
 SITES_FRESH_S = 60.0
-# how long a harvest may wait on the browser when it has to
+# how long a harvest may wait on one browser call when it has to: the first snapshot of a
+# new page measured 1.4 s here, so a harvest serves the cache rather than wait for it
 SYNC_TIMEOUT_S = 0.6
+MAX_TABS = 8
 # how long the find capability lets a search settle before reading the results
 FIND_SETTLE_MS = 1500
 MAX_CLICKS = 40
@@ -183,32 +189,41 @@ class Browser:
 
     # ------------------------------------------------------------------ the reading
 
-    def refresh(self, *, page: bool, force: bool = False, timeout: float = 2.0) -> None:
-        """Read tabs, top sites and, with `page`, the page in front. Raises AdapterError."""
-        client = self._browser(timeout)
+    def refresh(
+        self, *, page: bool, force: bool = False, timeout: float = 3.0, sites: bool = True
+    ) -> None:
+        """Read tabs, top sites and, with `page`, the page in front. Raises AdapterError.
+
+        `timeout` bounds each call, so a harvest can afford to ask and a warm can afford
+        to wait for a page that is still loading.
+        """
+        client = self._browser()
         now = time.monotonic()
         reading = self._reading
         if force or now - reading.tabs_at > TABS_FRESH_S:
-            tabs = self._call(client.tabs)
+            tabs = self._call(client.call, "tabs.list", timeout=timeout).get("tabs", [])
             with self._lock:
                 reading.tabs, reading.tabs_at = tabs, time.monotonic()
-        if force or now - reading.sites_at > SITES_FRESH_S:
+        if sites and (force or now - reading.sites_at > SITES_FRESH_S):
             try:
-                sites = self._call(client.top_sites)
+                found = self._call(client.call, "sites.top", timeout=timeout).get("sites", [])
             except AdapterError:
-                sites = []
+                found = []
             with self._lock:
-                reading.sites, reading.sites_at = sites, time.monotonic()
+                reading.sites, reading.sites_at = found, time.monotonic()
         if page:
             active = self._active_tab()
             stale = now - reading.snapshot_at > SNAPSHOT_FRESH_S
             other_tab = active is not None and reading.snapshot.get("tab_id") != active.get("id")
             if force or stale or other_tab:
                 try:
-                    snap = self._call(client.snapshot)
+                    snap = self._call(
+                        client.call, "page.snapshot", {"max": 120, "settle_ms": 0}, timeout=timeout
+                    )
                 except AdapterError:
                     # a page Chrome will not let an extension into (a new tab page, the Web
-                    # Store) has nothing to offer; the tabs still do
+                    # Store), or one still too busy to answer, offers nothing this time;
+                    # the tabs still do
                     snap = {}
                 with self._lock:
                     reading.snapshot, reading.snapshot_at = snap, time.monotonic()
@@ -240,7 +255,8 @@ class Browser:
 
     def _ensure(self, page: bool) -> None:
         try:
-            self.refresh(page=page, timeout=SYNC_TIMEOUT_S)
+            # top sites change slowly and `warm` keeps them; read them here only once
+            self.refresh(page=page, timeout=SYNC_TIMEOUT_S, sites=not self._reading.sites_at)
         except AdapterError:
             log.debug("the browser could not be read for this harvest", exc_info=True)
 
@@ -264,8 +280,8 @@ class Browser:
             return ANYWHERE
         if self._privacy.never:
             # clicking by name and finding by name both need the page's own text
-            return (*ANYWHERE, *(c for c in IN_FRONT if c not in (CLICK, FIND)))
-        return (*ANYWHERE, *IN_FRONT)
+            return (*(c for c in IN_FRONT if c not in (CLICK, FIND)), *ANYWHERE)
+        return (*IN_FRONT, *ANYWHERE)
 
     def resolve(
         self, capability: str, slots: Mapping[str, Any], context: Context
@@ -283,7 +299,7 @@ class Browser:
             snap = dict(self._reading.snapshot)
         active = next((t for t in tabs if t.get("active")), None)
         if capability == TAB.id:
-            return tuple(self._tab(t, tabs) for t in tabs if t.get("id") is not None)
+            return self._tabs(tabs, active if in_front else None, context.heard)
         if capability == OPEN.id:
             return self._sites(sites, tabs, context.heard)
         if capability == ADDRESS.id:
@@ -406,6 +422,17 @@ class Browser:
             trust=Trust.UNTRUSTED,
         )
 
+    def _tabs(
+        self, tabs: list[dict[str, Any]], in_front: dict[str, Any] | None, heard: str
+    ) -> tuple[Affordance, ...]:
+        """The tabs worth offering: not the one already in front, the ones whose site was
+        said first, at most MAX_TABS."""
+        said = set(heard.lower().split())
+        others = [t for t in tabs if t.get("id") is not None and t is not in_front]
+        named = [t for t in others if _site_name(_host(str(t.get("url", "")))) in said]
+        rest = [t for t in others if t not in named]
+        return tuple(self._tab(t, tabs) for t in (named + rest)[:MAX_TABS])
+
     def _tab(self, tab: dict[str, Any], tabs: list[dict[str, Any]]) -> Affordance:
         host = _host(str(tab.get("url", "")))
         # named by the site as a person says it ("the spotify tab"), with the host beside it:
@@ -438,18 +465,15 @@ class Browser:
     ) -> tuple[Affordance, ...]:
         out: list[Affordance] = []
         seen: set[str] = set()
-        # a site the speaker named that the table of known sites spells ("youtube"), first:
-        # the top sites are the profile's habits, and a site not among them was still asked for
-        for word in heard.lower().split():
-            host = recipes.KNOWN_SITES.get(word, "")
-            if host and host not in seen:
-                seen.add(host)
-                label = f"open {host} in a new tab"
-                out.append(self._option(OPEN, f"o{len(out) + 1}", label, f"open https://{host}/"))
+        said = set(heard.lower().split())
         for site in sites:
             url = str(site.get("url", ""))
             host = _host(url)
             if not host or host in seen or urlparse(url).scheme not in ("http", "https"):
+                continue
+            if _site_name(host) not in said:
+                # a top site is offered when it was named: ten of them on every request
+                # crowded out what the page in front could do
                 continue
             seen.add(host)
             out.append(
@@ -457,6 +481,15 @@ class Browser:
             )
             if len(out) >= 10:
                 break
+        # then a site the speaker named that the table of known sites spells ("youtube"):
+        # the top sites carry the address this profile really uses, and a site that is not
+        # among them was still asked for
+        for word in heard.lower().split():
+            host = recipes.KNOWN_SITES.get(word, "")
+            if host and host not in seen:
+                seen.add(host)
+                label = f"open {host} in a new tab"
+                out.append(self._option(OPEN, f"o{len(out) + 1}", label, f"open https://{host}/"))
         return tuple(out)
 
     def _searches(self, snap: dict[str, Any]) -> tuple[Affordance, ...]:
