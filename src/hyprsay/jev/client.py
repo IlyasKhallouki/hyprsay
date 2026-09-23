@@ -9,7 +9,8 @@ that fails, because the speaker has already started repeating. So:
 - one persistent connection, opened before the speaker finishes (`warm`)
 - a hard deadline on every evaluation; past it the answer is thrown away
 - an optional hedge: if nothing is back after `hedge_after`, a duplicate races the
-  original. Off by default until tail latency is measured on real request bodies.
+  original. The engine turns it on (`config.Jev.hedge_after_s`): measured over 138 real
+  single-request bodies on 23 September, it cut p90 from 2.1 s to 1.5 s.
 - one immediate retry on 503 or a dropped connection, never backoff
 - 4xx fails at once; retrying a bad request or a bad key only wastes the deadline
 - oversized requests are refused before sending (see tokens.py)
@@ -121,8 +122,9 @@ class JevClient:
         base_url: str = GATEWAY,
         model: str = "typesafe-ai/jev",
         deadline: float = 0.9,
-        # off by default: a hedge doubles load on a service that already returns 503,
-        # and the point to fire it at has to come from measured tails (PLAN.md 5.5)
+        # off by default here: a hedge doubles load on a service that already returns 503,
+        # and the point to fire it at has to come from measured tails (PLAN.md 5.5). The
+        # engine passes the measured one, `config.Jev.hedge_after_s`
         hedge_after: float | None = None,
         token_cap: int = tokens.DEFAULT_CAP,
         zero_data_retention: bool = False,

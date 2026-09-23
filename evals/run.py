@@ -130,6 +130,7 @@ async def main() -> int:
         from hyprsay import jev
 
         client = jev.JevClient(jev.load_key(), deadline=cfg.jev.deadline_s,
+                               hedge_after=cfg.jev.hedge_after_s,
                                token_cap=cfg.jev.token_cap,
                                zero_data_retention=cfg.jev.zero_data_retention)  # fmt: skip
         await client.warm()

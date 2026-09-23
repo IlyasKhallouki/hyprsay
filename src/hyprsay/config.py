@@ -80,13 +80,16 @@ class Jev:
     route: str = "typesafe"
     model: str = "typesafe-ai/jev"
     # 0.9 s was set when seven requests ran side by side and one straggler could be
-    # dropped. With one request per command a cut-off answer is a failed command: the
-    # replay of real voice lost 2 of 114 to it, and the live demo lost "a bit more" at
-    # 1.4 s on a request near the token cap. Jev measured 315 ms p50 with tails to 1.6 s
-    # from this machine, so 2 s keeps them; a slow answer is better than none.
-    deadline_s: float = 2.0
+    # dropped. With one request per command a cut-off answer is a failed command, and on
+    # 23 September Jev was slower than the 315 ms p50 measured earlier: over 138 calls of
+    # the voice replay, 536 ms p50, 2.1 s p90, 16 past 2 s. With the hedge below, 6 went
+    # past 2 s and 2 past 2.5 s, so 2.5 s keeps nearly all; a slow answer beats none.
+    deadline_s: float = 2.5
+    # a duplicate request races the first when nothing is back by then
+    # (`jev.client._race`); on the same 138 calls it cut p90 from 2.1 s to 1.5 s
+    hedge_after_s: float = 0.8
     # how long a late answer stays acceptable for tiers 0 and 1 (docs/PLAN.md 5.5)
-    late_answer_s: float = 2.5
+    late_answer_s: float = 3.0
     # 1,800 was sized for seven requests in parallel. The single request carries the
     # options and the spans of what was said, and in the replay A/B requests of about
     # 2,000 to 2,400 estimated tokens came back at 351 to 378 ms p50, inside the flat

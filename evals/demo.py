@@ -132,35 +132,47 @@ def _record(browser: BrowserClient) -> Before:
     return Before(browser.tabs(), _volume(), _muted(), playing, workspace, windows)
 
 
-def _restore(browser: BrowserClient, before: Before) -> list[str]:
+@dataclass
+class Own:
+    """What the demo itself made or changed, which is all the restore may undo.
+
+    Everything else on the machine is the owner's, including whatever appears while the
+    demo runs: a run on 23 September closed a Firefox window and an extension's page that
+    the owner opened mid-run, because the restore then closed anything new.
+    """
+
+    chrome_window: str = ""  # the Hyprland address of the Chrome window it opened
+    chrome_window_id: int | None = None  # the same window, as the extension numbers it
+    workspaces: tuple[int, ...] = ()
+    launched: list[str] = field(default_factory=list)  # windows a line's launch opened
+    paused: set[str] = field(default_factory=set)  # players its "pause" line paused
+    closed: list[dict[str, Any]] = field(default_factory=list)  # owner tabs it closed
+    seen: list[str] = field(default_factory=list)  # what appeared that it left alone
+
+
+def _restore(browser: BrowserClient, before: Before, own: Own) -> list[str]:
     done: list[str] = []
-    for name, status in _players().items():
-        if status == "Playing" and name not in before.playing:
-            subprocess.run(["playerctl", "-p", name, "pause"], capture_output=True)
-            done.append(f"paused {name}")
-        elif status != "Playing" and name in before.playing:
-            # the owner's own music was playing before the demo and "pause" reached it
-            subprocess.run(["playerctl", "-p", name, "play"], capture_output=True)
-            done.append(f"resumed {name}")
-    now = browser.tabs()
-    was = {t["id"] for t in before.tabs}
-    for tab in now:
-        if tab["id"] not in was:
-            browser.close_tab(tab["id"])
-            done.append(f"closed {_host(tab['url'])}")
-    still = {t["id"] for t in browser.tabs()}
-    for tab in before.tabs:
-        if tab["id"] not in still and urlparse(tab["url"]).scheme in ("http", "https"):
-            browser.open(tab["url"], "new")
-            done.append(f"reopened {_host(tab['url'])}")
-    # an application the demo started ("open spotify" once launched the desktop app)
-    for client in _hyprctl("clients"):
-        if client["address"] not in before.windows and "chrom" not in client["class"].lower():
-            subprocess.run(
-                ["hyprctl", "dispatch", "closewindow", f"address:{client['address']}"],
-                capture_output=True,
-            )
-            done.append(f"closed the {client['class']} window it opened")
+    if own.chrome_window:
+        # its tabs go with it, and so does whatever they were playing
+        subprocess.run(
+            ["hyprctl", "dispatch", "closewindow", f"address:{own.chrome_window}"],
+            capture_output=True,
+        )
+        done.append("closed its Chrome window")
+    for address in own.launched:
+        subprocess.run(
+            ["hyprctl", "dispatch", "closewindow", f"address:{address}"], capture_output=True
+        )
+        done.append("closed a window a line launched")
+    for tab in own.closed:
+        browser.open(tab["url"], "new")
+        done.append(f"reopened {_host(tab['url'])}")
+    if own.paused:
+        time.sleep(0.5)
+        for name, status in _players().items():
+            if name in own.paused and name in before.playing and status != "Playing":
+                subprocess.run(["playerctl", "-p", name, "play"], capture_output=True)
+                done.append(f"resumed {name}")
     if before.volume >= 0:
         subprocess.run(
             ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{before.volume:.2f}"],
@@ -171,8 +183,13 @@ def _restore(browser: BrowserClient, before: Before) -> list[str]:
             capture_output=True,
         )
         done.append(f"volume back to {before.volume:.2f}{', muted' if before.muted else ''}")
-    subprocess.run(["hyprctl", "dispatch", "workspace", str(before.workspace)], capture_output=True)
-    done.append(f"workspace back to {before.workspace}")
+    # back to where the owner was, unless they have already gone somewhere themselves
+    if int(_hyprctl("activeworkspace").get("id", 0)) in own.workspaces:
+        subprocess.run(
+            ["hyprctl", "dispatch", "workspace", str(before.workspace)], capture_output=True
+        )
+        done.append(f"workspace back to {before.workspace}")
+    done.extend(f"left alone: {what}" for what in own.seen)
     return done
 
 
@@ -183,14 +200,20 @@ def _active(browser: BrowserClient) -> dict[str, Any]:
     return next((t for t in browser.tabs() if t.get("active")), {})
 
 
-def _moved_away(demo_window: str) -> str:
-    """The window someone else put in front of the demo's Chrome window, or ""."""
-    if not demo_window:
-        return ""
+def _moved_away(own: Own, browser: BrowserClient) -> str:
+    """What someone else put in front of the demo's Chrome window, or "".
+
+    Two checks, since Hyprland and Chrome each keep their own idea of what is in front: the
+    focused window, and the tab the extension will act on (the last focused Chrome window's).
+    """
     active = _hyprctl("activewindow")
-    if not isinstance(active, dict) or active.get("address") == demo_window:
-        return ""
-    return f"{active.get('class', '?')} on workspace {active.get('workspace', {}).get('id', '?')}"
+    if isinstance(active, dict) and active.get("address") != own.chrome_window:
+        where = active.get("workspace", {}).get("id", "?")
+        return f"a {active.get('class', '?')} window on workspace {where}"
+    tab = _active(browser)
+    if tab and tab.get("window_id") != own.chrome_window_id:
+        return "a tab in another Chrome window"
+    return ""
 
 
 def _focused_class() -> str:
@@ -407,6 +430,7 @@ async def run(args: argparse.Namespace) -> int:
     client = jev_pkg.JevClient(
         jev_pkg.load_key(),
         deadline=cfg.jev.deadline_s,
+        hedge_after=cfg.jev.hedge_after_s,
         token_cap=cfg.jev.token_cap,
         zero_data_retention=cfg.jev.zero_data_retention,
     )
@@ -441,6 +465,7 @@ async def run(args: argparse.Namespace) -> int:
     probe_client = BrowserClient(timeout=4.0)
     before = _record(probe_client)
     probe = Probe(probe_client)
+    own = Own()
     results: list[dict[str, Any]] = []
     workdir = Path(args.clips)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -451,6 +476,7 @@ async def run(args: argparse.Namespace) -> int:
         # then starts from another empty one, so "open chrome" has somewhere to come from.
         used = {w["id"] for w in _hyprctl("workspaces")}
         free = [n for n in range(9, 60) if n not in used]
+        own.workspaces = (free[0], free[1])
         subprocess.run(["hyprctl", "dispatch", "workspace", str(free[0])], capture_output=True)
         time.sleep(0.4)
         subprocess.Popen(
@@ -467,21 +493,44 @@ async def run(args: argparse.Namespace) -> int:
         )
         # Spotify's player takes 6 to 10 s to render on this machine (measured)
         time.sleep(10)
+        own.chrome_window = next(
+            (
+                c["address"]
+                for c in _hyprctl("clients")
+                if c["address"] not in before.windows
+                and "chrom" in c["class"].lower()
+                and c["workspace"]["id"] == free[0]
+            ),
+            "",
+        )
+        was = {t["id"] for t in before.tabs}
+        own.chrome_window_id = next(
+            (t["window_id"] for t in probe_client.tabs() if t["id"] not in was), None
+        )
+        if not own.chrome_window or own.chrome_window_id is None:
+            raise SystemExit("the demo's Chrome window did not open, so nothing was run")
         subprocess.run(["hyprctl", "dispatch", "workspace", str(free[1])], capture_output=True)
         time.sleep(0.6)
-        # the Chrome window "open chrome" brings forward; every later line happens inside it,
-        # so focus anywhere else means someone at the machine moved it, not the engine
-        demo_window = ""
-        for line in LINES:
-            moved = _moved_away(demo_window)
+        for n, line in enumerate(LINES):
+            # every line after the first happens in the demo's own window; anything else in
+            # front is someone at the machine, and the engine is not let near their tabs
+            moved = _moved_away(own, probe_client) if n else ""
             if moved:
-                print(f"NOTE  focus was moved to {moved} from outside the demo; putting it back")
+                print(f"NOTE  {moved} was in front, from outside the demo; putting it back")
                 subprocess.run(
-                    ["hyprctl", "dispatch", "focuswindow", f"address:{demo_window}"],
+                    ["hyprctl", "dispatch", "focuswindow", f"address:{own.chrome_window}"],
                     capture_output=True,
                 )
-                time.sleep(0.6)
+                time.sleep(0.8)
+                if _moved_away(own, probe_client):
+                    print(f"SKIP  {line.said!r}: the demo's window could not be put back in front")
+                    results.append(
+                        {"said": line.said, "passed": None, "skipped": True, "interrupted": moved}
+                    )
+                    continue
             probe.before(line)
+            windows_before = {c["address"] for c in _hyprctl("clients")}
+            playing_before = {name for name, st in _players().items() if st == "Playing"}
             with_state = snapshot(sock)
             # what the engine does at key down, a second or so before the words are done
             with contextlib.suppress(Exception):
@@ -526,6 +575,12 @@ async def run(args: argparse.Namespace) -> int:
                 if args.dry:
                     did.append(f"(dry) {step.action.describe()}")
                     continue
+                service = step.action.service
+                if service is not None and service.capability == "browser.close_tab":
+                    closing = int(service.handle.split()[1])
+                    theirs = next((t for t in before.tabs if t["id"] == closing), None)
+                    if theirs is not None:
+                        own.closed.append(theirs)
                 outcome = executor.execute(step.action, pinned_address=with_state.active_address)
                 understander.acted(outcome.ok)
                 did.append(f"{step.action.describe()}: {outcome.message}")
@@ -535,6 +590,22 @@ async def run(args: argparse.Namespace) -> int:
             if not args.dry:
                 time.sleep(line.settle)
                 passed, evidence = probe.check(line)
+                launched = decision.action is not None and decision.action.intent.value in (
+                    "launch_app",
+                )
+                for c in _hyprctl("clients"):
+                    if c["address"] in windows_before:
+                        continue
+                    if launched:
+                        own.launched.append(c["address"])
+                    else:
+                        own.seen.append(f"a {c['class']} window that appeared during the run")
+                if line.check == "youtube_quiet":
+                    own.paused = {
+                        name
+                        for name, st in _players().items()
+                        if name in playing_before and st != "Playing"
+                    }
             else:
                 passed, evidence = ok_all, "dry run"
             results.append(
@@ -556,23 +627,24 @@ async def run(args: argparse.Namespace) -> int:
                     "page": page,
                 }
             )
-            if not demo_window and line.check == "chrome_in_front" and passed:
-                demo_window = str(_hyprctl("activewindow").get("address", ""))
             mark = {True: "PASS", False: "FAIL", None: "BLOCKED"}[passed]
             print(f"{mark}  {line.said!r}  heard {heard!r}  ({decided_ms} ms)")
             print(f"      did: {'; '.join(did)}")
             print(f"      saw: {evidence}")
     finally:
         await client.aclose()
-        restored = [] if args.keep else _restore(probe_client, before)
+        restored = [] if args.keep else _restore(probe_client, before, own)
         print("\nrestored: " + ", ".join(restored))
     passed = sum(r["passed"] is True for r in results)
-    blocked = sum(r["passed"] is None for r in results)
+    skipped = sum(bool(r.get("skipped")) for r in results)
+    blocked = sum(r["passed"] is None for r in results) - skipped
     print(f"\n{passed}/{len(results)} lines passed, {blocked} blocked on a prerequisite")
+    if skipped:
+        print(f"{skipped} skipped because someone else had the machine in front of them")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps({"voice": args.voice, "results": results}, indent=1))
     print(f"saved {args.out}")
-    return 0 if passed + blocked == len(results) else 1
+    return 0 if passed + blocked == len(results) and not skipped else 1
 
 
 def main() -> int:

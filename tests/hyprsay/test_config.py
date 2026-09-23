@@ -10,6 +10,8 @@ def test_an_absent_file_is_a_working_configuration(tmp_path):
     assert cfg.stt.backend == "hybrid"
     assert cfg.stt.local_model == "parakeet-110m"
     assert cfg.jev.zero_data_retention is True
+    # a duplicate request races a slow one, and the deadline leaves room for it
+    assert 0 < cfg.jev.hedge_after_s < cfg.jev.deadline_s <= cfg.jev.late_answer_s
     assert cfg.privacy.titles == "when_needed"
     # the interpreter is on by default and every one of its keys is optional
     assert cfg.interpret.enabled is True

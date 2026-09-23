@@ -182,6 +182,7 @@ def _say(cfg, args) -> int:
         try:
             client = jev_pkg.JevClient(jev_pkg.load_key(), route=cfg.jev.route, model=cfg.jev.model,
                                        deadline=cfg.jev.deadline_s, token_cap=cfg.jev.token_cap,
+                                       hedge_after=cfg.jev.hedge_after_s,
                                        zero_data_retention=cfg.jev.zero_data_retention)  # fmt: skip
         except jev_pkg.JevAuthError as exc:
             print(f"note: {exc}; grammar only", file=sys.stderr)
