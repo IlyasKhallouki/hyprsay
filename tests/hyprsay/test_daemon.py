@@ -910,7 +910,13 @@ def test_a_countdown_cancelled_mid_chain_stops_everything_after_it():
 
     async def go():
         task = asyncio.ensure_future(utter(e, p))
-        await asyncio.sleep(0.05)
+        # wait for the countdown itself rather than a fixed 50 ms: on a loaded machine the
+        # launch before it can take longer than that, and a key press that lands before
+        # the countdown has started has nothing to cancel
+        for _ in range(400):
+            if "countdown" in p["hud"].states:
+                break
+            await asyncio.sleep(0.005)
         await e._key_down()  # the cancel gesture
         await task
 

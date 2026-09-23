@@ -85,12 +85,17 @@ def raising(exc):
 
 
 def _fresh_worker() -> None:
-    """Each test gets its own walk worker. There is one per process, and a walk an earlier
-    test queued, or a real accessibility read from another test file, could still be
-    holding it, which under a loaded machine outlasted `until`'s five seconds."""
+    """Drain the walk worker and start the next test with a new one.
+
+    A walk the previous test released in its `finally` can finish after this test has
+    cleared the cache, and its done callback then writes that window back in. `warm`
+    finds it cached and never walks, and the test waits five seconds for a read that is
+    never coming. Every gate in this file is set before its test ends, so waiting for the
+    old worker is bounded.
+    """
     old, controls._POOL = controls._POOL, None
     if old is not None:
-        old.shutdown(wait=False, cancel_futures=True)
+        old.shutdown(wait=True, cancel_futures=True)
 
 
 @pytest.fixture(autouse=True)
