@@ -253,3 +253,25 @@ def test_an_option_that_cannot_run_cannot_win():
 def test_none_can_win_the_choice():
     step = decide.choose(_reading({"x1": 0.2, "none": 0.8}), {"x1": _aff("x1")})
     assert step is None
+
+
+def _capability(ident: str, capability: str) -> Affordance:
+    return Affordance(
+        id=ident, label=capability, kind="page search", tier=1, handle=ident, adapter="browser",
+        capability=capability, trust=Trust.UNTRUSTED,
+    )  # fmt: skip
+
+
+def test_searching_a_site_and_finding_on_it_are_one_vote_that_the_runnable_one_wins():
+    # "search for linus tech tips" on YouTube: 0.58 find, 0.31 search, measured live
+    options = {"b1": _capability("b1", "browser.search"), "b2": _capability("b2", "browser.find")}
+    reading = _reading({"b2": 0.58, "b1": 0.31, "none": 0.11})
+    step = decide.choose(reading, options, viable=lambda a: a.capability != "browser.find")
+    assert step is not None and step.id == "b1"
+    assert step.probability == pytest.approx(0.89)
+
+
+def test_a_vote_none_of_whose_members_can_run_goes_nowhere():
+    options = {"b1": _capability("b1", "browser.search"), "b2": _capability("b2", "browser.find")}
+    step = decide.choose(_reading({"b2": 0.58, "b1": 0.31, "none": 0.11}), options, lambda a: False)
+    assert step is None

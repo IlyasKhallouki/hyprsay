@@ -35,6 +35,7 @@ from hyprsay.model import (
     Window,
 )
 from hyprsay.nlu import bank, requests
+from hyprsay.nlu.context import ACTING
 from hyprsay.nlu.understand import Understander
 
 # --------------------------------------------------------------------------- fakes
@@ -2269,3 +2270,83 @@ def test_a_spoken_scroll_in_a_browser_scrolls_the_page_through_the_extension():
     assert decision.action is not None
     assert decision.action.intent is Intent.SERVICE
     assert decision.action.service.handle == "scroll 7 down"
+
+
+class SiteSearcher(TabsOnly):
+    """A browser adapter with the page's search box and the find capability."""
+
+    def __init__(self):
+        super().__init__()
+        from hyprsay.adapters.browser import FIND, SEARCH
+
+        self.search, self.find = SEARCH, FIND
+
+    def capabilities(self, context):
+        return (self.search, self.find, self.cap)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        if capability != "browser.search":
+            return super().resolve(capability, slots, context)
+        label = "search youtube.com for words"
+        return (
+            Affordance("q1", label, "page search", 1, self.minted.mint("search 7 s1 e1", label),
+                       "browser", "browser.search", Trust.UNTRUSTED),
+        )  # fmt: skip
+
+
+def _split(shares):
+    """A Choice script that spreads probability over options by a word in their label."""
+
+    def choose(question, state):
+        out = {}
+        for key, value in question.options.items():
+            label = value.get("label", "") if isinstance(value, dict) else ""
+            for word, p in shares.items():
+                if word in label:
+                    out[key] = p
+        return out
+
+    return choose
+
+
+def _span(text):
+    def choose(question, state):
+        return next(k for k, v in question.options.items() if v == text)
+
+    return choose
+
+
+def test_a_search_with_no_playing_verb_searches_even_when_jev_leans_to_finding():
+    script = {
+        **ADDRESSED,
+        "action": _split({"find and play": 0.58, "search youtube.com": 0.31}),
+        "words": _span("linus tech tips"),
+    }
+    u = _single_with((SiteSearcher(),), script)
+    decision = asyncio.run(
+        u.understand(Transcript("search for linus tech tips", "test"), BROWSING_CHROME)
+    )
+    assert decision.action is not None and decision.action.intent is Intent.SERVICE
+    assert decision.action.service.capability == "browser.search"
+    assert decision.action.service.text == "linus tech tips"
+
+
+def test_a_bit_more_after_a_page_scroll_scrolls_again():
+    parses = {"scroll down": Parse(Intent.SCROLL, Slots(direction=Direction.DOWN))}
+    script = {**ADDRESSED, "action": _option_labelled("scroll this page down")}
+    u = _single_with((PageScroller(),), script, parses=parses)
+    first = asyncio.run(u.understand(Transcript("scroll down", "test"), BROWSING_CHROME))
+    u.acted(True)
+    assert first.action is not None and first.action.intent is Intent.SERVICE
+    again = asyncio.run(u.understand(Transcript("a bit more", "test"), BROWSING_CHROME))
+    assert again.verdict in ACTING
+    assert again.action.service.handle == "scroll 7 down"
+
+
+def test_a_bare_more_with_nothing_before_it_names_nothing():
+    script = {**ADDRESSED, "action": _option_labelled("scroll this page down")}
+    u = _single_with((PageScroller(),), script)
+    decision = asyncio.run(u.understand(Transcript("a bit more", "test"), BROWSING_CHROME))
+    assert decision.verdict not in ACTING

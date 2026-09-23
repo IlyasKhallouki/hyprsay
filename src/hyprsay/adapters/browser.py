@@ -37,6 +37,7 @@ box still work, because none of them needs page text.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -86,6 +87,9 @@ FIND = Capability(
     params=(Param("query", "text"),),
     needs_query=True,
     fetch_s=4.0,
+    # "search for linus tech tips" split Jev 0.58 to 0.31 between this and a search; a
+    # search is what was asked, and finding would have clicked a result nobody chose
+    said_with=("play", "watch", "listen", "hear", "put"),
 )
 SCROLL = Capability("browser.scroll", "scroll this page", tier=0, kind="page")
 HISTORY = Capability("browser.history", "go back or forward a page", tier=1, kind="page")
@@ -105,6 +109,10 @@ BY_ID = {cap.id: cap for cap in (*ANYWHERE, *IN_FRONT, CLICK)}
 # so a reading this young is current in practice
 TABS_FRESH_S = 5.0
 SNAPSHOT_FRESH_S = 5.0
+# except a snapshot taken this soon after an act changed the page, which is kept for only
+# YOUNG_FRESH_S: the page was still rendering (YouTube's search box came after its buttons)
+LOADING_S = 4.0
+YOUNG_FRESH_S = 1.0
 SITES_FRESH_S = 60.0
 # how long a harvest may wait on one browser call when it has to: the first snapshot of a
 # new page measured 1.4 s here, so a harvest serves the cache rather than wait for it
@@ -119,7 +127,7 @@ FIND_POLL_S = 0.35
 # harvest instead of one per capability
 RETRY_AFTER_S = 3.0
 MAX_CLICKS = 24
-MAX_FOUND = 12
+MAX_FOUND = 8
 
 _CHROMIUM = ("chrom", "brave")
 _WORDS_TO_SKIP = frozenset({"the", "a", "an", "of", "by", "on", "in", "to", "and", "for", "play"})
@@ -159,6 +167,8 @@ class _Reading:
     # the tab the last snapshot was asked of, answered or not: a page that could not be read
     # is not asked again until it is stale, the same as one that could
     snapshot_for: Any = None
+    # when an act last changed the page in front (a tab opened, a link followed)
+    changed_at: float = -LOADING_S
 
 
 class Browser:
@@ -227,7 +237,8 @@ class Browser:
                 reading.sites, reading.sites_at = found, time.monotonic()
         if page:
             active = self._active_tab()
-            stale = now - reading.snapshot_at > SNAPSHOT_FRESH_S
+            young = reading.snapshot_at - reading.changed_at < LOADING_S
+            stale = now - reading.snapshot_at > (YOUNG_FRESH_S if young else SNAPSHOT_FRESH_S)
             other_tab = active is not None and reading.snapshot_for != active.get("id")
             if force or stale or other_tab:
                 try:
@@ -265,6 +276,7 @@ class Browser:
         with self._lock:
             self._reading.snapshot_at = 0.0
             self._reading.tabs_at = 0.0
+            self._reading.changed_at = time.monotonic()
 
     def _active_tab(self) -> dict[str, Any] | None:
         # the extension lists the focused window first, so its active tab comes first
@@ -323,7 +335,7 @@ class Browser:
             raise AdapterError(f"{capability} is not something the browser does")
         in_front = is_browser(context.state.focused)
         if capability == FIND.id:
-            return self._find(str(slots.get("query", "")))
+            return self._find(str(slots.get("query", "")), context.heard)
         self._ensure(page=in_front)
         with self._lock:
             tabs = list(self._reading.tabs)
@@ -363,12 +375,11 @@ class Browser:
                 "close this tab" if self._privacy.never or not host else f"close this tab ({host})"
             )
             return (self._option(CLOSE, "k1", label, f"close {tab}"),)
-        if not snap or snap.get("tab_id") != tab:
-            return ()
+        page = snap if snap and snap.get("tab_id") == tab else {}
         if capability == SEARCH.id:
-            return self._searches(snap)
-        if capability == CLICK.id and not self._privacy.never:
-            return self._clicks(snap)
+            return (self._searches(page) if page else ()) or self._search_by_address(active)
+        if page and capability == CLICK.id and not self._privacy.never:
+            return self._clicks(page)
         return ()
 
     def corroborates(self, capability: str, handle: str, heard: str) -> bool:
@@ -435,6 +446,15 @@ class Browser:
                 raise AdapterError("say what to search for as well")
             words = context.words
             self._on_element(handle, rest, lambda s, e: client.type(s, e, words, submit=True))
+            self.forget_page()
+            return Outcome(True, "Searched.")
+        if kind == "searchurl":
+            _, site = rest.split(" ", 1)
+            try:
+                url = recipes.search_url(context.words, site)
+            except recipes.RecipeError as exc:
+                raise AdapterError(str(exc)) from exc
+            self._call(client.open, url, "current")
             self.forget_page()
             return Outcome(True, "Searched.")
         raise AdapterError("that is not something the browser does")
@@ -536,6 +556,17 @@ class Browser:
             out.append(self._option(SEARCH, f"q{n}", label, handle))
         return tuple(out)
 
+    def _search_by_address(self, active: dict[str, Any]) -> tuple[Affordance, ...]:
+        """The site's own search address, for a page whose search box is not in the reading:
+        measured on YouTube, the first snapshot after it opened had its buttons and not
+        yet its search box. Only for a site whose search address is known."""
+        host = _host(str(active.get("url", "")))
+        site = _site_name(host)
+        if not site or site not in recipes.SEARCH_URLS:
+            return ()
+        handle = f"searchurl {active['id']} {site}"
+        return (self._option(SEARCH, "q1", f"search {host} for words", handle),)
+
     def _clicks(
         self, snap: dict[str, Any], elements: list[dict[str, Any]] | None = None
     ) -> tuple[Affordance, ...]:
@@ -599,7 +630,7 @@ class Browser:
 
     # ------------------------------------------------------------------ find, then choose
 
-    def _find(self, query: str) -> tuple[Affordance, ...]:
+    def _find(self, query: str, heard: str = "") -> tuple[Affordance, ...]:
         """Type the query into the page's search box and offer what came back."""
         query = query.strip()
         if not query:
@@ -626,7 +657,52 @@ class Browser:
             raise AdapterError("the page did not answer after the search")
         with self._lock:
             self._reading.snapshot, self._reading.snapshot_at = results, time.monotonic()
-        return self._clicks(results, ranked[:MAX_FOUND])
+        return self._found(results, query, playing="play" in heard.lower().split())
+
+    def _found(self, snap: dict[str, Any], query: str, *, playing: bool) -> tuple[Affordance, ...]:
+        """What a search brought back, one option per thing found.
+
+        Measured on Spotify's results: a song's row is its title, its artist, "Add to Liked
+        Songs" and "More options for ...", and the same song is also the top result card.
+        Offered as they were, twelve options held five "Hold the Line" and turn two chose
+        none of them. So a list item is offered once, as its title link named with its
+        other links ("Hold the Line, TOTO"); menus are left out; and two options whose
+        names hold the same words are one. With "play" said, an item's own play button is
+        what is clicked, since the title only opens the song's page.
+        """
+        clickable = _clickable(snap)
+        items: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+        for element in clickable:
+            listed = element.get("list") or {}
+            if listed.get("group"):
+                items.setdefault((listed["group"], listed.get("index")), []).append(element)
+        out: list[Affordance] = []
+        seen_items: set[tuple[Any, Any]] = set()
+        seen_names: set[frozenset[str]] = set()
+        for element in _ranked_for(query, clickable):
+            if _overlap(query, element) == 0:
+                break  # the rest share no word with what was asked for
+            listed = element.get("list") or {}
+            item = (listed.get("group"), listed.get("index"))
+            if listed.get("group"):
+                if item in seen_items:
+                    continue
+                seen_items.add(item)
+                target, label = _item_target(items[item], playing)
+            elif _is_menu(element):
+                continue
+            else:
+                target, label = element, str(element.get("name", ""))
+            words = frozenset(re.findall(r"\w+", label.lower())) - {"play"}
+            if not words or words in seen_names:
+                continue
+            seen_names.add(words)
+            handle = f"click {snap['tab_id']} {snap['snapshot_id']} {target['id']}"
+            self._remember(handle, target)
+            out.append(self._option(CLICK, f"f{len(out) + 1}", label, handle))
+            if len(out) >= MAX_FOUND:
+                break
+        return tuple(out)
 
 
 def _clickable(snap: dict[str, Any]) -> list[dict[str, Any]]:
@@ -661,6 +737,40 @@ def _leads(elements: list[dict[str, Any]], group: str) -> dict[Any, dict[str, An
         if best is None or rank > (best.get("kind") == "link", len(str(best.get("name", "")))):
             leads[index] = element
     return leads
+
+
+# the start of a button that opens a menu about a result rather than the result itself
+_MENU_PREFIXES = ("more options", "more actions", "action menu", "options for", "add to")
+
+
+def _is_menu(element: dict[str, Any]) -> bool:
+    return str(element.get("name", "")).lower().startswith(_MENU_PREFIXES)
+
+
+def _item_target(members: list[dict[str, Any]], playing: bool) -> tuple[dict[str, Any], str]:
+    """The element to click for one list item, and the item's name: its title link, with
+    its other links after it ("Hold the Line, TOTO"), or its play button when asked to play."""
+    links = [m for m in members if m.get("kind") == "link"]
+    lead = max(links or members, key=lambda m: len(str(m.get("name", ""))))
+    title = str(lead.get("name", ""))
+    others: list[str] = []
+    for link in links:
+        name = str(link.get("name", ""))
+        if link is not lead and name and name != title and name not in others:
+            others.append(name)
+    label = ", ".join([title, *others[:2]])
+    if playing:
+        button = next(
+            (
+                m
+                for m in members
+                if m.get("kind") == "button" and str(m.get("name", "")).lower().startswith("play ")
+            ),
+            None,
+        )
+        if button is not None:
+            return button, f"play {label}"
+    return lead, label
 
 
 def _overlap(query: str, element: dict[str, Any]) -> int:

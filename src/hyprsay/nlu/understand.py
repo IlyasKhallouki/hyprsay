@@ -232,6 +232,14 @@ _FILLER = frozenset(
 
 # the words that ask for something to be found by name
 FINDING_VERBS = frozenset({"search", "find", "look", "lookup"})
+# everything "a bit more", "keep going" and "a little further" are made of, once the
+# filler is gone: words that ask for more of the last thing and name nothing new
+_MORE_OF_IT = frozenset(
+    {
+        "more", "again", "bit", "little", "further", "keep", "going", "another", "some",
+        "lot", "tad", "even", "still", "same", "please", "way",
+    }
+)  # fmt: skip
 
 # Why the second turn's Choice named no step, in this module's vocabulary. `plan.Cut` is
 # about reading one answer and `turns.Stopped` is about an utterance that ended with
@@ -1364,10 +1372,14 @@ class Understander:
         """Could this option run with what was said? An adapter capability that has to be
         asked needs a query; one of our own needs `_action_for` to build it."""
         if affordance.adapter != affordances.SELF:
-            if turns.needs_fetching(affordance):
-                return bool(words) or bool(turns.strip_carrier(heard.text, heard.raw.split()))
             adapter = adapters.by_name(self.adapters, affordance.adapter)
             capability = self._capability_now(adapter, affordance.capability, heard, state)
+            if capability is not None and capability.said_with:
+                said = set(heard.literal) | set(affordances.spoken(heard.text))
+                if not said & set(capability.said_with):
+                    return False
+            if turns.needs_fetching(affordance):
+                return bool(words) or bool(turns.strip_carrier(heard.text, heard.raw.split()))
             if capability is not None and capability.wants_words:
                 return _words_fit(capability, words)
             return True
@@ -2107,9 +2119,13 @@ class Understander:
         )
         action = Action(Intent.SERVICE, service=service)
         named_by_adapter = getattr(adapter, "corroborates", None)
-        corroborated = self._named_capability(capability, heard) or bool(
-            named_by_adapter is not None
-            and named_by_adapter(affordance.capability, affordance.handle, heard.text)
+        corroborated = (
+            self._named_capability(capability, heard)
+            or bool(
+                named_by_adapter is not None
+                and named_by_adapter(affordance.capability, affordance.handle, heard.text)
+            )
+            or self._continues(capability, heard, state)
         )
         evidence = Evidence(
             source="jev",
@@ -2146,7 +2162,27 @@ class Understander:
             self.last_exchange["errors"]["adapter"] = type(exc).__name__
             return None
 
+    def _continues(self, capability: Capability, heard: _Heard, state: DesktopState) -> bool:
+        """ "a bit more" after "scroll down": the last command named this capability, in this
+        window, and this one says nothing but how much more of it.
+
+        The rule `affordances._gestures` already has for the wheel, for an adapter's own
+        capability: the words of the last command are the evidence, since they named it.
+        """
+        last = self.context.previous
+        if last is None or last.intent != Intent.SERVICE.value:
+            return False
+        if last.address and last.address != state.active_address:
+            return False  # a service turn names no window; one that did must still be here
+        words = {w for w in affordances.spoken(heard.text) if w not in _FILLER}
+        if not words or not words <= _MORE_OF_IT:
+            return False
+        return self._names(capability, last.said)
+
     def _named_capability(self, capability: Capability, heard: _Heard) -> bool:
+        return self._names(capability, heard.text)
+
+    def _names(self, capability: Capability, text: str) -> bool:
         """Did the speaker use one of this capability's own words?
 
         `affordances.said` and not `claims`, and against the summary rather than against
@@ -2157,7 +2193,7 @@ class Understander:
         words = tuple(w for w in affordances.spoken(capability.summary) if w not in _FILLER)
         if not words:
             return False
-        spoken = affordances.spoken(heard.text)
+        spoken = affordances.spoken(text)
         if "found" in words and FINDING_VERBS & set(spoken):
             # "search for X" asks for something to be found by name, which is what a
             # capability summarized as "..., found by name" does

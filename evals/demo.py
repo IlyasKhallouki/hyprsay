@@ -182,6 +182,16 @@ def _active(browser: BrowserClient) -> dict[str, Any]:
     return next((t for t in browser.tabs() if t.get("active")), {})
 
 
+def _moved_away(demo_window: str) -> str:
+    """The window someone else put in front of the demo's Chrome window, or ""."""
+    if not demo_window:
+        return ""
+    active = _hyprctl("activewindow")
+    if not isinstance(active, dict) or active.get("address") == demo_window:
+        return ""
+    return f"{active.get('class', '?')} on workspace {active.get('workspace', {}).get('id', '?')}"
+
+
 def _focused_class() -> str:
     return str(_hyprctl("activewindow").get("class", ""))
 
@@ -302,6 +312,18 @@ def _offered(exchange: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _second_turn(exchange: dict[str, Any]) -> dict[str, str]:
+    """What the second turn chose among (what a find brought back, then the rest)."""
+    sent = exchange.get("requests") or []
+    if len(sent) < 2:
+        return {}
+    out: dict[str, str] = {}
+    for question in (sent[1].get("questions") or {}).values():
+        for key, value in (question.get("criteria") or {}).items():
+            out.setdefault(key, value.get("label") if isinstance(value, dict) else str(value))
+    return out
+
+
 # --------------------------------------------------------------------------- speaking
 
 
@@ -414,7 +436,18 @@ async def run(args: argparse.Namespace) -> int:
         time.sleep(10)
         subprocess.run(["hyprctl", "dispatch", "workspace", str(free[1])], capture_output=True)
         time.sleep(0.6)
+        # the Chrome window "open chrome" brings forward; every later line happens inside it,
+        # so focus anywhere else means someone at the machine moved it, not the engine
+        demo_window = ""
         for line in LINES:
+            moved = _moved_away(demo_window)
+            if moved:
+                print(f"NOTE  focus was moved to {moved} from outside the demo; putting it back")
+                subprocess.run(
+                    ["hyprctl", "dispatch", "focuswindow", f"address:{demo_window}"],
+                    capture_output=True,
+                )
+                time.sleep(0.6)
             probe.before(line)
             with_state = snapshot(sock)
             # what the engine does at key down, a second or so before the words are done
@@ -483,8 +516,13 @@ async def run(args: argparse.Namespace) -> int:
                     "decided": understander.last_exchange.get("decided"),
                     "options": _offered(understander.last_exchange),
                     "turn": understander.last_exchange.get("turn"),
+                    "second": _second_turn(understander.last_exchange),
+                    "errors": dict(understander.last_exchange.get("errors") or {}),
+                    "interrupted": moved,
                 }
             )
+            if not demo_window and line.check == "chrome_in_front" and passed:
+                demo_window = str(_hyprctl("activewindow").get("address", ""))
             mark = {True: "PASS", False: "FAIL", None: "BLOCKED"}[passed]
             print(f"{mark}  {line.said!r}  heard {heard!r}  ({decided_ms} ms)")
             print(f"      did: {'; '.join(did)}")

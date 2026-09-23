@@ -142,6 +142,13 @@ def read(
 # Going to an address in a new tab and in the current one is the case the replay found:
 # 0.56 and 0.37 between them, 0.93 together, and a margin rule that read it as unsure.
 SAME_THING: dict[str, str] = {"open_url": "go to an address", "go_to_url": "go to an address"}
+# The same for an adapter's capabilities: searching a site and finding something on it to
+# play are one request to look something up there, 0.58 and 0.31 on the live demo. Which
+# of them runs is the words' business (`Capability.said_with`), not the vote's.
+SAME_CAPABILITY: dict[str, str] = {
+    "browser.search": "look something up on this site",
+    "browser.find": "look something up on this site",
+}
 
 
 def family(affordance: Affordance) -> str:
@@ -150,6 +157,8 @@ def family(affordance: Affordance) -> str:
         recipe = affordance.handle.rsplit(" ", 1)[-1]
         if recipe in SAME_THING:
             return f"{affordance.handle.rsplit(' ', 1)[0]} {SAME_THING[recipe]}"
+    if affordance.capability in SAME_CAPABILITY:
+        return f"{affordance.adapter} {SAME_CAPABILITY[affordance.capability]}"
     return affordance.id
 
 
@@ -165,8 +174,9 @@ def choose(
     - an option that cannot run cannot win. A "found by name" option with no name said,
       or an address that is not one, is set aside, and its probability goes nowhere: it
       is not handed to the runner-up, so nothing gains evidence it did not get.
-    - synonyms are one vote (`SAME_THING`). The winner inside the vote is the option the
-      model liked best.
+    - synonyms are one vote (`SAME_THING`, `SAME_CAPABILITY`). The winner inside the vote
+      is the option that can run that the model liked best, and the vote keeps what its
+      other members got: they were votes for the same thing, done another way.
 
     `none` is a vote of its own. None comes back when it wins, or when nothing is left.
     """
@@ -177,12 +187,14 @@ def choose(
             votes[bank.NONE] = votes.get(bank.NONE, 0.0) + p
             continue
         found = options.get(key)
-        if found is None or not viable(found):
+        if found is None:
             continue
         vote = family(found)
         votes[vote] = votes.get(vote, 0.0) + p
-        if p > best.get(vote, (-1.0, ""))[0]:
+        if viable(found) and p > best.get(vote, (-1.0, ""))[0]:
             best[vote] = (p, key)
+    # a vote none of whose members can run goes nowhere
+    votes = {vote: p for vote, p in votes.items() if vote == bank.NONE or vote in best}
     if not votes:
         return None
     ranked = sorted(votes.items(), key=lambda kv: -kv[1])

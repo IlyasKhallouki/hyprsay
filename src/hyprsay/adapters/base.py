@@ -148,6 +148,10 @@ class Capability:
     # the spoken verbs that authorize a tier 2 candidate of this capability, the same rule
     # `nlu/tiers.LITERAL_VERBS` applies to closing a window: "close" for closing a tab
     verbs: tuple[str, ...] = ()
+    # words one of which the speaker must have said for this capability to be chosen at
+    # all: finding something to play needs "play" (or "watch"), and without it the same
+    # words are a search of the site, which `nlu/decide.family` counts as the same vote
+    said_with: tuple[str, ...] = ()
     # how long `resolve` may take when it is fetched, when the default is too short: a
     # search typed into a page has to wait for the results to render. 0 means the default.
     fetch_s: float = 0.0

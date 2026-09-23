@@ -247,7 +247,9 @@ def test_finding_types_the_query_into_the_search_box_and_offers_what_came_back(a
     found = base.candidates(adapter, browser.FIND, {"query": "new gpu"}, Context(state=IN_FRONT))
     assert ("type", "s1", "e1", "new gpu", True) in adapter._client.calls
     # what shares the query's words comes first
-    assert found[0].label == "result 2: The new GPU is here"
+    assert found[0].label == "The new GPU is here"
+    # and nothing that shares no word with it is offered at all
+    assert [o.label for o in found] == ["The new GPU is here"]
     chosen = found[0]
     adapter.perform(chosen.capability, chosen.handle, Context(state=IN_FRONT))
     assert ("click", "s1", "e3") in adapter._client.calls
@@ -382,3 +384,80 @@ def test_a_harvest_during_a_warm_serves_what_the_warm_stored_instead_of_asking(
     assert adapter._client.calls == []
     adapter._idle.set()
     assert offered(adapter, IN_FRONT, "browser.search")[0].label == "search youtube.com for words"
+
+
+def test_a_site_whose_search_box_is_not_on_the_page_yet_is_searched_by_its_address(adapter):
+    buttons_only = [e for e in RESULTS["elements"] if e.get("kind") != "search"]
+    adapter._client.snapshots = [dict(RESULTS, elements=buttons_only)]
+    options = offered(adapter, IN_FRONT, "browser.search")
+    assert [o.label for o in options] == ["search youtube.com for words"]
+    adapter.perform(
+        options[0].capability, options[0].handle, Context(state=IN_FRONT, words="linus tech tips")
+    )
+    url = "https://www.youtube.com/results?search_query=linus%20tech%20tips"
+    assert ("open", url, "current") in adapter._client.calls
+
+
+def test_a_site_with_no_search_address_and_no_search_box_offers_no_search(adapter):
+    page = dict(RESULTS, url="https://example.com/", elements=[element("e5", "Home")])
+    adapter._client.snapshots = [page]
+    adapter._client.tabs = lambda: [dict(TABS[0], url="https://example.com/"), TABS[1]]
+    assert offered(adapter, IN_FRONT, "browser.search") == ()
+
+
+def test_a_page_read_just_after_it_changed_is_read_again_soon(adapter, monkeypatch):
+    monkeypatch.setattr(browser, "YOUNG_FRESH_S", 0.0)
+    offered(adapter, IN_FRONT, "browser.search")
+    offered(adapter, IN_FRONT, "browser.click")
+    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 1
+    tab = by_label(offered(adapter, IN_FRONT, "browser.tab"), "spotify")
+    adapter.perform(tab.capability, tab.handle, Context(state=IN_FRONT))
+    offered(adapter, IN_FRONT, "browser.search")
+    offered(adapter, IN_FRONT, "browser.click")
+    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 3
+
+
+SPOTIFY_RESULTS = {
+    "snapshot_id": "s2",
+    "tab_id": 7,
+    "url": "https://open.spotify.com/search/hold%20the%20line",
+    "title": "Spotify - Search",
+    "elements": [
+        element("e4", "What do you want to play?", kind="search", role="combobox"),
+        element("e24", "Hold the Line TOTO", kind="button", role="button"),
+        element("e28", "More options for Hold the Line", kind="button", role="button"),
+        element("e31", "Hold the Line", group="g3", index=1, size=4),
+        element("e32", "Add to Liked Songs", kind="button", role="button", group="g3", index=1,
+                size=4),
+        element("e33", "More options for Hold the Line by TOTO", kind="button", role="button",
+                group="g3", index=1, size=4),
+        element("e34", "TOTO", group="g3", index=1, size=4),
+        element("e35", "Hold the Line", group="g3", index=2, size=4),
+        element("e38", "TOTO", group="g3", index=2, size=4),
+        element("e39", "Africa", group="g3", index=3, size=4),
+        element("e60", "Play Hold The Line by Dessina", kind="button", role="button",
+                group="g5", index=2, size=7),
+        element("e71", "Hold The Line", group="g5", index=2, size=7),
+        element("e73", "Dessina", group="g5", index=2, size=7),
+    ],
+}  # fmt: skip
+
+
+def _find(adapter, heard):
+    adapter._client.snapshots = [SPOTIFY_RESULTS]
+    context = Context(state=IN_FRONT, heard=heard)
+    return base.candidates(adapter, browser.FIND, {"query": "hold the line"}, context)
+
+
+def test_what_a_search_found_is_offered_once_per_thing_without_its_menus(adapter):
+    labels = [o.label for o in _find(adapter, "search for hold the line")]
+    # the top card and the first row are one song; the second row is the same words again
+    assert labels == ["Hold the Line TOTO", "Hold The Line, Dessina"]
+
+
+def test_asked_to_play_a_found_item_is_played_by_its_own_play_button(adapter):
+    found = _find(adapter, "play hold the line")
+    dessina = by_label(found, "Dessina")
+    assert dessina.label == "play Hold The Line, Dessina"
+    adapter.perform(dessina.capability, dessina.handle, Context(state=IN_FRONT))
+    assert ("click", "s2", "e60") in adapter._client.calls
