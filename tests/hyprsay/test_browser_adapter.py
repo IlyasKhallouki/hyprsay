@@ -461,3 +461,25 @@ def test_asked_to_play_a_found_item_is_played_by_its_own_play_button(adapter):
     assert dessina.label == "play Hold The Line, Dessina"
     adapter.perform(dessina.capability, dessina.handle, Context(state=IN_FRONT))
     assert ("click", "s2", "e60") in adapter._client.calls
+
+
+def test_the_results_are_numbered_and_not_the_filter_tabs_or_the_footer(adapter):
+    def item(ident, name, group, index, size, kind="link", in_view=True):
+        found = element(ident, name, kind=kind, role=kind, group=group, index=index, size=size)
+        found["in_view"] = in_view
+        return found
+
+    filters = [item(f"t{n}", f"Filter {n}", "g1", n, 5, kind="tab") for n in range(1, 6)]
+    footer = [item(f"f{n}", f"Footer {n}", "g4", n, 6) for n in range(1, 7)]
+    videos = []
+    for n in range(1, 4):
+        videos += [
+            item(f"v{n}", f"A long video title number {n}", "g3", n, 3),
+            item(f"c{n}", "Linus Tech Tips", "g3", n, 3),
+            item(f"m{n}", "More actions", "g3", n, 3, kind="button"),
+        ]
+    adapter._client.snapshots = [dict(RESULTS, elements=[*filters, *footer, *videos])]
+    labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
+    assert "result 2: A long video title number 2" in labels
+    assert not any(label.startswith("result") and "Filter" in label for label in labels)
+    assert not any(label.startswith("result") and "Footer" in label for label in labels)

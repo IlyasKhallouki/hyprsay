@@ -426,7 +426,8 @@ class Browser:
             return Outcome(True, f"Opened {host} in a new tab.")
         if kind == "scroll":
             tab, way = rest.split(" ", 1)
-            self._call(client.scroll, way, int(tab))
+            heading = self._call(client.scroll, way, int(tab))
+            log.debug("scrolling %s: the page says it is heading for %s", way, heading)
             return Outcome(True, "Scrolled.")
         if kind == "history":
             tab, way = rest.split(" ", 1)
@@ -694,8 +695,8 @@ class Browser:
             else:
                 target, label = element, str(element.get("name", ""))
             words = frozenset(re.findall(r"\w+", label.lower())) - {"play"}
-            if not words or words in seen_names:
-                continue
+            if not words or any(words <= seen for seen in seen_names):
+                continue  # the same name, or a shorter one, is already on the list
             seen_names.add(words)
             handle = f"click {snap['tab_id']} {snap['snapshot_id']} {target['id']}"
             self._remember(handle, target)
@@ -713,19 +714,46 @@ def _clickable(snap: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+# kinds that make a list a set of controls (filter chips, a tab bar) rather than results
+_CONTROL_KINDS = frozenset({"tab", "toggle", "option"})
+
+
 def _main_group(elements: list[dict[str, Any]]) -> str:
-    """The list most of the page is about: the group with the most items."""
-    sizes: dict[str, int] = {}
+    """The list the page is about: its results, not its filters, tabs or footer.
+
+    Measured: the largest group on YouTube's results page was its filter tabs ("Shorts",
+    "Unwatched"), and on Spotify's its footer links, so "the second video" named a tab.
+    A group of tabs, toggles or options is a control, and one with no link leads nowhere.
+    Of the rest: one on screen, then one whose items hold more than one thing (a result
+    is a title, a channel and a menu where a footer entry is one link), then the most
+    items, then the richest.
+    """
+    members: dict[str, list[dict[str, Any]]] = {}
     for element in elements:
         listed = element.get("list") or {}
         if listed.get("group"):
-            sizes[listed["group"]] = max(sizes.get(listed["group"], 0), int(listed.get("size", 0)))
-    return max(sizes, key=lambda g: sizes[g]) if sizes else ""
+            members.setdefault(listed["group"], []).append(element)
+
+    def rank(group: str) -> tuple[bool, bool, int, float]:
+        found = members[group]
+        size = max(int((e.get("list") or {}).get("size", 0)) for e in found)
+        items = {(e.get("list") or {}).get("index") for e in found}
+        richness = len(found) / max(len(items), 1)
+        return (any(e.get("in_view") for e in found), richness >= 2, size, richness)
+
+    results = [
+        g
+        for g, found in members.items()
+        if any(e.get("kind") == "link" for e in found)
+        and not any(e.get("kind") in _CONTROL_KINDS for e in found)
+    ]
+    return max(results, key=rank) if results else ""
 
 
 def _leads(elements: list[dict[str, Any]], group: str) -> dict[Any, dict[str, Any]]:
-    """Each item of the main list, and its main link: the link with the longest name,
-    which on a results page is the title rather than the channel or a menu button."""
+    """Each item of the main list, and its main link: its first link in reading order,
+    which on a results page is the title, above the channel or the artist. Not the
+    longest: Spotify's "Natural" row would have been named "Imagine Dragons"."""
     leads: dict[Any, dict[str, Any]] = {}
     for element in elements:
         listed = element.get("list") or {}
@@ -733,8 +761,7 @@ def _leads(elements: list[dict[str, Any]], group: str) -> dict[Any, dict[str, An
             continue
         index = listed.get("index")
         best = leads.get(index)
-        rank = (element.get("kind") == "link", len(str(element.get("name", ""))))
-        if best is None or rank > (best.get("kind") == "link", len(str(best.get("name", "")))):
+        if best is None or (element.get("kind") == "link" and best.get("kind") != "link"):
             leads[index] = element
     return leads
 
@@ -751,12 +778,12 @@ def _item_target(members: list[dict[str, Any]], playing: bool) -> tuple[dict[str
     """The element to click for one list item, and the item's name: its title link, with
     its other links after it ("Hold the Line, TOTO"), or its play button when asked to play."""
     links = [m for m in members if m.get("kind") == "link"]
-    lead = max(links or members, key=lambda m: len(str(m.get("name", ""))))
+    lead = (links or members)[0]
     title = str(lead.get("name", ""))
     others: list[str] = []
     for link in links:
         name = str(link.get("name", ""))
-        if link is not lead and name and name != title and name not in others:
+        if name and name.lower() not in {title.lower(), *(o.lower() for o in others)}:
             others.append(name)
     label = ", ".join([title, *others[:2]])
     if playing:

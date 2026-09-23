@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import logging
 import subprocess
 import sys
 import time
@@ -312,6 +313,29 @@ def _offered(exchange: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _page(browser_adapter: Any) -> dict[str, Any]:
+    """What the adapter had read of the page when the line was decided."""
+    from hyprsay.adapters import browser as browser_mod
+
+    snap = dict(browser_adapter._reading.snapshot)
+    if not snap:
+        return {}
+    clickable = browser_mod._clickable(snap)
+    groups: dict[str, int] = {}
+    for element in clickable:
+        listed = element.get("list") or {}
+        if listed.get("group"):
+            groups[listed["group"]] = int(listed.get("size", 0))
+    return {
+        "url": str(snap.get("url", ""))[:80],
+        "tab": snap.get("tab_id"),
+        "viewport": snap.get("viewport"),
+        "elements": len(snap.get("elements", [])),
+        "groups": groups,
+        "main": browser_mod._main_group(clickable),
+    }
+
+
 def _second_turn(exchange: dict[str, Any]) -> dict[str, str]:
     """What the second turn chose among (what a find brought back, then the rest)."""
     sent = exchange.get("requests") or []
@@ -390,6 +414,15 @@ async def run(args: argparse.Namespace) -> int:
     lexicon = Lexicon.scan(cfg)
     services = adapter_pkg.live(cfg)
     browser_adapter = next(a for a in services if a.name == "browser")
+    # the browser adapter's own account of what it did (where a scroll was heading), kept
+    # beside the report
+    logging.basicConfig(
+        filename=str(Path(args.out).with_suffix(".log")),
+        filemode="w",
+        level=logging.WARNING,
+        format="%(asctime)s %(name)s %(message)s",
+    )
+    logging.getLogger("hyprsay.adapters.browser").setLevel(logging.DEBUG)
     understander = Understander(cfg, lexicon, Grammar(), client, adapters=services)
     recognizer = None
     if args.voice:
@@ -480,6 +513,7 @@ async def run(args: argparse.Namespace) -> int:
                         pinned_address=with_state.active_address,
                     )
             decided_ms = round((time.perf_counter() - started) * 1000)
+            page = _page(browser_adapter)
             did: list[str] = []
             ok_all = True
             for step in (decision, *decision.rest):
@@ -519,6 +553,7 @@ async def run(args: argparse.Namespace) -> int:
                     "second": _second_turn(understander.last_exchange),
                     "errors": dict(understander.last_exchange.get("errors") or {}),
                     "interrupted": moved,
+                    "page": page,
                 }
             )
             if not demo_window and line.check == "chrome_in_front" and passed:
