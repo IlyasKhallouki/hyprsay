@@ -123,6 +123,12 @@ def _host(url: str) -> str:
     return host.removeprefix("www.")
 
 
+def _site_name(host: str) -> str:
+    """What a person calls a site: open.spotify.com is spotify, mail.google.com is google."""
+    parts = host.split(".")
+    return parts[-2] if len(parts) >= 2 else host
+
+
 def _cut(text: str) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= MAX_LABEL else text[: MAX_LABEL - 1].rstrip() + "…"
@@ -279,7 +285,7 @@ class Browser:
         if capability == TAB.id:
             return tuple(self._tab(t, tabs) for t in tabs if t.get("id") is not None)
         if capability == OPEN.id:
-            return self._sites(sites, tabs)
+            return self._sites(sites, tabs, context.heard)
         if capability == ADDRESS.id:
             return (self._option(ADDRESS, "a1", "open a website by its address", "address"),)
         if not in_front or active is None:
@@ -381,11 +387,15 @@ class Browser:
         )
 
     def _tab(self, tab: dict[str, Any], tabs: list[dict[str, Any]]) -> Affordance:
-        host = _host(str(tab.get("url", ""))) or "a page"
-        label = f"{host} tab"
+        host = _host(str(tab.get("url", "")))
+        # named by the site as a person says it ("the spotify tab"), with the host beside it:
+        # measured live, "open.spotify.com tab" lost to "start Spotify" for "open spotify"
+        label = f"switch to the {_site_name(host)} tab ({host})" if host else "switch to a tab"
         title = self._shown_title(tab, tabs)
         if title:
-            label = f"{label}: {title}"
+            # two tabs of one site: the title tells them apart, and the host would only
+            # push it past the label's 60 characters
+            label = f"switch to the {_site_name(host)} tab: {title}"
         return self._option(TAB, f"t{tab['id']}", label, f"tab {int(tab['id'])}")
 
     def _shown_title(self, tab: dict[str, Any], tabs: list[dict[str, Any]]) -> str:
@@ -404,10 +414,18 @@ class Browser:
         return title[: privacy.title_chars]
 
     def _sites(
-        self, sites: list[dict[str, Any]], tabs: list[dict[str, Any]]
+        self, sites: list[dict[str, Any]], tabs: list[dict[str, Any]], heard: str = ""
     ) -> tuple[Affordance, ...]:
         out: list[Affordance] = []
         seen: set[str] = set()
+        # a site the speaker named that the table of known sites spells ("youtube"), first:
+        # the top sites are the profile's habits, and a site not among them was still asked for
+        for word in heard.lower().split():
+            host = recipes.KNOWN_SITES.get(word, "")
+            if host and host not in seen:
+                seen.add(host)
+                label = f"open {host} in a new tab"
+                out.append(self._option(OPEN, f"o{len(out) + 1}", label, f"open https://{host}/"))
         for site in sites:
             url = str(site.get("url", ""))
             host = _host(url)
