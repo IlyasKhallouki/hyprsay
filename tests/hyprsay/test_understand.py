@@ -2407,3 +2407,18 @@ def test_a_click_that_names_more_than_a_list_item_is_not_taken_as_a_result_numbe
         or decision.action.service is None
         or (decision.action.service.handle != "click 7 s1 e3")
     )
+
+
+def test_with_jev_unavailable_the_grammars_own_reading_still_acts():
+    # the spoken demo's last line: a 503, with the grammar's close of the tab in hand
+    parses = {"close this tab": Parse(Intent.PRESS_CHORD, Slots(verb="ctrl+w"))}
+    u = Understander(
+        SINGLE, FakeLexicon(APPS), FakeGrammar(parses), FakeEvaluator.unavailable(),
+        normalizer=FakeNormalizer(), adapters=(TabsOnly(),),
+    )  # fmt: skip
+    firefox_in_front = desktop(FOX_A, TERMINAL, active=FOX_A.address)
+    decision = asyncio.run(u.understand(Transcript("close this tab", "test"), firefox_in_front))
+    assert decision.verdict in ACTING
+    assert decision.action.intent is Intent.PRESS_CHORD
+    assert decision.action.verb == "ctrl+w"
+    assert u.last_exchange["path"] == "degraded, grammar"

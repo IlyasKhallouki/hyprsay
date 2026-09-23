@@ -556,6 +556,7 @@ class Understander:
         parse = self.grammar.parse(norm, picking=False)
         heard = _heard(norm, parse)
         need: _Need | None = None
+        fallback: Decision | None = None
         if parse is not None and parse.intent is not Intent.NONE:
             if _swallowed(parse, seams) and self._jev_on():
                 # the parse matched every word, but one slot ate a seam, so the words
@@ -581,9 +582,14 @@ class Understander:
                     "intent": parse.intent.value,
                     "verdict": outcome.verdict.value,
                 }
+                if outcome.verdict in ACTING:
+                    # what the grammar would have done, for when Jev cannot answer
+                    fallback = self._page_scroll(outcome, heard, state)
             elif not self._single():
                 need = outcome
-        return await self._semantic(heard, state, pinned_address, need, seams=seams, chain=chain)
+        return await self._semantic(
+            heard, state, pinned_address, need, seams=seams, chain=chain, fallback=fallback
+        )
 
     # ----------------------------------------------------------------------- language
 
@@ -1169,6 +1175,7 @@ class Understander:
         *,
         seams: _Seams = NO_SEAMS,
         chain: _Chain | None = None,
+        fallback: Decision | None = None,
     ) -> Decision:
         if need is None and _sounds_like_dictation(heard.literal):
             self.last_exchange["path"] = "local"
@@ -1183,7 +1190,9 @@ class Understander:
             # nobody can judge the seams, so the utterance stays whole: exactly v1
             return self._degrade(heard, state, need, "Jev is turned off")
         if self._single():
-            return await self._one_request(heard, state, pinned_address, seams=seams)
+            return await self._one_request(
+                heard, state, pinned_address, seams=seams, fallback=fallback
+            )
 
         self.last_exchange["path"] = "jev"
         # Only for a whole utterance the grammar settled nothing about. A `need` is a
@@ -1248,8 +1257,14 @@ class Understander:
         pinned_address: str,
         *,
         seams: _Seams = NO_SEAMS,
+        fallback: Decision | None = None,
     ) -> Decision:
         """Harvest, ask once, act on the reading (`nlu/decide.py` says why).
+
+        `fallback` is the grammar's own reading, when it had one that acts: with Jev
+        unreachable it is what happens, which is what the engine did before Jev. Measured
+        on the spoken demo: a 503 turned "close this tab" into "only exact commands work",
+        with the grammar's close of the tab in hand.
 
         The seam Booleans ride in the same request, so a compound utterance costs no extra
         round trip; each clause it is cut into comes back through `_clause` and therefore
@@ -1258,17 +1273,23 @@ class Understander:
         self.last_exchange["path"] = "single"
         offered = await self._harvest(heard, copies=1, state=state)
         if not offered:
-            return self._degrade(heard, state, None, "nothing on this desktop could be offered")
+            return self._fall_back(fallback) or self._degrade(
+                heard, state, None, "nothing on this desktop could be offered"
+            )
         extra = self._seam_questions(seams) if seams.at and not seams.asked else {}
         request, options, words = self._single_request(self._base(heard), offered, heard, extra)
         if request is None:
-            return self._degrade(heard, state, None, "the request would not fit")
+            return self._fall_back(fallback) or self._degrade(
+                heard, state, None, "the request would not fit"
+            )
         self.last_exchange["context"] = self.context.for_request()
         self.last_exchange["requests"] = [request.as_sent()]
         answers = await self._ask(requests.FanOut((request,)))
         failure = answers.failure("r")
         if failure is not None:
-            return self._degrade(heard, state, None, _plain(failure), failure)
+            return self._fall_back(fallback) or self._degrade(
+                heard, state, None, _plain(failure), failure
+            )
         taken = [] if seams.asked else self._separating(answers, seams)
         if taken:
             chained = await self._chained(replace(seams, asked=True), state, pinned_address, taken)
@@ -1302,6 +1323,13 @@ class Understander:
         if decision is None:
             return self._suggest(heard, "that cannot be done from here", rehearable=False)
         return decision
+
+    def _fall_back(self, fallback: Decision | None) -> Decision | None:
+        """The grammar's reading when Jev could not be asked, noted as such."""
+        if fallback is None:
+            return None
+        self.last_exchange["path"] = "degraded, grammar"
+        return fallback
 
     def _page_scroll(self, decision: Decision, heard: _Heard, state: DesktopState) -> Decision:
         """A spoken scroll with a browser in front scrolls the page through the extension.
