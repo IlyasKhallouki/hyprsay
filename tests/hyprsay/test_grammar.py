@@ -569,25 +569,33 @@ def test_what_is_not_a_command_is_declined_not_guessed(raw):
     assert parse(raw) is None
 
 
+def _per_parse(parse, batches: int = 5, runs: int = 40) -> float:
+    """Seconds per parse, from the fastest of several batches.
+
+    The fastest batch and not the total: on a machine at a load average of 40 one slow
+    batch is the scheduler, not the grammar, and a single 200-run total measured 2.04 ms
+    against a 2 ms bound on code that had not changed.
+    """
+    best = float("inf")
+    for _ in range(batches):
+        started = time.perf_counter()
+        for _ in range(runs):
+            parse()
+        best = min(best, (time.perf_counter() - started) / runs)
+    return best
+
+
 def test_declining_a_long_utterance_is_cheap():
     norm = normalize("so i was telling him about the thing we saw at lunch yesterday", VOCABULARY)
     worst = Normalized(norm.text, norm.raw, norm.tokens, (norm.text + " a", norm.text + " b", "x"))
     assert len(norm.text.split()) == 12
     assert GRAMMAR.parse(worst) is None
-    runs = 200
-    started = time.perf_counter()
-    for _ in range(runs):
-        GRAMMAR.parse(worst)
-    assert (time.perf_counter() - started) / runs < 0.002
+    assert _per_parse(lambda: GRAMMAR.parse(worst)) < 0.002
 
 
 def test_a_long_utterance_that_starts_like_a_command_is_cheap_too():
     norm = _hand_made("move " + "the very long thing " * 3 + "to", "open " + "a b c d e f g " * 2)
-    runs = 200
-    started = time.perf_counter()
-    for _ in range(runs):
-        GRAMMAR.parse(norm)
-    assert (time.perf_counter() - started) / runs < 0.002
+    assert _per_parse(lambda: GRAMMAR.parse(norm)) < 0.002
 
 
 # --------------------------------------------------------------------------- the table itself
