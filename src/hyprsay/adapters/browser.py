@@ -85,7 +85,7 @@ FIND = Capability(
     kind="page search",
     params=(Param("query", "text"),),
     needs_query=True,
-    fetch_s=2.4,
+    fetch_s=4.0,
 )
 SCROLL = Capability("browser.scroll", "scroll this page", tier=0, kind="page")
 HISTORY = Capability("browser.history", "go back or forward a page", tier=1, kind="page")
@@ -110,8 +110,14 @@ SITES_FRESH_S = 60.0
 # new page measured 1.4 s here, so a harvest serves the cache rather than wait for it
 SYNC_TIMEOUT_S = 0.6
 MAX_TABS = 8
-# how long the find capability lets a search settle before reading the results
-FIND_SETTLE_MS = 1500
+# how long the find capability waits for results that match the query, and how often it
+# looks: a results page keeps changing, so waiting for it to go quiet never ended (measured
+# on Spotify's), while results that match show up well inside this
+FIND_WAIT_S = 3.0
+FIND_POLL_S = 0.35
+# a failed refresh is not retried for this long, so one slow page costs one wait per
+# harvest instead of one per capability
+RETRY_AFTER_S = 3.0
 MAX_CLICKS = 24
 MAX_FOUND = 12
 
@@ -150,6 +156,9 @@ class _Reading:
     sites_at: float = 0.0
     snapshot: dict[str, Any] = field(default_factory=dict)
     snapshot_at: float = 0.0
+    # the tab the last snapshot was asked of, answered or not: a page that could not be read
+    # is not asked again until it is stale, the same as one that could
+    snapshot_for: Any = None
 
 
 class Browser:
@@ -165,8 +174,11 @@ class Browser:
         # the same element again instead of refusing
         self._targets: dict[str, tuple[str, str, int]] = {}
         self._reading = _Reading()
+        self._failed_at = -RETRY_AFTER_S
         self._lock = threading.Lock()
         self._warming = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
 
     def __repr__(self) -> str:
         return "Browser()"
@@ -216,7 +228,7 @@ class Browser:
         if page:
             active = self._active_tab()
             stale = now - reading.snapshot_at > SNAPSHOT_FRESH_S
-            other_tab = active is not None and reading.snapshot.get("tab_id") != active.get("id")
+            other_tab = active is not None and reading.snapshot_for != active.get("id")
             if force or stale or other_tab:
                 try:
                     snap = self._call(
@@ -229,12 +241,14 @@ class Browser:
                     snap = {}
                 with self._lock:
                     reading.snapshot, reading.snapshot_at = snap, time.monotonic()
+                    reading.snapshot_for = active.get("id") if active else None
 
     def warm(self, *, page: bool = True) -> None:
         """Refresh in the background, once at a time. Never raises, never blocks."""
         if self._warming.is_set() or not socket_path().exists():
             return
         self._warming.set()
+        self._idle.clear()
 
         def run() -> None:
             try:
@@ -243,6 +257,7 @@ class Browser:
                 log.debug("the browser could not be read", exc_info=True)
             finally:
                 self._warming.clear()
+                self._idle.set()
 
         threading.Thread(target=run, name="browser-warm", daemon=True).start()
 
@@ -256,10 +271,17 @@ class Browser:
         return next((t for t in self._reading.tabs if t.get("active")), None)
 
     def _ensure(self, page: bool) -> None:
+        if time.monotonic() - self._failed_at < RETRY_AFTER_S:
+            return  # it just failed; serve what is cached rather than wait again
+        if not self._idle.wait(SYNC_TIMEOUT_S):
+            # a warm is reading this very thing, and asking beside it would only queue
+            # behind it; what it has stored so far (the tabs come first) is served
+            return
         try:
             # top sites change slowly and `warm` keeps them; read them here only once
             self.refresh(page=page, timeout=SYNC_TIMEOUT_S, sites=not self._reading.sites_at)
         except AdapterError:
+            self._failed_at = time.monotonic()
             log.debug("the browser could not be read for this harvest", exc_info=True)
 
     # ------------------------------------------------------------------ the contract
@@ -520,8 +542,12 @@ class Browser:
         elements = elements if elements is not None else _clickable(snap)
         main = _main_group(elements)
         leads = _leads(elements, main)
+        # the main list's items first, in their own order, then the rest of the page: on
+        # YouTube's home page the sidebar alone filled every slot and no video was listed
+        first = [leads[i] for i in sorted(leads, key=lambda i: int(i or 0))]
+        ordered = first + [e for e in elements if not any(e is lead for lead in first)]
         out: list[Affordance] = []
-        for element in elements[:MAX_CLICKS]:
+        for element in ordered[:MAX_CLICKS]:
             listed = element.get("list") or {}
             name = str(element.get("name", ""))
             # only the item's main link is "result 2": its channel link and its menu keep
@@ -584,11 +610,22 @@ class Browser:
         if box is None:
             raise AdapterError("this page has no search box to find that with")
         self._call(client.type, snap["snapshot_id"], box["id"], query, submit=True)
-        results = self._call(client.snapshot, settle_ms=FIND_SETTLE_MS)
+        deadline = time.monotonic() + FIND_WAIT_S
+        results: dict[str, Any] = {}
+        ranked: list[dict[str, Any]] = []
+        while time.monotonic() < deadline:
+            time.sleep(FIND_POLL_S)
+            try:
+                results = self._call(client.snapshot)
+            except AdapterError:
+                continue  # the page is navigating; look again
+            ranked = _ranked_for(query, _clickable(results))
+            if ranked and _overlap(query, ranked[0]) > 0:
+                break  # something that matches the query is on the page
+        if not results:
+            raise AdapterError("the page did not answer after the search")
         with self._lock:
             self._reading.snapshot, self._reading.snapshot_at = results, time.monotonic()
-        clickable = _clickable(results)
-        ranked = _ranked_for(query, clickable)
         return self._clicks(results, ranked[:MAX_FOUND])
 
 
@@ -626,15 +663,15 @@ def _leads(elements: list[dict[str, Any]], group: str) -> dict[Any, dict[str, An
     return leads
 
 
+def _overlap(query: str, element: dict[str, Any]) -> int:
+    wanted = {w for w in query.lower().split() if w not in _WORDS_TO_SKIP}
+    return len(wanted & set(str(element.get("name", "")).lower().split()))
+
+
 def _ranked_for(query: str, elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """What a search returned, the ones that share the most words with the query first,
     keeping the page's own order among equals ("the second one" is still the second)."""
-    wanted = {w for w in query.lower().split() if w not in _WORDS_TO_SKIP}
-
-    def overlap(element: dict[str, Any]) -> int:
-        return len(wanted & set(str(element.get("name", "")).lower().split()))
-
-    scored = [(overlap(e), n, e) for n, e in enumerate(elements)]
+    scored = [(_overlap(query, e), n, e) for n, e in enumerate(elements)]
     hits = [e for score, n, e in sorted(scored, key=lambda x: (-x[0], x[1])) if score > 0]
     return hits or elements
 

@@ -1068,3 +1068,28 @@ def test_a_bit_more_after_a_page_scroll_ranks_that_scroll_first():
     m = replace(machine(INSIDE, heard="a bit more", adapters=(_Scrolling(),)), previous=previous)
     browser_options = sourced(harvest(m), affordances.BROWSER)
     assert browser_options[0].affordance.label == "scroll this page down"
+
+
+class _Listing(_Scrolling):
+    """A browser adapter whose page is a list of videos under a sidebar."""
+
+    def capabilities(self, context):
+        from hyprsay.adapters.base import Capability
+
+        return (Capability("browser.click", "click on the page", tier=1, kind="page"),)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        labels = ["Liked videos", "Watch later", "result 1: A video", "result 2: Another one"]
+        return tuple(
+            Affordance(f"c{n}", label, "page", 1, f"click 7 s1 e{n}", "browser",
+                       "browser.click", Trust.UNTRUSTED)
+            for n, label in enumerate(labels, 1)
+        )  # fmt: skip
+
+
+def test_the_second_video_ranks_result_two_first():
+    m = machine(INSIDE, heard="click the 2 video", adapters=(_Listing(),))
+    browser_options = sourced(harvest(m), affordances.BROWSER)
+    assert browser_options[0].affordance.label == "result 2: Another one"

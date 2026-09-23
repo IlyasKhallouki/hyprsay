@@ -102,6 +102,7 @@ class FakeClient:
 
 @pytest.fixture
 def adapter(monkeypatch, tmp_path):
+    monkeypatch.setattr(browser, "FIND_POLL_S", 0.0)
     (tmp_path / "hypruse").mkdir()
     (tmp_path / "hypruse" / "browser.sock").touch()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
@@ -245,7 +246,6 @@ def test_a_handle_the_adapter_never_minted_is_refused(adapter):
 def test_finding_types_the_query_into_the_search_box_and_offers_what_came_back(adapter):
     found = base.candidates(adapter, browser.FIND, {"query": "new gpu"}, Context(state=IN_FRONT))
     assert ("type", "s1", "e1", "new gpu", True) in adapter._client.calls
-    assert ("snapshot", None, browser.FIND_SETTLE_MS) in adapter._client.calls
     # what shares the query's words comes first
     assert found[0].label == "result 2: The new GPU is here"
     chosen = found[0]
@@ -348,3 +348,37 @@ def test_the_pages_own_options_come_before_tabs_and_sites(adapter):
     order = [c.id for c in adapter.capabilities(Context(state=IN_FRONT))]
     assert order.index("browser.close_tab") < order.index("browser.tab")
     assert order.index("browser.search") < order.index("browser.open")
+
+
+def test_the_main_list_is_offered_before_the_rest_of_the_page(adapter):
+    sidebar = [element(f"n{n}", f"Sidebar link {n}") for n in range(browser.MAX_CLICKS)]
+    adapter._client.snapshots = [dict(RESULTS, elements=[*sidebar, *RESULTS["elements"]])]
+    labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
+    assert labels[:3] == [
+        "result 1: I built a PC for 10 years",
+        "result 2: The new GPU is here",
+        "result 3: Why we quit",
+    ]
+    assert len(labels) == browser.MAX_CLICKS
+
+
+def test_a_page_that_could_not_be_read_is_not_asked_again_by_every_capability(adapter):
+    def loading(tab_id=None, *, max=120, settle_ms=0):
+        adapter._client.calls.append(("snapshot", tab_id, settle_ms))
+        raise BrowserError("timeout", "no answer in time")
+
+    adapter._client.snapshot = loading
+    for capability in ("browser.search", "browser.click", "browser.scroll", "browser.close_tab"):
+        offered(adapter, IN_FRONT, capability)
+    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 1
+
+
+def test_a_harvest_during_a_warm_serves_what_the_warm_stored_instead_of_asking(
+    adapter, monkeypatch
+):
+    monkeypatch.setattr(browser, "SYNC_TIMEOUT_S", 0.05)
+    adapter._idle.clear()  # a warm is reading the page
+    assert offered(adapter, IN_FRONT, "browser.search") == ()
+    assert adapter._client.calls == []
+    adapter._idle.set()
+    assert offered(adapter, IN_FRONT, "browser.search")[0].label == "search youtube.com for words"

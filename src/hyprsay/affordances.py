@@ -932,9 +932,14 @@ def _browser(context: Machine) -> list[Ranked]:
     last = context.previous
     earlier = spoken(last.said) if last.intent == Intent.SERVICE.value else ()
     found = base.offer((browser,), context, limit=base.MAX_CANDIDATES)
+    # "click the second video": the normalizer wrote "second" as "2", and the page's list
+    # items are labelled "result 2: ..." by the adapter, so the number picks the item
+    numbers = {f"result {w}:" for w in words if w.isdigit()}
     ranked: list[Ranked] = []
     for index, item in enumerate(found, 1):
         score = claims(words, item.label)
+        if numbers and any(item.label.startswith(n) for n in numbers):
+            score = 1.0
         again = claims(earlier, item.label) if earlier and score <= 0.0 else 0.0
         if again > 0.0:
             # graded, so "scroll ... down" after "scroll down" beats "scroll ... up"
