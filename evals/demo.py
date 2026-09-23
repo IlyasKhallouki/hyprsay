@@ -309,6 +309,22 @@ class Probe:
             return False
         return any(e.get("name") == "Log in" for e in page.get("elements", []))
 
+    def _player(self, tab: dict[str, Any]) -> str:
+        """YouTube's own player buttons, which say what the video is doing: "Pause (k)"
+        while it plays, "Unmute (m)" while it plays without sound."""
+        try:
+            snap = self.browser.snapshot(tab.get("id"), max=120)
+        except Exception as exc:
+            return f"unread ({exc})"
+        names = [
+            str(e.get("name", ""))
+            for e in snap.get("elements", [])
+            if str(e.get("name", ""))
+            .lower()
+            .startswith(("play", "pause", "mute", "unmute", "skip"))
+        ]
+        return ", ".join(names[:6]) or "no player buttons"
+
     def _scroll(self) -> float:
         try:
             return float(self.browser.snapshot(max=1)["viewport"]["scroll_y"])
@@ -344,7 +360,10 @@ class Probe:
             now = self._scroll()
             return now > self.scroll_y, f"scroll {self.scroll_y:.0f} -> {now:.0f}"
         if name == "watching":
-            return host == "youtube.com" and "/watch" in url, f"url: {url[:80]}"
+            return (
+                host == "youtube.com" and "/watch" in url,
+                f"url: {url[:80]}; player: {self._player(tab)}",
+            )
         if name == "youtube_quiet":
             # Chrome's `audible` means "made sound over the past couple of seconds", so a
             # tab paused a moment ago still reads audible: look again for a few seconds
@@ -358,7 +377,10 @@ class Probe:
                     break
                 time.sleep(0.5)
             playing = sorted(n for n, st in _players().items() if st == "Playing")
-            return not loud, f"youtube audible: {loud}; playing: {', '.join(playing) or 'none'}"
+            return not loud, (
+                f"youtube audible: {loud}; playing: {', '.join(playing) or 'none'}; "
+                f"player: {self._player(tab)}"
+            )
         if name == "quieter":
             now = _volume()
             return now < self.volume, f"volume {self.volume:.2f} -> {now:.2f}"
