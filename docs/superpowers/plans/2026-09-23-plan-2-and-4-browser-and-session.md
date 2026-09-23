@@ -43,6 +43,37 @@ an empty buffer, re-pinned to the window in front. `ptt.max_hold_s` is 180.
 playing, by name; every link inside a search result was numbered, so only an item's main link
 is "result N".
 
+Later runs found more, in roughly this order:
+
+- The browser client held its connection for the whole of a call. A harvest that could
+  afford 0.6 s waited behind a warm's 3 s snapshot of a page that was still loading, and
+  the whole harvest was dropped. The deadline now covers the wait.
+- A snapshot that failed named no tab, so every capability asked for it again at 0.6 s
+  each. The reading now remembers which tab it asked. A page read just after an act is
+  read again a second later, because the first read of a new YouTube page had its
+  buttons and not its search box. A site whose search box is missing is searched by its
+  own search address when recipes know it.
+- "search for linus tech tips" split Jev 0.58 to 0.31 between finding and searching.
+  They are one vote now, and finding needs a playing verb.
+- "a bit more" after a page scroll was chosen at 0.99 and then refused, because nothing
+  in it names a scroll. The words of the last command now vouch for a bare "more of it".
+- On YouTube's results page the largest list is the filter tabs, and on Spotify's it is
+  the footer. The numbered list is the one on screen whose items hold more than one
+  thing. An item's title is its first link: by length, Spotify's "Natural" row was named
+  after its artist.
+- A find on Spotify offered five "Hold the Line" and the rows' menu buttons, and turn two
+  chose none. Each result is offered once, named with its other links, and with "play"
+  said, its play button is what gets clicked.
+- Jev was slower on the day than the client was tuned for: 536 ms p50 and 2.1 s p90 over
+  138 real calls. A duplicate request now races the first after 0.8 s, and the deadline
+  is 2.5 s.
+
+The driver changed too. One run went on while the owner was using the machine, and its
+clean-up closed a Firefox window and an extension's page that the owner had opened, since
+it closed anything that appeared during the run. It now closes only its own window and
+windows a line launched. It starts only after a stretch with no keyboard or touchpad
+interrupts, and stops at the first key.
+
 **The demo driver** (`evals/demo.py`). The ten lines, in order, in one pipeline, typed or
 spoken by a synthetic Piper voice through the engine's own recognizer; each checked by what
 changed (active tab, audible tabs, scroll position, volume); run in a Chrome window of its own
