@@ -17,6 +17,7 @@ command, so none of this has to be taken on trust.
 | Window titles | **not sent**, except to tell apart several windows of the same app, and then only theirs, truncated and redacted | never leaves |
 | What a media player is playing (track, artist, album) | **not sent**, except to tell apart several players that would otherwise carry the same name, and then only theirs, truncated and redacted. Same rule, same switch, same reason: it says what you are watching | never leaves |
 | Names and kinds of your installed apps | sent to Jev with **every** semantic command, not only when you ask to open something: the questions all go in one round trip, before anything knows which one you meant | never leaves |
+| Browser tabs and pages, with the hypruse-browser extension | each tab goes as its site ("youtube.com tab"), and your most visited sites as addresses to open. A tab's title goes only to tell apart two tabs of one site, cut and redacted like a window title. While a browser is in front, the names of the links, buttons and search boxes in view go as options to click. What you typed into a page never goes | never leaves |
 
 Common commands ("workspace three", "close this", "open firefox") are resolved entirely on
 your machine by a grammar. Nothing is sent for them in any mode.
@@ -54,6 +55,20 @@ log line.
 
 `privacy.titles = "never"` turns both off. The cost: "the one with youtube" style
 references fall back to numbered hints on screen.
+
+## Tabs and pages
+
+The browser extension lets hyprsay see your tabs and the page in front of you, and that is
+also what makes "click the second video" possible, so the rule is the window-title rule
+again. A tab is named by its site. Its title goes only when another tab is open on the same
+site, and then cut to 60 characters, with the same redaction patterns applied. The names of
+the links and buttons on a page go only while a browser window is in front, because that is
+when you are asking for something on it. Field values are never read, so a password or a
+message you are writing cannot end up in a request.
+
+Under `privacy.titles = "never"`, no tab title and no page text goes at all. You can still
+switch tabs by site, open sites, scroll, go back, close a tab and search a site with its own
+search box; clicking a link by name is what you give up.
 
 ## On your disk
 

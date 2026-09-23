@@ -48,7 +48,12 @@ def live(cfg: Config | None = None) -> tuple[Adapter, ...]:
     """
     privacy = (cfg or Config()).privacy
     waytify = Waytify()
-    return (Mpris(privacy=privacy), waytify, Spotify(superseded_by=waytify), Browser())
+    return (
+        Mpris(privacy=privacy),
+        waytify,
+        Spotify(superseded_by=waytify),
+        Browser(privacy=privacy),
+    )
 
 
 __all__ = [

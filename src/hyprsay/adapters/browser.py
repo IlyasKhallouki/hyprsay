@@ -25,6 +25,13 @@ cache is older than it should be, with a short timeout.
 
 EVERY LABEL IS UNTRUSTED: page titles and element names are written by web pages.
 `base.candidates` forces that, and a label authorizes nothing (docs/PLAN.md 5.6).
+
+WHAT LEAVES THE MACHINE follows `privacy.titles`, the rule window titles already follow
+(docs/PRIVACY.md): a tab is named by its site, and its title goes only to tell apart two tabs
+of one site, cut and redacted. The names of the links and buttons in view go only while a
+browser is in front, which is when the speaker is reaching into it. `"never"` withholds every
+title and every name on the page; tabs, sites, scrolling, history and the page's own search
+box still work, because none of them needs page text.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from hyprsay.adapters.base import (
     Trust,
     tier_for,
 )
+from hyprsay.config import Privacy
 from hyprsay.model import Outcome, Window
 from hypruse.browser.client import BrowserClient, BrowserError, BrowserUnavailable, socket_path
 
@@ -135,8 +143,9 @@ class Browser:
 
     name = NAME
 
-    def __init__(self, client: BrowserClient | None = None) -> None:
+    def __init__(self, client: BrowserClient | None = None, privacy: Privacy | None = None) -> None:
         self._client = client
+        self._privacy = privacy or Privacy()
         self._minted = Minted(limit=512)
         # what a click handle pointed at, so a click on a page that re-rendered can find
         # the same element again instead of refusing
@@ -245,9 +254,12 @@ class Browser:
         return any(is_browser(w) for w in context.state.windows) and socket_path().exists()
 
     def capabilities(self, context: Context) -> tuple[Capability, ...]:
-        if is_browser(context.state.focused):
-            return (*ANYWHERE, *IN_FRONT)
-        return ANYWHERE
+        if not is_browser(context.state.focused):
+            return ANYWHERE
+        if self._privacy.never:
+            # clicking by name and finding by name both need the page's own text
+            return (*ANYWHERE, *(c for c in IN_FRONT if c not in (CLICK, FIND)))
+        return (*ANYWHERE, *IN_FRONT)
 
     def resolve(
         self, capability: str, slots: Mapping[str, Any], context: Context
@@ -265,7 +277,7 @@ class Browser:
             snap = dict(self._reading.snapshot)
         active = next((t for t in tabs if t.get("active")), None)
         if capability == TAB.id:
-            return tuple(self._tab(t) for t in tabs if t.get("id") is not None)
+            return tuple(self._tab(t, tabs) for t in tabs if t.get("id") is not None)
         if capability == OPEN.id:
             return self._sites(sites, tabs)
         if capability == ADDRESS.id:
@@ -292,13 +304,16 @@ class Browser:
                 self._option(HISTORY, "p2", "go forward a page", f"history {tab} forward"),
             )
         if capability == CLOSE.id:
-            title = active.get("title") or _host(str(active.get("url", "")))
-            return (self._option(CLOSE, "k1", f"close this tab ({title})", f"close {tab}"),)
+            host = _host(str(active.get("url", "")))
+            label = (
+                "close this tab" if self._privacy.never or not host else f"close this tab ({host})"
+            )
+            return (self._option(CLOSE, "k1", label, f"close {tab}"),)
         if not snap or snap.get("tab_id") != tab:
             return ()
         if capability == SEARCH.id:
             return self._searches(snap)
-        if capability == CLICK.id:
+        if capability == CLICK.id and not self._privacy.never:
             return self._clicks(snap)
         return ()
 
@@ -365,11 +380,28 @@ class Browser:
             trust=Trust.UNTRUSTED,
         )
 
-    def _tab(self, tab: dict[str, Any]) -> Affordance:
-        host = _host(str(tab.get("url", "")))
-        title = str(tab.get("title", "")) or host
-        label = f"{host} tab: {title}" if host else f"tab: {title}"
+    def _tab(self, tab: dict[str, Any], tabs: list[dict[str, Any]]) -> Affordance:
+        host = _host(str(tab.get("url", ""))) or "a page"
+        label = f"{host} tab"
+        title = self._shown_title(tab, tabs)
+        if title:
+            label = f"{label}: {title}"
         return self._option(TAB, f"t{tab['id']}", label, f"tab {int(tab['id'])}")
+
+    def _shown_title(self, tab: dict[str, Any], tabs: list[dict[str, Any]]) -> str:
+        """A tab's title, only when it is needed to tell it from another tab of its site."""
+        privacy = self._privacy
+        if privacy.never:
+            return ""
+        host = _host(str(tab.get("url", "")))
+        twins = [t for t in tabs if _host(str(t.get("url", ""))) == host]
+        if len(twins) < 2:
+            return ""
+        title = " ".join(str(tab.get("title", "")).split())
+        lowered = title.lower()
+        if any(pattern.lower() in lowered for pattern in privacy.redact_title_patterns):
+            return ""
+        return title[: privacy.title_chars]
 
     def _sites(
         self, sites: list[dict[str, Any]], tabs: list[dict[str, Any]]

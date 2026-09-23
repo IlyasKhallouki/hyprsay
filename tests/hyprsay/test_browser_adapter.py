@@ -129,10 +129,7 @@ def test_what_is_on_the_page_is_offered_only_with_the_browser_in_front(adapter):
 
 def test_every_tab_is_something_to_switch_to_named_by_its_site(adapter):
     tabs = offered(adapter, BEHIND, "browser.tab")
-    assert [o.label for o in tabs] == [
-        "youtube.com tab: linus tech tips - YouTube",
-        "open.spotify.com tab: Spotify - Web Player",
-    ]
+    assert [o.label for o in tabs] == ["youtube.com tab", "open.spotify.com tab"]
     assert all(o.trust is base.Trust.UNTRUSTED for o in tabs)
 
 
@@ -159,7 +156,7 @@ def test_the_search_box_is_offered_as_a_search_of_the_site(adapter):
 
 def test_closing_the_tab_names_it_and_needs_the_verb(adapter):
     close = offered(adapter, IN_FRONT, "browser.close_tab")[0]
-    assert close.label == "close this tab (linus tech tips - YouTube)"
+    assert close.label == "close this tab (youtube.com)"
     assert close.tier == 2
     assert browser.CLOSE.verbs == ("close",)
 
@@ -242,3 +239,39 @@ def test_a_page_with_no_search_box_cannot_find_anything(adapter):
     adapter._client.snapshots = [dict(RESULTS, elements=RESULTS["elements"][1:])]
     with pytest.raises(AdapterError):
         base.candidates(adapter, browser.FIND, {"query": "x"}, Context(state=IN_FRONT))
+
+
+# --------------------------------------------------------------------------- privacy
+
+from hyprsay.config import Privacy  # noqa: E402
+
+
+def test_a_tab_is_named_by_its_site_alone_unless_two_share_one(adapter):
+    adapter._privacy = Privacy()
+    labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
+    assert labels == ["youtube.com tab", "open.spotify.com tab"]
+    twin = dict(TABS[0], id=8, active=False, title="another video - YouTube")
+    adapter._client.tabs = lambda: [*TABS, twin]
+    adapter.forget_page()  # the tabs are cached for a moment; a new tab is a new reading
+    labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
+    assert "youtube.com tab: another video - YouTube" in labels
+    assert "open.spotify.com tab" in labels
+
+
+def test_a_title_that_matches_a_redaction_rule_is_never_sent(adapter):
+    adapter._privacy = Privacy()
+    secret = dict(TABS[0], id=8, active=False, title="My Password Vault - YouTube")
+    adapter._client.tabs = lambda: [*TABS, secret]
+    labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
+    assert not any("Vault" in label for label in labels)
+
+
+def test_never_withholds_titles_and_what_is_on_the_page(adapter):
+    adapter._privacy = Privacy(titles="never")
+    twin = dict(TABS[0], id=8, active=False, title="another video - YouTube")
+    adapter._client.tabs = lambda: [*TABS, twin]
+    assert all(":" not in o.label for o in offered(adapter, BEHIND, "browser.tab"))
+    assert offered(adapter, IN_FRONT, "browser.click") == ()
+    assert offered(adapter, IN_FRONT, "browser.close_tab")[0].label == "close this tab"
+    # the page's own search box is still usable: its label is the site, not page text
+    assert offered(adapter, IN_FRONT, "browser.search")[0].label == "search youtube.com for words"
