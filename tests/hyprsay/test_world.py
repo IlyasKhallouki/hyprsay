@@ -116,7 +116,9 @@ class FakeEvents:
         await self.drop()
 
 
-async def until(condition, timeout: float = 2.0) -> None:
+async def until(condition, timeout: float = 5.0) -> None:
+    # returns the moment the condition holds; the limit only matters on a loaded machine,
+    # where a reconnect and a fresh snapshot outlasted two seconds at a load average of 43
     deadline = time.monotonic() + timeout
     while not condition():
         assert time.monotonic() < deadline, "the condition never became true"
