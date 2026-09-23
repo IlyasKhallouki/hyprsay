@@ -75,6 +75,14 @@ LOCK_POLL_S = 0.25
 # system that says the SPEAKER has not. Longer than a gap between words, shorter than a
 # pause anyone would sit through with the key still held.
 SETTLE_SILENCE_MS = 350.0
+# Holding the key is a listening session: a pause this long after speech ends one command,
+# which is then decoded, understood and carried out while the key stays down, and the next
+# command starts from an empty buffer (docs/superpowers/specs/2026-09-23-browser-voice-design.md,
+# "the key is the session"). Longer than the early-settle silence, so a breath inside a
+# command does not cut it in two, and short enough that the next command is not waiting.
+SEGMENT_SILENCE_MS = 800.0
+# after this long holding, the overlay says how long, once a second
+SHOW_HOLD_AFTER_S = 10.0
 
 
 class Engine:
@@ -110,6 +118,7 @@ class Engine:
         # "the first two clauses are spent" is a statement about ONE utterance and
         # carrying it into the next one would skip a command nobody ever ran.
         self._settler = incremental.Settler(stable_decodes=cfg.stt.settle_decodes)
+        self._segment_from = 0
         self._done_early: list[str] = []
         self._listening: asyncio.Task | None = None
         self._listen_stop = False
@@ -366,11 +375,19 @@ class Engine:
 
     async def _run_meter(self) -> None:
         with contextlib.suppress(asyncio.CancelledError):
+            ticks = 0
             while True:
                 await asyncio.sleep(1 / 30)
                 await self.hud.send(
                     {"t": "state", "state": "hearing", "level": self.recorder.level()}
                 )
+                ticks += 1
+                held = time.monotonic() - self._down_at
+                if ticks % 30 == 0 and held >= SHOW_HOLD_AFTER_S:
+                    # a long hold is a session; the release can be lost to a lock, so the
+                    # overlay says how long the microphone has been open
+                    text = f"still listening, {int(held)} s"
+                    await self.hud.send({"t": "state", "state": "hearing", "text": text})
 
     # ------------------------------------------------------------------ while it is said
 
@@ -385,6 +402,8 @@ class Engine:
         self._done_early = []
         self._chunk_ms = []
         self._listen_stop = False
+        # where the command being spoken now starts in the recorder's buffer, in bytes
+        self._segment_from = 0
         live_badges = self._picking and time.monotonic() < self._picking_until
         if self.partials is None or live_badges:
             return
@@ -423,11 +442,27 @@ class Engine:
                 await asyncio.sleep(interval)
                 if self._listen_stop or not self.ptt.held:
                     return
-                pcm = self.recorder.snapshot()
+                whole = self.recorder.snapshot()
+                start_s = self._segment_from / 2 / 16000
+                pcm = whole[self._segment_from :]
                 # the same two bars key up applies before it decodes anything: a stray
                 # press and a held key with nobody talking are not utterances, and above
                 # all they are not audio to hand to a model
-                if len(pcm) / 2 / 16000 < MIN_UTTERANCE_S or not self.recorder.voiced_after(0.0):
+                if len(pcm) / 2 / 16000 < MIN_UTTERANCE_S or not self.recorder.voiced_after(
+                    start_s
+                ):
+                    continue
+                if self.recorder.trailing_silence(SEGMENT_SILENCE_MS):
+                    # the speaker stopped long enough for this to be a whole command:
+                    # finish it as key up would, and start the next one from nothing
+                    async with self._pipeline:
+                        if self._listen_stop or not self.ptt.held:
+                            return  # key up is about to finish it, with the same audio
+                        settler, done = self._settler, list(self._done_early)
+                        await self._finish(pcm, self._pinned, settler, done)
+                        self._next_segment(len(whole))
+                    session.close()
+                    session = self.partials.open()
                     continue
                 started = time.perf_counter()
                 text = await session.hear(pcm)
@@ -440,7 +475,7 @@ class Engine:
                 if not text.strip():
                     continue
                 async with self._pipeline:
-                    if not await self._early(text, pinned):
+                    if not await self._early(text, self._pinned):
                         return
         except asyncio.CancelledError:
             raise
@@ -526,6 +561,20 @@ class Engine:
         self._give_back(borrowed)
         return True
 
+    def _next_segment(self, offset: int) -> None:
+        """The command just finished; the next one starts at `offset` with nothing settled.
+
+        Re-pinned to whatever is in front now, because the command that just ran may have
+        moved focus ("open chrome", then "scroll down" means Chrome).
+        """
+        self._segment_from = offset
+        self._settler.reset()
+        self._done_early = []
+        self._chunk_ms = []
+        self._pinned = self.world.state.active_address
+        self._warm_controls(self.world.state.by_address(self._pinned))
+        self._warm_browser()
+
     def _borrow(self) -> tuple:
         """The daemon state a partial is about to overwrite and that is not its to spend.
 
@@ -556,9 +605,13 @@ class Engine:
             # only a short, deliberate tap confirms; holding the key is a new utterance
             self._confirm.set_result(held <= CONFIRM_TAP_S)
             return
+        # only the command still being spoken when the key came up: every one before it
+        # was finished during the hold (`_listen`, SEGMENT_SILENCE_MS)
+        start = getattr(self, "_segment_from", 0)
+        finished_some = start > 0
         # ask BEFORE stopping: stop() wipes the recorder's own buffers
-        spoke = self.recorder.voiced_after(0.0)
-        pcm = self.recorder.stop()
+        spoke = self.recorder.voiced_after(start / 2 / 16000)
+        pcm = self.recorder.stop()[start:]
         # captured now: a second key press may repin before this utterance is understood,
         # and the same press would hand the next hold a fresh settler
         pinned = self._pinned
@@ -569,10 +622,29 @@ class Engine:
         seconds = len(pcm) / 2 / 16000
         if seconds < MIN_UTTERANCE_S or not spoke:
             # a stray press, or a held key with nobody talking: nothing to decode, and
-            # above all nothing to send anywhere
-            await self._show("hidden")
+            # above all nothing to send anywhere. After a session the last command's
+            # result stays on the overlay rather than being wiped.
+            if not finished_some:
+                await self._show("hidden")
             return
+        await self._finish(pcm, pinned, settler, done_early, spoke=spoke)
 
+    async def _finish(
+        self,
+        pcm: bytes,
+        pinned: str,
+        settler: incremental.Settler,
+        done_early: list[str],
+        *,
+        spoke: bool = True,
+    ) -> None:
+        """Decode one command's audio, understand it and carry out what is left of it.
+
+        Key up calls this for the command it ended, and the held loop for each command a
+        pause ended. `settler` knows which clauses the early path already carried out, so
+        nothing runs twice.
+        """
+        seconds = len(pcm) / 2 / 16000
         await self._show("thinking")
         started = time.perf_counter()
         transcript = await self.recognizer.transcribe(pcm, 16000)

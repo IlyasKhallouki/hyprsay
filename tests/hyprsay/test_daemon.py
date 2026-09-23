@@ -72,9 +72,11 @@ class Ptt:
 
 
 class Recorder:
-    def __init__(self, *, spoke=True, pcm=PCM, fails=False, quiet=True):
+    def __init__(self, *, spoke=True, pcm=PCM, fails=False, quiet=True, paused=False):
         self.spoke, self.pcm, self.fails = spoke, pcm, fails
         self.quiet = quiet  # has the room been silent since the last word
+        # has it been silent long enough to end a command (daemon.SEGMENT_SILENCE_MS)
+        self.paused = paused
         self.started = self.stopped = self.aborted = 0
 
     def start(self):
@@ -99,7 +101,7 @@ class Recorder:
         return self.spoke
 
     def trailing_silence(self, ms):
-        return self.quiet
+        return self.quiet if ms <= daemon.SETTLE_SILENCE_MS else self.paused
 
 
 class Recognizer:
@@ -1412,3 +1414,131 @@ def test_nothing_is_read_out_of_a_window_while_the_session_is_locked(monkeypatch
     # read. `DesktopState.locked` fails closed, so an unreadable desktop reads as locked
     e._on_desktop(DesktopState())
     assert warmed.windows == []
+
+
+# ------------------------------------------------------------ the key is the session
+
+
+class Talking(Recorder):
+    """A microphone that hears a scripted timeline while the key is held.
+
+    Each snapshot is 0.1 s more audio. `script` is a list of (seconds, speaking) phases,
+    so a hold can say one command, pause, and say the next.
+    """
+
+    STEP = 3200  # 0.1 s of 16 kHz mono int16
+
+    def __init__(self, script):
+        super().__init__()
+        self.script = list(script)
+        self.length = 0
+
+    def _at(self, seconds):
+        elapsed = 0.0
+        for span, speaking in self.script:
+            if seconds < elapsed + span:
+                return speaking, elapsed
+            elapsed += span
+        return False, elapsed
+
+    def snapshot(self):
+        total = sum(span for span, _ in self.script)
+        if self.length / 32000 < total:
+            self.length += self.STEP
+        return b"\x00" * self.length
+
+    def stop(self):
+        self.stopped += 1
+        return b"\x00" * self.length
+
+    def voiced_after(self, seconds):
+        now = self.length / 32000
+        t = seconds
+        while t < now:
+            speaking, _ = self._at(t)
+            if speaking:
+                return True
+            t += 0.05
+        return False
+
+    def trailing_silence(self, ms):
+        now = self.length / 32000
+        start = max(0.0, now - ms / 1000)
+        if not self.voiced_after(0.0):
+            return False
+        t = start
+        while t < now:
+            if self._at(t)[0]:
+                return False
+            t += 0.05
+        return True
+
+
+class Heard(Recognizer):
+    """A recognizer that hears each finished command in turn."""
+
+    def __init__(self, *texts):
+        super().__init__(text=texts[0])
+        self.texts = list(texts)
+
+    async def transcribe(self, pcm, sample_rate=16000):
+        self.calls += 1
+        text = self.texts[min(self.calls - 1, len(self.texts) - 1)]
+        return Transcript(text, "local:fake")
+
+
+def session(decisions, script, *texts):
+    ptt = Ptt()
+    return engine(
+        decisions,
+        cfg=chunks(),
+        ptt=ptt,
+        partials=Partials(),
+        executor=Timing(ptt),
+        recorder=Talking(script),
+        recognizer=Heard(*texts),
+    )
+
+
+async def speak(e, p, seconds):
+    """Hold the key through the whole script, then let go."""
+    p["ptt"].held = True
+    await e._key_down()
+    await asyncio.sleep(seconds)
+    p["ptt"].held = False
+    await e._stop_listening()
+    await e._key_up("key")
+
+
+def test_a_pause_ends_a_command_and_it_runs_while_the_key_is_still_held():
+    decisions = {
+        "open spotify": Decision(Verdict.ACT, LAUNCH, heard="open spotify"),
+        "turn it down": Decision(Verdict.ACT, DOWN, heard="turn it down"),
+    }
+    # say a command, pause a second, say another, let go while still talking
+    script = [(0.6, True), (1.0, False), (0.6, True)]
+    e, p = session(decisions, script, "open spotify", "turn it down")
+    run(speak(e, p, 0.5))
+    assert p["executor"].executed == [LAUNCH, DOWN]
+    # the first ran during the hold, the second when the key came up
+    assert p["executor"].while_held == [True, False]
+    assert p["recognizer"].calls == 2
+
+
+def test_every_command_in_a_long_hold_runs_once_and_only_once():
+    decisions = {
+        "open spotify": Decision(Verdict.ACT, LAUNCH, heard="open spotify"),
+        "turn it down": Decision(Verdict.ACT, DOWN, heard="turn it down"),
+    }
+    # both commands end in a pause before the key comes up
+    script = [(0.6, True), (1.0, False), (0.6, True), (1.0, False)]
+    e, p = session(decisions, script, "open spotify", "turn it down")
+    run(speak(e, p, 0.6))
+    assert p["executor"].executed == [LAUNCH, DOWN]
+    assert p["executor"].while_held == [True, True]
+    # nothing was left over to decode on key up
+    assert p["recognizer"].calls == 2
+
+
+def test_the_default_hold_is_long_enough_for_a_session():
+    assert Config().ptt.max_hold_s == 180.0

@@ -27,7 +27,10 @@ class PTT:
     # socket2) is implemented in activation.py and tested, but nothing constructs it yet,
     # so it is not offered here: choosing it would leave the daemon hearing nothing.
     transport: str = "event"
-    max_hold_s: float = 15.0
+    # Holding the key is a listening session (daemon.SEGMENT_SILENCE_MS), so a hold can
+    # run through several commands. The limit stays because a release can be lost to a
+    # screen lock or a compositor restart, and the overlay shows the time past 10 s.
+    max_hold_s: float = 180.0
     # tap once to start, tap again to stop, instead of holding
     latch: bool = False
 
