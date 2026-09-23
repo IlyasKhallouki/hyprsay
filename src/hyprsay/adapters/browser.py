@@ -323,6 +323,26 @@ class Browser:
             return self._clicks(snap)
         return ()
 
+    def corroborates(self, capability: str, handle: str, heard: str) -> bool:
+        """Did the speaker name this tab? By its site, read from the URL's host.
+
+        Not from the title, which the page writes: a host is the site's own name, and
+        "go back to spotify" names open.spotify.com. Only for switching tabs, which is tier
+        0 and undone by switching back; nothing that costs more rests on it.
+        """
+        if capability != TAB.id or not handle.startswith("tab "):
+            return False
+        try:
+            wanted = int(handle.split()[1])
+        except (IndexError, ValueError):
+            return False
+        with self._lock:
+            tab = next((t for t in self._reading.tabs if t.get("id") == wanted), None)
+        if tab is None:
+            return False
+        site = _site_name(_host(str(tab.get("url", ""))))
+        return bool(site) and site in heard.lower().split()
+
     def perform(self, capability: str, handle: str, context: Context) -> Outcome:
         if handle not in self._minted:
             raise AdapterError("that is not an option the browser offered, so nothing was done")

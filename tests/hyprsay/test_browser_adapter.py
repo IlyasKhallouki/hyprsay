@@ -308,3 +308,16 @@ def test_a_site_already_offered_as_a_top_site_is_not_offered_twice(adapter):
         adapter, browser.OPEN, {}, Context(state=BEHIND, heard="open youtube")
     )
     assert [o.label for o in options] == ["open youtube.com in a new tab"]
+
+
+def test_a_tab_is_named_by_the_site_in_its_address_and_never_by_its_title(adapter):
+    tabs = offered(adapter, BEHIND, "browser.tab")
+    spotify = by_label(tabs, "spotify")
+    assert adapter.corroborates("browser.tab", spotify.handle, "go back to spotify")
+    assert not adapter.corroborates("browser.tab", spotify.handle, "go back to the music")
+    # the YouTube tab's title says "linus tech tips"; the title names nothing
+    youtube = by_label(tabs, "youtube")
+    assert not adapter.corroborates("browser.tab", youtube.handle, "go to linus tech tips")
+    assert adapter.corroborates("browser.tab", youtube.handle, "go to youtube")
+    # and it vouches for nothing but a tab switch
+    assert not adapter.corroborates("browser.close_tab", "close 7", "close youtube")

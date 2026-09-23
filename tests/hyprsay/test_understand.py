@@ -2164,3 +2164,71 @@ def test_an_app_named_only_by_its_kind_is_offered_not_started():
     u, _ = build(script, cfg=SINGLE, lexicon=lexicon)
     decision = say(u, "open another terminal")
     assert decision.verdict is not Verdict.ACT
+
+
+class TabsOnly:
+    """A browser adapter offering one tab, the way the real one labels it."""
+
+    name = "browser"
+
+    def __init__(self, site="spotify", host="open.spotify.com"):
+        from hyprsay.adapters.base import Capability, Minted
+
+        self.cap = Capability("browser.tab", "switch to a browser tab", tier=0, kind="browser tab")
+        self.label = f"switch to the {site} tab ({host})"
+        self.minted = Minted()
+        self.performed = []
+
+    def probe(self):
+        return True, "fake"
+
+    def can_serve(self, context):
+        return True
+
+    def capabilities(self, context):
+        return (self.cap,)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        return (
+            Affordance("t1", self.label, "browser tab", 0, self.minted.mint("tab 1", self.label),
+                       "browser", "browser.tab", Trust.UNTRUSTED),
+        )  # fmt: skip
+
+    def corroborates(self, capability, handle, heard):
+        return "spotify" in heard.split()
+
+    def perform(self, capability, handle, context):
+        self.performed.append(handle)
+
+
+def _single_with(adapters, script, parses=None, lexicon=None):
+    understander = Understander(
+        SINGLE,
+        lexicon or FakeLexicon(APPS),
+        FakeGrammar(parses),
+        FakeEvaluator(script),
+        normalizer=FakeNormalizer(),
+        adapters=adapters,
+    )
+    return understander
+
+
+NO_MUSIC = desktop(TERMINAL, FOX_A, FOX_B, NOTES)
+
+
+def test_open_x_goes_to_a_tab_of_x_rather_than_starting_the_app():
+    # Spotify's app is not running; its web player is open in a tab. "open spotify" is
+    # "Spotify is already open", the same rule as a window of it would be
+    u = _single_with((TabsOnly(),), {**ADDRESSED, "action": _option_labelled("Spotify")})
+    decision = asyncio.run(u.understand(Transcript("open spotify", "test"), NO_MUSIC))
+    assert decision.action is not None
+    assert decision.action.intent is Intent.SERVICE
+    assert decision.action.service.capability == "browser.tab"
+
+
+def test_open_a_new_x_still_starts_the_app():
+    u = _single_with((TabsOnly(),), {**ADDRESSED, "action": _option_labelled("Spotify")})
+    decision = asyncio.run(u.understand(Transcript("open a new spotify", "test"), NO_MUSIC))
+    assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP

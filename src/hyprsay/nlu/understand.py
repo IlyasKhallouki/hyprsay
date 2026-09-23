@@ -1266,6 +1266,7 @@ class Understander:
         step = decide.choose(
             reading, options, lambda found: self._viable(found, state, heard, reading.words)
         )
+        step = self._reach_tab(step, options, heard, state)
         self.last_exchange["decided"] = {
             "source": "single",
             "id": step.id if step else "",
@@ -1289,6 +1290,37 @@ class Understander:
         if decision is None:
             return self._suggest(heard, "that cannot be done from here", rehearable=False)
         return decision
+
+    def _reach_tab(
+        self,
+        step: plan.Step | None,
+        options: dict[str, Affordance],
+        heard: _Heard,
+        state: DesktopState,
+    ) -> plan.Step | None:
+        """Starting an app whose web version is already open in a tab goes to the tab.
+
+        The same rule as "open chrome" with Chrome open (`ground.reach`): naming something
+        that is already open means going to it. Measured live: "open spotify" with Spotify's
+        player open in a tab and the app not running, Jev chose "start Spotify" at 0.94. A
+        window of the app, or "a new one", leaves the launch to `ground.reach` as before.
+        """
+        if step is None or step.affordance.capability != Intent.LAUNCH_APP.value:
+            return step
+        app = self._app_by_id(step.affordance.handle)
+        if app is None or ground.preference(heard.text) is ground.Prefer.NEW:
+            return step
+        if ground.matches(app, state, self.lexicon).every:
+            return step
+        wanted = {app.name.lower(), app.id.lower()}
+        for key, option in options.items():
+            if option.capability != "browser.tab":
+                continue
+            site = option.label.removeprefix("switch to the ").split(" tab", 1)[0].lower()
+            if site in wanted:
+                self.last_exchange["reached_tab"] = {"from": step.id, "to": key}
+                return replace(step, id=key, affordance=option)
+        return step
 
     def _viable(
         self, affordance: Affordance, state: DesktopState, heard: _Heard, words: str
@@ -2038,9 +2070,14 @@ class Understander:
             text=words if capability.wants_words else "",
         )
         action = Action(Intent.SERVICE, service=service)
+        named_by_adapter = getattr(adapter, "corroborates", None)
+        corroborated = self._named_capability(capability, heard) or bool(
+            named_by_adapter is not None
+            and named_by_adapter(affordance.capability, affordance.handle, heard.text)
+        )
         evidence = Evidence(
             source="jev",
-            corroborated=self._named_capability(capability, heard),
+            corroborated=corroborated,
             wide_margin=step.margin >= self.cfg.gates.margin,
             # the capability's own verbs ("close" for closing a tab) are the speaker's
             # evidence for its countdown, as LITERAL_VERBS is for closing a window
