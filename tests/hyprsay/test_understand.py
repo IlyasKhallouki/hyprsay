@@ -2149,3 +2149,18 @@ def test_a_going_verb_offers_to_start_an_app_that_has_no_window():
     decision = say(u, "show me gimp")
     assert decision.verdict is Verdict.SUGGEST
     assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
+
+
+def test_an_app_named_only_by_its_kind_is_offered_not_started():
+    # the lexicon scores "terminal" against kitty through its kind alone, under the gate
+    # that lets a launch happen without asking
+    lexicon = FakeLexicon(APPS, app_scores={"open another terminal": [("kitty", 0.68)]})
+
+    def launch_kitty(question, state):
+        # launch options are minted a1, a2 (affordances._apps); the window is w1
+        return next(k for k in question.options if k.startswith("a"))
+
+    script = {**ADDRESSED, "action": launch_kitty}
+    u, _ = build(script, cfg=SINGLE, lexicon=lexicon)
+    decision = say(u, "open another terminal")
+    assert decision.verdict is not Verdict.ACT

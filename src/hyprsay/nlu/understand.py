@@ -1865,6 +1865,10 @@ class Understander:
                 # "go to my email" with no mail window open: going somewhere is not
                 # starting something, so the launch is offered, not done
                 return self._offer(action.app, chosen, heard)
+            if not self._named_strongly(action.app, heard):
+                # named only by its kind ("another terminal" reaches kitty at 0.68): the
+                # same gate the grammar path uses before a launch may happen unasked
+                chosen = replace(chosen, corroborated=False)
             # `_launch` is the one funnel: whether naming an application means starting
             # one or going to the copy that is already open is `ground.reach`'s decision
             # against live state, here exactly as everywhere else
@@ -1906,6 +1910,15 @@ class Understander:
             late=late,
         )
         return self._finish(action, evidence, (), heard, state)
+
+    def _named_strongly(self, app: App, heard: _Heard) -> bool:
+        """Did the speaker name this application well enough to start it without asking?"""
+        try:
+            scored = self.lexicon.match_apps(heard.text, limit=5)
+        except Exception:  # a lexicon that throws names nothing
+            return False
+        score = next((s for found, s in scored if found.id == app.id), 0.0)
+        return score >= self.cfg.gates.fuzzy_exact
 
     def _tie(
         self,
