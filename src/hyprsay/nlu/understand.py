@@ -208,7 +208,11 @@ _CAPABILITIES = frozenset(
 # loop with a deadline: an option list is worth a few milliseconds and never an utterance.
 log = logging.getLogger("hyprsay")
 
-HARVEST_S = 0.25
+# 0.25 s held while every source was local. The browser reads tabs and the page in front
+# through its extension; `daemon._warm_browser` fills that cache before the utterance ends,
+# so this is the ceiling for a cold read (a few hundred ms) and a wedged adapter, not the
+# usual cost, which is still milliseconds.
+HARVEST_S = 1.5
 # the words answer names the query for a fetch only when it is at least this sure; below
 # it, code cuts the asking words off the utterance instead (`turns.slots_for`)
 WORDS_FLOOR = 0.5

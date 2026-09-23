@@ -262,6 +262,7 @@ class Engine:
             return
         self._pinned = self.world.state.active_address
         self._warm_controls(self.world.state.by_address(self._pinned))
+        self._warm_browser()
         self._down_at = now
         try:
             # opening the device blocks while PortAudio negotiates; keep the loop free
@@ -302,6 +303,7 @@ class Engine:
         if state.active_address and state.active_address != self._warmed:
             self._warmed = state.active_address
             self._warm_controls(state.by_address(state.active_address))
+            self._warm_browser()
 
     def _warm_controls(self, window: Window | None) -> None:
         """Fill the control cache for one window, without waiting for it.
@@ -325,6 +327,26 @@ class Engine:
             # a debug line and not a warning because `controls.probe` is where the owner
             # is told how to repair it, in one sentence, when they ask for a click
             log.debug("the controls of the focused window could not be warmed", exc_info=True)
+
+    def _warm_browser(self) -> None:
+        """Refresh the browser's tabs and page in the background (`adapters/browser.py`).
+
+        The same bargain as `_warm_controls`: the harvest reads a cache, so the reading has
+        to have happened before the utterance ends. Called at key down, when focus lands,
+        and after every act, since an act is what changes a page.
+        """
+        from hyprsay.adapters.browser import is_browser
+
+        state = self.world.state
+        if state.locked:
+            return
+        for adapter in getattr(self.understander, "adapters", ()):
+            warm = getattr(adapter, "warm", None)
+            if getattr(adapter, "name", "") == "browser" and warm is not None:
+                try:
+                    warm(page=is_browser(state.focused))
+                except Exception:
+                    log.debug("the browser could not be warmed", exc_info=True)
 
     def _ensure_lock_watch(self) -> None:
         if self._lock_watch is None or self._lock_watch.done():
@@ -896,6 +918,8 @@ class Engine:
         acted = getattr(self.understander, "acted", None)
         if acted is not None:
             acted(outcome.ok)
+        # an act is what changes a page, so the next utterance's browser reading starts now
+        self._warm_browser()
         if not outcome.ok:
             await self._show("refused", text=outcome.message, ttl_ms=2500)
             return False
