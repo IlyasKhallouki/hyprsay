@@ -25,6 +25,7 @@ import statistics
 import sys
 import time
 from collections import Counter, defaultdict
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -115,13 +116,15 @@ async def main() -> int:
     parser.add_argument("--reps", type=int, default=1)
     parser.add_argument("--only", default="", help="run only cases whose tag contains this")
     parser.add_argument("--out", default=str(Path(__file__).parent / "results" / "latest.json"))
+    parser.add_argument("--path", choices=("single", "fanout"), default="single")
     args = parser.parse_args()
 
     from hyprsay.lexicon import Lexicon
     from hyprsay.nlu.grammar import Grammar
     from hyprsay.nlu.understand import Understander
 
-    cfg = config.Config()
+    base = config.Config()
+    cfg = replace(base, jev=replace(base.jev, path=args.path))
     client = None
     if not args.offline:
         from hyprsay import jev

@@ -1,0 +1,54 @@
+357 samples (119 cases x 3), live Jev
+
+  correct               318   89.1%
+  asked                   3    0.8%
+  missed                 13    3.6%
+  safe-but-different     20    5.6%
+  WRONG ACTION            3    0.8%
+
+  by tag                      correct  asked  missed  WRONG
+  adversarial                 27/27       0       0      0
+  ambient                     21/21       0       0      0
+  ambiguous                    3/3        0       0      0
+  asr                         27/27       0       0      0
+  audio                       24/24       0       0      0
+  close                       12/12       0       0      0
+  close-needs-the-verb         6/9        0       0      0
+  direction                   12/12       0       0      0
+  focus                       15/15       0       0      0
+  launch                      15/15       0       0      0
+  launch-anyway                3/6        0       0      3
+  layout                      15/15       0       0      0
+  meta                         6/6        0       0      0
+  move                        15/15       0       0      0
+  never-offered                3/9        0       0      0
+  no-such-window               6/6        0       0      0
+  reach-existing               6/6        0       0      0
+  resize                       6/6        0       0      0
+  semantic                    44/51       0       7      0
+  session                      3/3        0       0      0
+  tie-focus                   12/12       0       0      0
+  tie-move                     0/3        0       3      0
+  title-needed                 3/9        3       3      0
+  typing-into-a-terminal       6/6        0       0      0
+  unsupported                 10/21       0       0      0
+  ws                          18/18       0       0      0
+
+  per decision: p50 16 ms, p90 863 ms, max 1579 ms
+
+  WRONG ACTION: 'open another terminal' [launch-anyway]
+     wanted {'intent': 'launch_app', 'target': None, 'workspace': None} / hints
+     got    act launch app kitty 
+     why    
+
+  WRONG ACTION: 'open another terminal' [launch-anyway]
+     wanted {'intent': 'launch_app', 'target': None, 'workspace': None} / hints
+     got    act launch app kitty 
+     why    
+
+  WRONG ACTION: 'open another terminal' [launch-anyway]
+     wanted {'intent': 'launch_app', 'target': None, 'workspace': None} / hints
+     got    act launch app kitty 
+     why    
+
+saved docs/research/live/checkpoint-2026-09-23/suite-fanout.json

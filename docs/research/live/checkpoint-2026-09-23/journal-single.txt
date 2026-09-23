@@ -1,0 +1,139 @@
+114 samples (38 cases x 3), path single, live Jev
+
+  correct          84   73.7%
+  partial           3    2.6%
+  asked             3    2.6%
+  missed           24   21.1%
+
+  by tag            correct  partial  asked  missed  WRONG
+  asr                6/9          0      0       3      0
+  browser           18/27         0      0       9      0
+  canonical         24/24         0      0       0      0
+  compound          17/24         3      0       4      0
+  context            3/6          0      3       0      0
+  semantic           6/6          0      0       0      0
+  spotify           10/18         0      0       8      0
+
+  per decision: p50 545 ms, p90 1368 ms, max 1746 ms
+
+  missed: 'Open Zap.' [asr] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean kitty on workspace 6?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.99, 'addressed': 0.94}
+
+  partial: 'Open Spotify and search for Deft Bunk.' [compound] rep 0
+     got act launch app Spotify text=None rest=['suggest']
+     why '' path=chain {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'x1', 'words_p': 1.0, 'addressed': 0.92}
+
+  missed: 'Search for Death Punk.' [spotify] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean play a track on Spotify, found by name?' path=single {'source': 'single', 'id': 'x1', 'p': 0.51, 'margin': 0.2, 'runner_up': 'none', 'words_p': 1.0, 'addressed': 0.95}
+
+  missed: 'Search for a depth punk on Spotify.' [spotify] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean find words in this window, in Spotify?' path=single {'source': 'single', 'id': 'r3', 'p': 0.36, 'margin': 0.15, 'runner_up': 'none', 'words_p': 0.99, 'addressed': 0.97}
+
+  missed: 'Open the YouTube channel LTT.' [browser] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean open a site in a new tab or leave this page and go to a site in the tab you are on?' path=single {'source': 'single', 'id': 'r3', 'p': 0.17, 'margin': 0.15, 'runner_up': 'r2', 'words_p': 0.96, 'addressed': 0.97}
+
+  asked: 'Focus on it.' [context] rep 0
+     got hints focus window text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=single {'source': 'single', 'id': 'w1', 'p': 0.51, 'margin': 0.32, 'runner_up': 'none', 'words_p': 0.0, 'addressed': 0.9}
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 0
+     got suggest None text=None rest=['volume set']
+     why 'did you mean play a track on Spotify, found by name or Play Spotify?' path=chain {'source': 'single', 'id': 'volume_set', 'p': 1.0, 'margin': 1.0, 'runner_up': 'volume_down', 'words_p': 0.66, 'addressed': 0.96}
+
+  missed: 'GitHub.com.' [browser] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean Google Chrome on workspace 9?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.92, 'addressed': 0.92}
+
+  missed: 'Look up LT.' [browser] rep 0
+     got suggest None text=None rest=[]
+     why 'did you mean search the web in a new tab or find words on this page?' path=single {'source': 'single', 'id': 'r1', 'p': 0.52, 'margin': 0.25, 'runner_up': 'r2', 'words_p': 1.0, 'addressed': 0.92}
+
+  missed: 'Open Zap.' [asr] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean kitty on workspace 6?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.99, 'addressed': 0.94}
+
+  partial: 'Open Spotify and search for Deft Bunk.' [compound] rep 1
+     got act launch app Spotify text=None rest=['suggest']
+     why '' path=chain {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'x1', 'words_p': 1.0, 'addressed': 0.92}
+
+  missed: 'Search for Death Punk.' [spotify] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean play a track on Spotify, found by name?' path=single {'source': 'single', 'id': 'x1', 'p': 0.5, 'margin': 0.17, 'runner_up': 'none', 'words_p': 1.0, 'addressed': 0.95}
+
+  missed: 'Search for a depth punk on Spotify.' [spotify] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean find words in this window, in Spotify or play a track on Spotify, found by name?' path=single {'source': 'single', 'id': 'r3', 'p': 0.37, 'margin': 0.18, 'runner_up': 'x1', 'words_p': 0.98, 'addressed': 0.96}
+
+  missed: 'Play on repeat playlist.' [spotify] rep 1
+     got suggest None text=None rest=[]
+     why 'nothing that came back fitted what you said, so nothing was done' path=second turn {'source': 'single', 'id': 'x3', 'p': 0.74, 'margin': 0.61, 'runner_up': 'none', 'words_p': 0.54, 'addressed': 0.96}
+
+  missed: 'Open the YouTube channel LTT.' [browser] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean open a site in a new tab or leave this page and go to a site in the tab you are on?' path=single {'source': 'single', 'id': 'r3', 'p': 0.18, 'margin': 0.16, 'runner_up': 'r2', 'words_p': 0.95, 'addressed': 0.97}
+
+  asked: 'Focus on it.' [context] rep 1
+     got hints focus window text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=single {'source': 'single', 'id': 'w1', 'p': 0.51, 'margin': 0.32, 'runner_up': 'ws9', 'words_p': 0.0, 'addressed': 0.9}
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 1
+     got suggest None text=None rest=['volume set']
+     why 'did you mean play a track on Spotify, found by name or Play Spotify?' path=chain {'source': 'single', 'id': 'volume_set', 'p': 1.0, 'margin': 1.0, 'runner_up': 'w2', 'words_p': 0.68, 'addressed': 0.96}
+
+  missed: 'GitHub.com.' [browser] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean Google Chrome on workspace 9?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.93, 'addressed': 0.91}
+
+  missed: 'Open Spotify here, play and turn the volume down to fifty percent.' [compound] rep 1
+     got suggest None text=None rest=[]
+     why 'Jev is unavailable (JevUnavailable); only exact commands work right now' path=degraded 
+
+  missed: 'Look up LT.' [browser] rep 1
+     got suggest None text=None rest=[]
+     why 'did you mean search the web in a new tab or find words on this page?' path=single {'source': 'single', 'id': 'r1', 'p': 0.48, 'margin': 0.18, 'runner_up': 'r2', 'words_p': 1.0, 'addressed': 0.92}
+
+  missed: 'Open Zap.' [asr] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean kitty on workspace 6?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.98, 'addressed': 0.94}
+
+  partial: 'Open Spotify and search for Deft Bunk.' [compound] rep 2
+     got act launch app Spotify text=None rest=['suggest']
+     why '' path=chain {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'x1', 'words_p': 1.0, 'addressed': 0.91}
+
+  missed: 'Search for Death Punk.' [spotify] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean play a track on Spotify, found by name?' path=single {'source': 'single', 'id': 'x1', 'p': 0.48, 'margin': 0.14, 'runner_up': 'none', 'words_p': 1.0, 'addressed': 0.95}
+
+  missed: 'Search for a depth punk on Spotify.' [spotify] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean find words in this window, in Spotify?' path=single {'source': 'single', 'id': 'r3', 'p': 0.42, 'margin': 0.24, 'runner_up': 'none', 'words_p': 0.99, 'addressed': 0.97}
+
+  missed: 'Play on repeat playlist.' [spotify] rep 2
+     got suggest None text=None rest=[]
+     why 'nothing that came back fitted what you said, so nothing was done' path=second turn {'source': 'single', 'id': 'x3', 'p': 0.83, 'margin': 0.72, 'runner_up': 'x4', 'words_p': 0.51, 'addressed': 0.96}
+
+  missed: 'Open the YouTube channel LTT.' [browser] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean open a site in a new tab or leave this page and go to a site in the tab you are on?' path=single {'source': 'single', 'id': 'r3', 'p': 0.18, 'margin': 0.16, 'runner_up': 'r2', 'words_p': 0.95, 'addressed': 0.97}
+
+  asked: 'Focus on it.' [context] rep 2
+     got hints focus window text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=single {'source': 'single', 'id': 'w1', 'p': 0.59, 'margin': 0.42, 'runner_up': 'none', 'words_p': 0.0, 'addressed': 0.88}
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 2
+     got suggest None text=None rest=['volume set']
+     why 'did you mean Play Spotify or play a track on Spotify, found by name?' path=chain {'source': 'single', 'id': 'volume_set', 'p': 1.0, 'margin': 1.0, 'runner_up': 'x8', 'words_p': 0.65, 'addressed': 0.96}
+
+  missed: 'GitHub.com.' [browser] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean Google Chrome on workspace 9?' path=single {'source': 'single', 'id': '', 'p': 0.0, 'margin': 0.0, 'runner_up': 'w1', 'words_p': 0.95, 'addressed': 0.91}
+
+  missed: 'Look up LT.' [browser] rep 2
+     got suggest None text=None rest=[]
+     why 'did you mean search the web in a new tab or find words on this page?' path=single {'source': 'single', 'id': 'r1', 'p': 0.52, 'margin': 0.24, 'runner_up': 'r2', 'words_p': 1.0, 'addressed': 0.92}
+
+saved docs/research/live/checkpoint-2026-09-23/journal-single.json

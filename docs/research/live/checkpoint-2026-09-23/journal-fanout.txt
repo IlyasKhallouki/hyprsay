@@ -1,0 +1,200 @@
+114 samples (38 cases x 3), path fanout, live Jev
+
+  correct          69   60.5%
+  partial           5    4.4%
+  asked             3    2.6%
+  missed           16   14.0%
+  WRONG ACTION     21   18.4%
+
+  by tag            correct  partial  asked  missed  WRONG
+  asr                6/9          0      3       0      0
+  browser           12/27         0      0       9      6
+  canonical         24/24         0      0       0      0
+  compound          13/24         5      0       3      3
+  context            3/6          0      0       3      0
+  semantic           5/6          0      0       1      0
+  spotify            6/18         0      0       0     12
+
+  per decision: p50 21 ms, p90 1310 ms, max 2265 ms
+
+  asked: 'Open Zap.' [asr] rep 0
+     got hints launch app text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.65}
+
+  WRONG ACTION: 'Open Spotify and search for Deft Bunk.' [compound] rep 0
+     got act launch app Spotify text=None rest=['run recipe search_web Deft Bunk']
+     why '' path=chain 
+
+  WRONG ACTION: 'Search for Death Punk.' [spotify] rep 0
+     got countdown run recipe search_web google-chrome text='Death Punk' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Search for a depth punk on Spotify.' [spotify] rep 0
+     got countdown run recipe search_web google-chrome text='a depth punk on Spotify' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  missed: 'Look in YouTube for linus detectives' [browser] rep 0
+     got nothing None text=None rest=[]
+     why 'no command was recognized' path=jev 
+
+  partial: 'Open Chrome and open YouTube. com' [compound] rep 0
+     got act focus window google-chrome text=None rest=['refuse']
+     why '' path=chain 
+
+  WRONG ACTION: 'Open the YouTube channel LTT.' [browser] rep 0
+     got countdown run recipe search_web google-chrome text='the youtube channel ltt' rest=[]
+     why 'cancel within the countdown to stop this' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.98}
+
+  missed: 'Focus on it.' [context] rep 0
+     got suggest None text=None rest=[]
+     why 'say which window' path=grammar 
+
+  missed: 'Move my browser here.' [semantic] rep 0
+     got suggest None text=None rest=[]
+     why 'dragging and selecting text are not supported; scrolling, tabs, page navigation and "click <name>" are' path=jev 
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 0
+     got suggest None text=None rest=['volume set']
+     why 'nothing here can look a track up; start the waytify daemon, or say "play" on its own to resume' path=chain {'intent': 'volume', 'source': 'jev', 'confidence': 0.7}
+
+  missed: 'Open GitHub. com' [browser] rep 0
+     got refuse None text=None rest=[]
+     why 'that does not look like a web address' path=grammar 
+
+  missed: 'GitHub.com.' [browser] rep 0
+     got suggest None text=None rest=[]
+     why 'not understood; did you mean one of these' path=jev 
+
+  partial: 'Open Spotify here, play and turn the volume down to fifty percent.' [compound] rep 0
+     got act launch app Spotify text=None rest=['media play_pause', 'suggest']
+     why '' path=chain 
+
+  WRONG ACTION: 'Look up LTT on YouTube.' [browser] rep 0
+     got countdown run recipe search_web google-chrome text='LTT on YouTube' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Play. Hold the line.' [spotify] rep 0
+     got act media play_pause text=None rest=[]
+     why '' path=jev {'intent': 'media', 'source': 'jev', 'confidence': 0.81}
+
+  WRONG ACTION: 'Search for hold the line.' [spotify] rep 0
+     got countdown run recipe search_web google-chrome text='hold the line' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  asked: 'Open Zap.' [asr] rep 1
+     got hints launch app text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.63}
+
+  WRONG ACTION: 'Open Spotify and search for Deft Bunk.' [compound] rep 1
+     got act launch app Spotify text=None rest=['run recipe search_web Deft Bunk']
+     why '' path=chain 
+
+  WRONG ACTION: 'Search for Death Punk.' [spotify] rep 1
+     got countdown run recipe search_web google-chrome text='Death Punk' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Search for a depth punk on Spotify.' [spotify] rep 1
+     got countdown run recipe search_web google-chrome text='a depth punk on Spotify' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  missed: 'Look in YouTube for linus detectives' [browser] rep 1
+     got nothing None text=None rest=[]
+     why 'no command was recognized' path=jev 
+
+  partial: 'Open Chrome and open YouTube. com' [compound] rep 1
+     got act focus window google-chrome text=None rest=['refuse']
+     why '' path=chain 
+
+  WRONG ACTION: 'Open the YouTube channel LTT.' [browser] rep 1
+     got countdown run recipe search_web google-chrome text='the youtube channel ltt' rest=[]
+     why 'cancel within the countdown to stop this' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.98}
+
+  missed: 'Focus on it.' [context] rep 1
+     got suggest None text=None rest=[]
+     why 'say which window' path=grammar 
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 1
+     got suggest None text=None rest=['volume set']
+     why 'nothing here can look a track up; start the waytify daemon, or say "play" on its own to resume' path=chain {'intent': 'volume', 'source': 'jev', 'confidence': 0.72}
+
+  missed: 'Open GitHub. com' [browser] rep 1
+     got refuse None text=None rest=[]
+     why 'that does not look like a web address' path=grammar 
+
+  missed: 'GitHub.com.' [browser] rep 1
+     got suggest None text=None rest=[]
+     why 'not understood; did you mean one of these' path=jev 
+
+  partial: 'Open Spotify here, play and turn the volume down to fifty percent.' [compound] rep 1
+     got act launch app Spotify text=None rest=['media play_pause', 'suggest']
+     why '' path=chain 
+
+  WRONG ACTION: 'Look up LTT on YouTube.' [browser] rep 1
+     got countdown run recipe search_web google-chrome text='LTT on YouTube' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Play. Hold the line.' [spotify] rep 1
+     got act mpris.play_pause Play Spotify text=None rest=[]
+     why '' path=service 
+
+  WRONG ACTION: 'Search for hold the line.' [spotify] rep 1
+     got countdown run recipe search_web google-chrome text='hold the line' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  asked: 'Open Zap.' [asr] rep 2
+     got hints launch app text=None rest=[]
+     why 'nothing you said names that target, so pick a number' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.57}
+
+  WRONG ACTION: 'Open Spotify and search for Deft Bunk.' [compound] rep 2
+     got act launch app Spotify text=None rest=['run recipe search_web Deft Bunk']
+     why '' path=chain 
+
+  WRONG ACTION: 'Search for Death Punk.' [spotify] rep 2
+     got countdown run recipe search_web google-chrome text='Death Punk' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Search for a depth punk on Spotify.' [spotify] rep 2
+     got countdown run recipe search_web google-chrome text='a depth punk on Spotify' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  missed: 'Look in YouTube for linus detectives' [browser] rep 2
+     got nothing None text=None rest=[]
+     why 'no command was recognized' path=jev 
+
+  partial: 'Open Chrome and open YouTube. com' [compound] rep 2
+     got act focus window google-chrome text=None rest=['refuse']
+     why '' path=chain 
+
+  WRONG ACTION: 'Open the YouTube channel LTT.' [browser] rep 2
+     got countdown run recipe search_web google-chrome text='the youtube channel ltt' rest=[]
+     why 'cancel within the countdown to stop this' path=jev {'intent': 'launch_app', 'source': 'grammar', 'confidence': 0.98}
+
+  missed: 'Focus on it.' [context] rep 2
+     got suggest None text=None rest=[]
+     why 'say which window' path=grammar 
+
+  missed: 'Play the song, but turn down the volume to 50%.' [compound] rep 2
+     got suggest None text=None rest=['volume set']
+     why 'nothing here can look a track up; start the waytify daemon, or say "play" on its own to resume' path=chain {'intent': 'volume', 'source': 'jev', 'confidence': 0.71}
+
+  missed: 'Open GitHub. com' [browser] rep 2
+     got refuse None text=None rest=[]
+     why 'that does not look like a web address' path=grammar 
+
+  missed: 'GitHub.com.' [browser] rep 2
+     got suggest None text=None rest=[]
+     why 'not understood; did you mean one of these' path=jev 
+
+  WRONG ACTION: 'Look up LTT on YouTube.' [browser] rep 2
+     got countdown run recipe search_web google-chrome text='LTT on YouTube' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+  WRONG ACTION: 'Play. Hold the line.' [spotify] rep 2
+     got act media play_pause text=None rest=[]
+     why '' path=jev {'intent': 'media', 'source': 'jev', 'confidence': 0.8}
+
+  WRONG ACTION: 'Search for hold the line.' [spotify] rep 2
+     got countdown run recipe search_web google-chrome text='hold the line' rest=[]
+     why 'cancel within the countdown to stop this' path=grammar 
+
+saved docs/research/live/checkpoint-2026-09-23/journal-fanout.json

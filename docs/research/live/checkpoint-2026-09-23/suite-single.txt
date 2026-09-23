@@ -1,0 +1,39 @@
+357 samples (119 cases x 3), live Jev
+
+  correct               309   86.6%
+  asked                  11    3.1%
+  missed                 21    5.9%
+  noisy                   1    0.3%
+  safe-but-different     15    4.2%
+
+  by tag                      correct  asked  missed  WRONG
+  adversarial                 25/27       0       2      0
+  ambient                     20/21       0       0      0
+  ambiguous                    3/3        0       0      0
+  asr                         27/27       0       0      0
+  audio                       24/24       0       0      0
+  close                        6/12       5       1      0
+  close-needs-the-verb         0/9        0       0      0
+  direction                   12/12       0       0      0
+  focus                       15/15       0       0      0
+  launch                      12/15       3       0      0
+  launch-anyway                6/6        0       0      0
+  layout                      15/15       0       0      0
+  meta                         6/6        0       0      0
+  move                        15/15       0       0      0
+  never-offered                9/9        0       0      0
+  no-such-window               6/6        0       0      0
+  reach-existing               6/6        0       0      0
+  resize                       6/6        0       0      0
+  semantic                    36/51       0      15      0
+  session                      3/3        0       0      0
+  tie-focus                    9/12       0       3      0
+  tie-move                     3/3        0       0      0
+  title-needed                 6/9        3       0      0
+  typing-into-a-terminal       6/6        0       0      0
+  unsupported                 15/21       0       0      0
+  ws                          18/18       0       0      0
+
+  per decision: p50 24 ms, p90 589 ms, max 1472 ms
+
+saved docs/research/live/checkpoint-2026-09-23/suite-single.json
