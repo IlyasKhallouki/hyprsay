@@ -1,6 +1,7 @@
 # hyprsay
 
-Voice control for [Hyprland](https://hypr.land). Hold a key, say what you want, let go.
+Voice control for [Hyprland](https://hypr.land). Hold a key and talk: each command happens
+as you finish saying it, and letting go ends the session.
 
 ```
 "workspace three"              "bring up my notes"          "close this"
@@ -33,11 +34,12 @@ Three speeds, fastest first. Most commands never touch the network.
 1. **Grammar** (about 1 ms). "workspace three", "close this", "open firefox": a table of patterns
    over a live lexicon of your windows and installed apps. It repairs what speech recognizers
    really produce ("Switch to Workspace 3.", "workspace too", "fire fox").
-2. **Jev** (about 380 ms). When you paraphrase ("bring up my notes") or describe instead of
+2. **Jev** (about 400 ms). When you paraphrase ("bring up my notes") or describe instead of
    naming ("the music"), the sentence goes to [Jev](https://vercel.com/ai-gateway/models/jev),
    a model that does not generate text: it answers typed questions with probabilities. hyprsay
-   asks several small questions at once (which action, which of *your* open windows, which
-   installed app) and only ever lets it choose among candidates built from your real desktop.
+   builds one list of everything your machine can do right now (your windows, apps, media
+   players, browser tabs, the links and buttons on the page in front) and asks Jev once which
+   of them you meant, and which of your words are the name, search or address it needs.
 3. **Hints** (no network). When two windows fit equally, nobody can know which you meant. For a
    focus it takes the most recently used one and shows numbered badges, so saying "two" switches.
    For anything less reversible it shows the badges and waits.
@@ -49,9 +51,12 @@ tells you which one. A clause that only asks is not one of those: the numbered b
 the number you say finishes that clause and carries the rest of the sentence with it, aimed at
 the window you just chose.
 
-Inside an application it can scroll, page, switch tabs, open a URL, search, and find text. Those
-never come from the model: each one is an exact phrase in the grammar. Clicking a control by name
-also works, but only for applications that publish an accessibility tree.
+Inside an application it can scroll, page, switch tabs, open a URL, search, and find text.
+Clicking a control by name works for applications that publish an accessibility tree, and in
+Chrome through the browser extension below.
+
+While you hold the key, a pause of under a second ends a command and it runs straight away, so
+"open spotify ... play hold the line ... open youtube" is three commands in one hold.
 
 Speech recognition is local by default ([Parakeet 110M](https://huggingface.co/nvidia/parakeet-tdt_ctc-110m)
 through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)). If the local transcript leads
@@ -136,6 +141,25 @@ services:
 ```sh
 uv run hyprsay setup --units    # installs and starts the systemd user units
 ```
+
+## The browser
+
+With the [hypruse-browser](https://github.com/IlyasKhallouki/hypruse-browser) extension,
+hyprsay can switch tabs by site ("go back to spotify"), open sites in new tabs ("open youtube"),
+search a site with its own search box ("search for linus tech tips"), find something and play
+it ("play hold the line" on Spotify's web player), click what is on the page ("click the second
+video"), scroll, go back, and close a tab.
+
+```sh
+git clone https://github.com/IlyasKhallouki/hypruse-browser && cd hypruse-browser
+pnpm install && pnpm build
+# chrome://extensions, turn on Developer mode, Load unpacked, pick the dist folder
+cd ../hyprsay && uv run hypruse browser install
+uv run hypruse browser status     # connected: hypruse-browser 0.1.0 in Chrome/...
+```
+
+`uv run python evals/demo.py` runs the whole browser demo against your desktop and checks each
+step, then puts your tabs, volume and workspace back.
 
 ## Try it without a microphone
 
