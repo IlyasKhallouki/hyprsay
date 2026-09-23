@@ -28,6 +28,7 @@ from hyprsay.adapters.base import (
     offer,
     tier_for,
 )
+from hyprsay.adapters.browser import Browser
 from hyprsay.adapters.mpris import Mpris
 from hyprsay.adapters.spotify import Spotify
 from hyprsay.adapters.waytify import Waytify
@@ -47,10 +48,11 @@ def live(cfg: Config | None = None) -> tuple[Adapter, ...]:
     """
     privacy = (cfg or Config()).privacy
     waytify = Waytify()
-    return (Mpris(privacy=privacy), waytify, Spotify(superseded_by=waytify))
+    return (Mpris(privacy=privacy), waytify, Spotify(superseded_by=waytify), Browser())
 
 
 __all__ = [
+    "Browser",
     "MAX_CANDIDATES",
     "MAX_LABEL",
     "MAX_OFFERABLE_TIER",

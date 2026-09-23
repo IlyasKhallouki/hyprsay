@@ -191,6 +191,7 @@ RECIPE = "recipe"
 CONTROL = "control"
 CLOSE = "close"
 HERE = "here"
+BROWSER = "browser"
 
 # The last tie break, after what was said and after recency: the cheapest and most
 # reversible source first, which is the same order `nlu/tiers.py` puts the intents in.
@@ -205,6 +206,7 @@ ORDER: tuple[str, ...] = (
     APP,
     SYSTEM,
     SERVICE,
+    BROWSER,
     RECIPE,
     CONTROL,
     CLOSE,
@@ -232,6 +234,9 @@ QUOTA: dict[str, int] = {
     CONTROL: 6,
     CLOSE: 8,
     HERE: 8,
+    # tabs, sites and what is on the page in front: its own quota, so a page full of
+    # links cannot starve the media players, and the players cannot starve the page
+    BROWSER: 24,
 }
 
 # The highest tier an option may carry. Not `base.MAX_OFFERABLE_TIER`, which is 2 and is
@@ -893,17 +898,48 @@ def _services(context: Machine) -> list[Ranked]:
     This function adds exactly two things: the renumbering the module docstring argues
     for, and a rank.
     """
-    if not context.adapters:
+    others = tuple(a for a in context.adapters if getattr(a, "name", "") != BROWSER)
+    if not others:
         return []
     words = spoken(context.heard)
     out: list[Ranked] = []
-    for index, found in enumerate(base.offer(context.adapters, context, limit=QUOTA[SERVICE]), 1):
+    for index, found in enumerate(base.offer(others, context, limit=QUOTA[SERVICE]), 1):
         # `claims` and not `said`, whatever the trust: an adapter's label is free text
         # either way, a one line summary or a track name, and `said` only works against a
         # short hand written vocabulary. The trust of the label changes nothing here
         # because ranking is not authorization; see `claims`.
         out.append(Ranked(replace(found, id=f"x{index}"), SERVICE, claims(words, found.label)))
     return out
+
+
+def _browser_adapter(context: Machine) -> Adapter | None:
+    return next((a for a in context.adapters if getattr(a, "name", "") == BROWSER), None)
+
+
+def _browser(context: Machine) -> list[Ranked]:
+    """Tabs, sites, and what is on the page in front, from the browser extension.
+
+    Renumbered `b1`, `b2` for `_services`' reason: an adapter's own id may carry page text.
+    Ranked by what was said, then in the adapter's own order, which puts a list's items in
+    the order the page shows them.
+    """
+    browser = _browser_adapter(context)
+    if browser is None:
+        return []
+    words = spoken(context.heard)
+    found = base.offer((browser,), context, limit=base.MAX_CANDIDATES)
+    return [
+        Ranked(replace(item, id=f"b{index}"), BROWSER, claims(words, item.label), index)
+        for index, item in enumerate(found, 1)
+    ]
+
+
+def _extension_serves(context: Machine) -> bool:
+    browser = _browser_adapter(context)
+    try:
+        return browser is not None and bool(browser.can_serve(context))
+    except Exception:  # a broken adapter serves nothing
+        return False
 
 
 # ------------------------------------------------------------------- inside the window
@@ -1232,12 +1268,18 @@ def _recipes(context: Machine) -> list[Ranked]:
     # `understand._reaching` accepts when it is chosen. The tier still makes it a
     # countdown, and "open a new tab" still offers no way to close one.
     reaching = bool(tiers.REACHING_VERBS & set(words))
+    # while the extension is connected it is how a browser is driven; the keystroke
+    # recipes for a browser window are its fallback, and two ways to do one thing would
+    # only split the vote
+    extension = _extension_serves(context)
     focused = state.focused
     out: list[Ranked] = []
     index = 0
     for window in sorted(state.windows, key=lambda w: w.focus_rank):
         kind = _kind(context, window)
         if tiers.is_terminal(window, kind):
+            continue
+        if extension and recipes.recipe_kind(kind) == recipes.BROWSER:
             continue
         at_hand = focused is not None and window.address == focused.address
         # typing goes to the window in front, or to one the speaker named: "search for
@@ -1440,6 +1482,7 @@ def harvest(
         (APP, _apps),
         (SYSTEM, _system),
         (SERVICE, _services),
+        (BROWSER, _browser),
         (GESTURE, _gestures),
         (RECIPE, _recipes),
         (CONTROL, _controls),
@@ -1464,6 +1507,7 @@ def harvest(
 
 __all__ = [
     "APP",
+    "BROWSER",
     "CLOSE",
     "CONTROL",
     "HERE",

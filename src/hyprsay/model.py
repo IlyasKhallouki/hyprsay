@@ -281,6 +281,9 @@ class Service:
     handle: str
     tier: int = 1
     label: str = ""
+    # the words a `wants_words` capability acts on (a search query, an address). Journaled
+    # as a digest, like every argument named text (`hypruse.journal.redact`).
+    text: str = ""
 
 
 @dataclass(frozen=True)

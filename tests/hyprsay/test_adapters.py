@@ -1315,8 +1315,8 @@ def test_the_cli_stands_down_whenever_the_owners_own_daemon_is_listening(tmp_pat
 # --------------------------------------------------------------------------- together
 
 
-def test_the_live_adapters_are_the_three_that_exist():
-    assert [adapter.name for adapter in live()] == ["mpris", "waytify", "spotify"]
+def test_the_live_adapters_are_the_four_that_exist():
+    assert [adapter.name for adapter in live()] == ["mpris", "waytify", "spotify", "browser"]
 
 
 def test_the_live_media_adapter_is_built_with_the_owners_own_privacy_settings():

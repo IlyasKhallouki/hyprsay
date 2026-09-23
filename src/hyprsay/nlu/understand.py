@@ -1294,6 +1294,10 @@ class Understander:
         if affordance.adapter != affordances.SELF:
             if turns.needs_fetching(affordance):
                 return bool(words) or bool(turns.strip_carrier(heard.text, heard.raw.split()))
+            adapter = adapters.by_name(self.adapters, affordance.adapter)
+            capability = self._capability_now(adapter, affordance.capability, heard, state)
+            if capability is not None and capability.wants_words:
+                return _words_fit(capability, words)
             return True
         if affordance.capability not in _CAPABILITIES:
             return True
@@ -1663,13 +1667,18 @@ class Understander:
         """
         asked = step.affordance
         note = turns.Note(capability=asked.capability)
-        budget = turns.Budget(clock=self._clock).started()
         adapter = adapters.by_name(self.adapters, asked.adapter)
         if adapter is None:
             return self._gave_up(note, turns.Stopped.NO_ADAPTER, heard)
         capability = self._capability_now(adapter, asked.capability, heard, state)
         if not turns.fetchable(capability):
             return self._gave_up(note, turns.Stopped.NO_CAPABILITY, heard)
+        # a capability that declares a longer fetch (a search typed into a page) gets the
+        # whole turn sized around it: the fetch, then one question
+        fetch_s = capability.fetch_s if capability is not None else 0.0
+        budget = turns.Budget(clock=self._clock).started(
+            max(turns.LOOP_S, fetch_s + turns.LOOP_S - turns.FETCH_S)
+        )
         slots = turns.slots_for(capability, heard.text, heard.raw.split(), query=query)
         if slots is None:
             return self._gave_up(note, turns.Stopped.NO_QUERY, heard)
@@ -1711,8 +1720,9 @@ class Understander:
         def ask() -> tuple[Affordance, ...]:
             return adapters.candidates(adapter, capability, slots, context)
 
+        ceiling = max(budget.fetch_seconds(), min(capability.fetch_s, budget.left))
         try:
-            async with asyncio.timeout(budget.fetch_seconds()):
+            async with asyncio.timeout(ceiling):
                 found = await asyncio.to_thread(ask)
         except TimeoutError:
             return (), turns.Stopped.OUT_OF_TIME, self._fetched(note, started, 0)
@@ -1831,7 +1841,7 @@ class Understander:
         """
         affordance = step.affordance
         if affordance.adapter != affordances.SELF:
-            return self._service_step(step, heard, state, late=late)
+            return self._service_step(step, heard, state, late=late, words=words)
         action = self._action_for(affordance, state, first=step.position == 1, words=words)
         if action is None:
             return None
@@ -1971,7 +1981,7 @@ class Understander:
     # ------------------------------------------------------- an adapter's own capability
 
     def _service_step(
-        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool
+        self, step: plan.Step, heard: _Heard, state: DesktopState, *, late: bool, words: str = ""
     ) -> Decision | None:
         """A chosen adapter option, as an action the executor will actually carry out.
 
@@ -2007,6 +2017,10 @@ class Understander:
             # the adapter is gone, or no longer offers this. Dropping the step is the
             # same answer `_action_for` gives a window that closed while Jev was thinking
             return None
+        if capability.wants_words and not _words_fit(capability, words):
+            # a search with nothing to search for, or an address that is not one, is
+            # dropped here rather than refused after the act
+            return None
         try:
             level = max(affordance.tier, adapters.tier_for(capability, affordance.label))
         except adapters.AdapterError:
@@ -2017,13 +2031,17 @@ class Understander:
             handle=affordance.handle,
             tier=level,
             label=affordance.label,
+            text=words if capability.wants_words else "",
         )
         action = Action(Intent.SERVICE, service=service)
         evidence = Evidence(
             source="jev",
             corroborated=self._named_capability(capability, heard),
             wide_margin=step.margin >= self.cfg.gates.margin,
-            verb_said=tiers.verb_said(Intent.SERVICE, heard.literal),
+            # the capability's own verbs ("close" for closing a tab) are the speaker's
+            # evidence for its countdown, as LITERAL_VERBS is for closing a window
+            verb_said=tiers.verb_said(Intent.SERVICE, heard.literal)
+            or bool(set(capability.verbs) & set(heard.literal)),
             # the handle IS the target and the adapter minted it from what the speaker
             # asked for, so there is no window to have named. Read only at tier 2, where
             # `verb_said` above has already refused.
@@ -3311,6 +3329,18 @@ def _cut_one(options: dict[str, Affordance]) -> None:
                 del options[key]
                 return
     options.popitem()
+
+
+def _words_fit(capability: Capability, words: str) -> bool:
+    """Are these words what a `wants_words` capability needs? None at all never are."""
+    if not words.strip():
+        return False
+    if capability.words_kind == "address":
+        try:
+            recipes.normalize_host(words)
+        except recipes.RecipeError:
+            return False
+    return True
 
 
 def _addressable(recipe: str, words: str) -> bool:

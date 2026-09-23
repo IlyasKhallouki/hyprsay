@@ -238,7 +238,9 @@ def move_in_layout(address: str, letter: str) -> str:
 
 
 @journal.journaled("act")
-def perform_service(adapter: str, capability: str, handle: str, state: DesktopState) -> str:
+def perform_service(
+    adapter: str, capability: str, handle: str, state: DesktopState, text: str = ""
+) -> str:
     """Hand one capability to the adapter that minted its handle, and say what happened.
 
     Journaled here and not left to `daemon._act`, for the reason the three wrappers above
@@ -253,7 +255,7 @@ def perform_service(adapter: str, capability: str, handle: str, state: DesktopSt
     found = base.by_name(_adapters(), adapter)
     if found is None:
         raise OpError(f"{adapter} is not running in this process, so nothing was done.")
-    context = base.Context(state=state, heard="", now=time.monotonic())
+    context = base.Context(state=state, heard="", now=time.monotonic(), words=text)
     try:
         outcome = found.perform(capability, handle, context)
     except base.AdapterError as exc:
@@ -665,7 +667,9 @@ def _service(action: Action, fresh: DesktopState) -> str:
     if journal.dry_run():
         return _would(f"ask {service.adapter} to {service.capability.replace('_', ' ')}")
     safety.touch("service")
-    return perform_service(service.adapter, service.capability, service.handle, fresh)
+    return perform_service(
+        service.adapter, service.capability, service.handle, fresh, text=service.text
+    )
 
 
 def _lock_screen(_action: Action, _before: DesktopState) -> str:

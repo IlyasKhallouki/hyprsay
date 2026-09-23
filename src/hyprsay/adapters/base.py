@@ -138,6 +138,19 @@ class Capability:
     kind: str = ""
     params: tuple[Param, ...] = ()
     needs_query: bool = False
+    # A capability whose candidates are bound but whose act needs the words the speaker
+    # pointed at: "search this site for words" is a search box that exists now and a query
+    # that only the single request's `words` answer carries (`nlu/decide.py`). The words
+    # reach `perform` as `Context.words`. `words_kind` says what they must be: "" for any
+    # words, "address" for something `recipes.normalize_host` accepts.
+    wants_words: bool = False
+    words_kind: str = ""
+    # the spoken verbs that authorize a tier 2 candidate of this capability, the same rule
+    # `nlu/tiers.LITERAL_VERBS` applies to closing a window: "close" for closing a tab
+    verbs: tuple[str, ...] = ()
+    # how long `resolve` may take when it is fetched, when the default is too short: a
+    # search typed into a page has to wait for the results to render. 0 means the default.
+    fetch_s: float = 0.0
 
     def __post_init__(self) -> None:
         if not _ID.match(self.id):
@@ -204,6 +217,8 @@ class Context:
     state: DesktopState = field(default_factory=DesktopState)
     heard: str = ""
     now: float = 0.0
+    # the words a `wants_words` capability acts on, handed to `perform` and nothing else
+    words: str = ""
 
 
 class Adapter(Protocol):
