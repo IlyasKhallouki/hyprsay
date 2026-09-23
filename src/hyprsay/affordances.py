@@ -287,8 +287,15 @@ class Previous:
 # the words that ask for a window to be closed. `nlu/tiers.LITERAL_VERBS` is the table;
 # it is read, not copied, so the harvest and the verdict can never disagree about it.
 CLOSING_VERBS = tiers.LITERAL_VERBS[Intent.CLOSE_WINDOW]
-# the words that ask for a window to come to the workspace in front
-HERE_WORDS = frozenset({"here", "bring", "pull", "move"})
+# the word that asks for a window to come to the workspace in front. "bring" alone is
+# not it: "bring up my notes" means show them, and was moving them instead
+HERE_WORDS = frozenset({"here"})
+# the words that send a window somewhere, the verdict's own table (`nlu/tiers.py`)
+SENDING_VERBS = tiers.LITERAL_VERBS[Intent.MOVE_TO_WORKSPACE]
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -570,6 +577,49 @@ def here_workspace(state: DesktopState) -> str:
         return str(state.active_workspace_id)
     focused = state.focused
     return str(focused.workspace_id) if focused is not None else ""
+
+
+def _spoken_workspace(words: Sequence[str]) -> str:
+    """The workspace number said after the word "workspace", or "" when none was."""
+    for before, word in zip(words, words[1:], strict=False):
+        if before != "workspace":
+            continue
+        if word.isdigit():
+            return word
+        if word in _NUMBER_WORDS:
+            return str(_NUMBER_WORDS[word])
+    return ""
+
+
+def _sending(context: Machine) -> list[Ranked]:
+    """Every window as something to send to the workspace the speaker named.
+
+    Only when a sending verb and a workspace number were both said ("put the music on
+    workspace five"). Without this, the only option that mentioned workspace 5 was
+    switching to it, and that is what got chosen.
+    """
+    state = context.state
+    words = spoken(context.heard)
+    target = _spoken_workspace(words)
+    if not state.windows or not target or not SENDING_VERBS & set(words):
+        return []
+    scores: dict[str, float] = {}
+    if context.lexicon is not None:
+        found = context.lexicon.match_windows(context.heard, state, limit=len(state.windows))
+        scores = {window.address: score for window, score in found}
+    out: list[Ranked] = []
+    for index, window in enumerate(sorted(state.windows, key=lambda w: w.focus_rank), 1):
+        if str(window.workspace_id) == target:
+            continue
+        action = Action(Intent.MOVE_TO_WORKSPACE, window=window, workspace=target)
+        capability = _capability(
+            Intent.MOVE_TO_WORKSPACE, WINDOW, "send a window to a workspace", context, action
+        )
+        name, trust = _named_by(window, context.lexicon)
+        label = f"send {name} to workspace {target}"
+        option = _option(capability, f"s{index}", label, f"{window.address} {target}", trust)
+        out.append(Ranked(option, HERE, scores.get(window.address, 0.0), window.focus_rank))
+    return out
 
 
 def _here(context: Machine) -> list[Ranked]:
@@ -1395,6 +1445,7 @@ def harvest(
         (CONTROL, _controls),
         (CLOSE, _closing),
         (HERE, _here),
+        (HERE, _sending),
     ):
         try:
             built.extend(gather(context))

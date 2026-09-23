@@ -1857,6 +1857,14 @@ class Understander:
         verb_said = tiers.verb_said(action.intent, heard.literal)
         if action.intent is Intent.LAUNCH_APP and action.app is not None:
             chosen = resolve.app_candidate(self.lexicon, heard.text, action.app, step.probability)
+            prefer = ground.preference(heard.text)
+            if (
+                prefer is ground.Prefer.EXISTING
+                and not ground.matches(action.app, state, self.lexicon).every
+            ):
+                # "go to my email" with no mail window open: going somewhere is not
+                # starting something, so the launch is offered, not done
+                return self._offer(action.app, chosen, heard)
             # `_launch` is the one funnel: whether naming an application means starting
             # one or going to the copy that is already open is `ground.reach`'s decision
             # against live state, here exactly as everywhere else
@@ -1874,6 +1882,9 @@ class Understander:
             candidate = resolve.window_candidate(
                 self.lexicon, heard.text, action.window, step.probability
             )
+            tied = self._tie(action, candidate, heard, state, level)
+            if tied is not None:
+                return tied
             evidence = Evidence(
                 source="jev",
                 corroborated=candidate.corroborated,
@@ -1895,6 +1906,54 @@ class Understander:
             late=late,
         )
         return self._finish(action, evidence, (), heard, state)
+
+    def _tie(
+        self,
+        action: Action,
+        candidate: Candidate,
+        heard: _Heard,
+        state: DesktopState,
+        level: int,
+    ) -> Decision | None:
+        """Two windows the words both name are a tie, however sure the model sounds.
+
+        Measured on 21 September: Jev grew sure of one of two Firefox windows from the
+        recency field alone. So a focus (tier 0) takes the most recently used window that
+        is not already in front and shows the others as badges, and anything above tier
+        0 asks. A move ignores rivals already on its destination. Only windows a trusted
+        field corroborates count, so a hostile title can never make a tie either.
+        """
+        if not candidate.corroborated or action.window is None:
+            return None
+        rivals: list[Candidate] = []
+        for window in state.windows:
+            if window.address == action.window.address:
+                continue
+            if action.intent is Intent.MOVE_TO_WORKSPACE and str(window.workspace_id) == (
+                action.workspace or ""
+            ):
+                continue
+            other = resolve.window_candidate(self.lexicon, heard.text, window, 0.0)
+            if other.corroborated:
+                rivals.append(other)
+        if not rivals:
+            return None
+        candidates = (candidate, *rivals)
+        chosen = self._most_recent_rival(action, candidates, level, state)
+        if chosen is not None:
+            evidence = Evidence(
+                source="jev",
+                corroborated=True,
+                wide_margin=True,
+                explicit_target=True,
+                plausible=len(candidates),
+            )
+            return self._finish(
+                replace(action, window=chosen.window), evidence, candidates, heard, state
+            )
+        return self._hints(
+            action, candidates, "several windows fit, so pick a number", heard, state
+        )
 
     # ------------------------------------------------------- an adapter's own capability
 
@@ -2020,9 +2079,11 @@ class Understander:
             window = state.by_address(handle)
             return Action(intent, window=window) if window is not None else None
         if intent is Intent.MOVE_TO_WORKSPACE:
-            window = state.by_address(handle)
-            here = affordances.here_workspace(state)
-            return Action(intent, window=window, workspace=here) if window is not None else None
+            # "0x.. 5" for a window sent to workspace 5, a bare address for one brought here
+            address, _, where = handle.partition(" ")
+            window = state.by_address(address)
+            where = where or affordances.here_workspace(state)
+            return Action(intent, window=window, workspace=where) if window is not None else None
         if intent is Intent.SWITCH_WORKSPACE:
             return Action(intent, workspace=handle) if handle else None
         if intent is Intent.LAUNCH_APP:

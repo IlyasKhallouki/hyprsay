@@ -1026,3 +1026,15 @@ def test_a_recipe_that_types_is_offered_only_for_the_window_in_front_or_one_that
         r for r in sourced(named, affordances.RECIPE) if r.affordance.handle.startswith("0x2")
     ]
     assert [r for r in in_chrome if r.affordance.tier > 1]
+
+
+def test_bring_up_is_showing_not_bringing_here():
+    found = harvest(machine(WITH_MUSIC, heard="bring up my notes"))
+    assert not [r for r in found.ranked if r.affordance.capability == "move_to_workspace"]
+
+
+def test_sending_a_window_to_a_numbered_workspace_is_offered_when_asked():
+    found = harvest(machine(WITH_MUSIC, heard="put the music on workspace five"))
+    sends = [r for r in found.ranked if r.affordance.label.startswith("send ")]
+    assert sends and all(r.affordance.label.endswith("to workspace 5") for r in sends)
+    assert any("Spotify" in r.affordance.label for r in sends)

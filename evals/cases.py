@@ -152,7 +152,9 @@ ASR_SURFACE: list[Case] = [
     ("Move window to work space two.", "move_to_workspace", "focused", "2", "act", "asr"),
     ("Toggle full screen.", "fullscreen", "focused", None, "act", "asr"),
     ("Taggle full screen.", "fullscreen", "focused", None, "act", "asr"),
-    ("Open firefuck.", "launch_app", "firefox", None, "act", "asr"),
+    # "open X" with X already open goes to it (reach-existing, since 2026-09-22): the
+    # misheard form follows the same rule, and it is the most recent Firefox, ff1
+    ("Open firefuck.", "focus_window", "ff1", None, "act", "asr"),
     ("Focus, Spotify.", "focus_window", "spot", None, "act", "asr"),
     ("Open Obsidian.", "focus_window", "obs", None, "act", "reach-existing"),
     ("Uh, could you please go to workspace four", "switch_workspace", None, "4", "act", "asr"),

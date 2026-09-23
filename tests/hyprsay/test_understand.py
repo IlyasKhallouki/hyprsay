@@ -2118,3 +2118,34 @@ def test_a_request_that_must_shrink_drops_layout_and_workspaces_before_anything_
     _cut_one(kept)
     _cut_one(kept)
     assert set(kept) == {"w1", "x1", "x2"}
+
+
+# --------------------------------------------------------------- the single request's safety rules
+
+
+def test_two_windows_the_words_both_name_are_a_tie_for_anything_above_tier_zero():
+    # FOX_A and FOX_B are both Firefox: "close firefox" must ask, however sure Jev is
+    script = {**ADDRESSED, "action": _option_labelled("close Firefox")}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "could you close firefox")
+    assert decision.verdict is Verdict.HINTS
+    assert {c.window.address for c in decision.candidates} == {FOX_A.address, FOX_B.address}
+
+
+def test_a_focus_tie_takes_the_most_recent_window_that_is_not_in_front_and_offers_the_rest():
+    def the_older_firefox(question, state):
+        labels = {k: v.get("label", "") for k, v in question.options.items() if isinstance(v, dict)}
+        return next(k for k, label in labels.items() if label.startswith("Firefox"))
+
+    u, _ = build({**ADDRESSED, "action": the_older_firefox}, cfg=SINGLE)
+    decision = say(u, "take me to firefox please")
+    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.action.window.address == FOX_A.address  # the most recently used
+
+
+def test_a_going_verb_offers_to_start_an_app_that_has_no_window():
+    script = {**ADDRESSED, "action": _option_labelled("GIMP")}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "show me gimp")
+    assert decision.verdict is Verdict.SUGGEST
+    assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
