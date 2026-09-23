@@ -12,3 +12,6 @@ packaging/aur/*/pkg/
 packaging/aur/*/*.tar.gz
 packaging/aur/*/*.pkg.tar.zst
 evals/results/
+
+# local notes and experiments, never committed
+scratchpad/
