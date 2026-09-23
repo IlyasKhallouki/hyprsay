@@ -1237,7 +1237,7 @@ class Understander:
         through here, with its own harvest and its own request.
         """
         self.last_exchange["path"] = "single"
-        offered = await self._harvest(heard, copies=1)
+        offered = await self._harvest(heard, copies=1, state=state)
         if not offered:
             return self._degrade(heard, state, None, "nothing on this desktop could be offered")
         extra = self._seam_questions(seams) if seams.at and not seams.asked else {}
@@ -1427,7 +1427,7 @@ class Understander:
     # -------------------------------------------------------------- the ordered plan
 
     async def _harvest(
-        self, heard: _Heard, *, copies: int = plan.MAX_STEPS
+        self, heard: _Heard, *, copies: int = plan.MAX_STEPS, state: DesktopState | None = None
     ) -> dict[str, Affordance]:
         """Everything the machine can do right now, as options a model may choose among.
 
@@ -1446,8 +1446,10 @@ class Understander:
         running when nobody wants it any more costs a thread and changes nothing.
         """
         last = self.context.previous
+        # the desktop this utterance, or this clause of it, is judged against: a clause
+        # after "open my browser" sees the browser in front (`_projected`)
         machine = affordances.Machine(
-            state=self.context.state,
+            state=state if state is not None else self.context.state,
             heard=heard.text,
             now=self.context.now,
             lexicon=self.lexicon,
@@ -1736,7 +1738,7 @@ class Understander:
         # and the executor re-reads the desktop before it writes, as it does for every
         # other decision in this file
         first_harvest = self.last_exchange.get("affordances")
-        again = await self._harvest(heard, copies=1)
+        again = await self._harvest(heard, copies=1, state=state)
         note = replace(note, extra={**note.extra, "harvest": self.last_exchange["affordances"]})
         if first_harvest is not None:
             self.last_exchange["affordances"] = first_harvest

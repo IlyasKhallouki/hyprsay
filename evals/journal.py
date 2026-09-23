@@ -127,8 +127,14 @@ class Waytify(Adapter):
 
     def resolve(self, capability, slots, context):
         declared = waytify.BY_ID[capability]
-        query = str(slots.get("query", "")).strip() or "something"
-        found = (f"{query.title()} - Toto", f"{query.title()} (Live)", "Africa - Toto")
+        query = str(slots.get("query", "")).strip().title() or "Something"
+        # labelled the way Spotify names each kind: a track and an album carry an artist,
+        # a playlist is just its name
+        found = {
+            "waytify.play_track": (f"{query} - Toto", f"{query} (Live) - Toto", "Africa - Toto"),
+            "waytify.play_album": (f"{query} - Toto", f"{query} (Deluxe) - Toto", "IV - Toto"),
+            "waytify.play_playlist": (query, f"{query} Mix", "Daily Mix 1"),
+        }[capability]
         return tuple(
             Affordance(id=f"{capability}#{n}", label=label, kind=declared.kind,
                        tier=tier_for(declared, label),
@@ -366,13 +372,27 @@ def _fits(action: Action | None, w: Want) -> bool:
         return False
     if w.verbs and (action.verb or "") not in w.verbs:
         return False
-    if w.text and not re.search(w.text, (action.text or "").lower()):
+    if w.text and not re.search(w.text, _typed(action)):
         return False
     if w.number is not None and action.number != w.number:
         return False
     return not w.capabilities or (
         action.service is not None and action.service.capability in w.capabilities
     )
+
+
+def _typed(action: Action) -> str:
+    """What the action would actually type: an address recipe types the host its text
+    becomes, and a text that cannot become one types nothing."""
+    text = (action.text or "").lower()
+    if action.verb in ("go_to_url", "open_url"):
+        from hyprsay import recipes
+
+        try:
+            return recipes.normalize_host(text)
+        except recipes.RecipeError:
+            return ""
+    return text
 
 
 def score(d: Decision, c: Case) -> str:
@@ -468,7 +488,12 @@ async def main() -> int:
                     "verdict": d.verdict.value,
                     "action": d.action.describe() if d.action else None,
                     "text": d.action.text if d.action else None,
-                    "rest": [r.action.describe() if r.action else r.verdict.value for r in d.rest],
+                    "rest": [
+                        f"{r.action.describe()} {r.action.text or ''}".strip()
+                        if r.action
+                        else r.verdict.value
+                        for r in d.rest
+                    ],
                     "reason": d.reason,
                     "path": understander.last_exchange.get("path"),
                     "decided": understander.last_exchange.get("decided"),

@@ -1190,6 +1190,9 @@ def _recipes(context: Machine) -> list[Ranked]:
         if tiers.is_terminal(window, kind):
             continue
         at_hand = focused is not None and window.address == focused.address
+        # typing goes to the window in front, or to one the speaker named: "search for
+        # hold the line" with Spotify in front is not a web search in the browser behind it
+        named = at_hand or _names(context, window)
         for recipe in recipes.for_window(window, kind):
             score = reached.get(recipe.name, 0.0)
             if score <= 0.0 or (at_hand and recipe.name in GESTURE_DOUBLES):
@@ -1198,7 +1201,7 @@ def _recipes(context: Machine) -> list[Ranked]:
                 continue
             action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name)
             asked = recipes.verb_said(recipe, words) or (recipe.needs_text and reaching)
-            ceiling = 2 if asked else MAX_INAPP_TIER
+            ceiling = 2 if asked and (named or not recipe.needs_text) else MAX_INAPP_TIER
             capability = _reachable(
                 Intent.RUN_RECIPE, RECIPE, action, recipe.description, context, ceiling
             )
@@ -1213,6 +1216,18 @@ def _recipes(context: Machine) -> list[Ranked]:
                 continue
             out.append(Ranked(option, RECIPE, score, window.focus_rank))
     return out
+
+
+def _names(context: Machine, window: Window) -> bool:
+    """Did the speaker name this window's application, by a trusted field?"""
+    lexicon = context.lexicon
+    corroborates = getattr(lexicon, "corroborates", None)
+    if corroborates is None:
+        return False
+    try:
+        return bool(corroborates(context.heard, window=window))
+    except Exception:  # a lexicon that throws names nothing
+        return False
 
 
 def _controls(context: Machine) -> list[Ranked]:

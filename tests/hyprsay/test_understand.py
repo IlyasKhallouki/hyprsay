@@ -2074,3 +2074,26 @@ def test_closing_a_window_it_was_asked_to_close_is_a_countdown():
     assert decision.verdict is Verdict.COUNTDOWN
     assert decision.action.intent is Intent.CLOSE_WINDOW
     assert decision.action.window.address == MUSIC.address
+
+
+def test_the_second_clause_is_harvested_against_the_desktop_the_first_one_leaves():
+    from hyprsay.nlu import understand as understand_module
+
+    seen = []
+    real = understand_module.affordances.harvest
+
+    def spy(machine, **kw):
+        seen.append(machine.state.active_address)
+        return real(machine, **kw)
+
+    understand_module.affordances.harvest = spy
+    try:
+        u, _ = build(
+            {**ADDRESSED, "separates_0": 0.95, "action": _option_labelled("Firefox")},
+            cfg=SINGLE,
+        )
+        say(u, "go to firefox and scroll down")
+    finally:
+        understand_module.affordances.harvest = real
+    # the first clause focused a Firefox window, so the second one is judged with it in front
+    assert len(seen) >= 2 and seen[-1] in (FOX_A.address, FOX_B.address)

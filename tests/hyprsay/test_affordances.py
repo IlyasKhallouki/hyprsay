@@ -1008,3 +1008,21 @@ def test_what_the_last_command_touched_comes_first_and_says_so():
     windows = sourced(found, affordances.WINDOW)
     assert windows[0].affordance.handle == "0x3"
     assert "just" in windows[0].affordance.label
+
+
+def test_a_recipe_that_types_is_offered_only_for_the_window_in_front_or_one_that_was_named():
+    spotify_in_front = desktop(
+        MUSIC_WINDOW, CHROME_WINDOW, KITTY_WINDOW, workspaces=(1, 2, 3), active="0x3"
+    )
+    # "search for hold the line" with Spotify in front is not a web search in Chrome
+    quiet = harvest(machine(spotify_in_front, heard="search for hold the line"))
+    in_chrome = [
+        r for r in sourced(quiet, affordances.RECIPE) if r.affordance.handle.startswith("0x2")
+    ]
+    assert not [r for r in in_chrome if r.affordance.tier > 1]
+    # naming the browser reaches into it again
+    named = harvest(machine(spotify_in_front, heard="search chrome for hold the line"))
+    in_chrome = [
+        r for r in sourced(named, affordances.RECIPE) if r.affordance.handle.startswith("0x2")
+    ]
+    assert [r for r in in_chrome if r.affordance.tier > 1]
