@@ -81,6 +81,19 @@ def _players() -> dict[str, str]:
     return found
 
 
+def _chrome_audio() -> str:
+    """Chrome's audio streams as PipeWire sees them: open or not, corked or playing."""
+    out = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True).stdout
+    streams: list[str] = []
+    for block in out.split("Sink Input #")[1:]:
+        if "chrom" not in block.lower():
+            continue
+        corked = "Corked: yes" in block
+        muted = "Mute: yes" in block
+        streams.append(f"{'corked' if corked else 'running'}{', muted' if muted else ''}")
+    return ", ".join(streams) or "no Chrome stream"
+
+
 def _muted() -> bool:
     out = subprocess.run(
         ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True
@@ -283,6 +296,7 @@ LINES = (
 @dataclass
 class Probe:
     browser: BrowserClient
+    shots: str = ""
     scroll_y: float = 0.0
     volume: float = 0.0
     spotify_tab: int | None = None
@@ -308,6 +322,12 @@ class Probe:
         except Exception:
             return False
         return any(e.get("name") == "Log in" for e in page.get("elements", []))
+
+    def _shoot(self, name: str) -> None:
+        """A screenshot of the demo's own workspace, for a run nobody watched."""
+        if self.shots:
+            Path(self.shots).mkdir(parents=True, exist_ok=True)
+            subprocess.run(["grim", str(Path(self.shots) / f"{name}.png")], capture_output=True)
 
     def _player(self, tab: dict[str, Any]) -> str:
         """YouTube's own player buttons, which say what the video is doing: "Pause (k)"
@@ -360,9 +380,10 @@ class Probe:
             now = self._scroll()
             return now > self.scroll_y, f"scroll {self.scroll_y:.0f} -> {now:.0f}"
         if name == "watching":
+            self._shoot("watching")
             return (
                 host == "youtube.com" and "/watch" in url,
-                f"url: {url[:80]}; player: {self._player(tab)}",
+                f"url: {url[:80]}; player: {self._player(tab)}; audio: {_chrome_audio()}",
             )
         if name == "youtube_quiet":
             # Chrome's `audible` means "made sound over the past couple of seconds", so a
@@ -377,9 +398,10 @@ class Probe:
                     break
                 time.sleep(0.5)
             playing = sorted(n for n, st in _players().items() if st == "Playing")
+            self._shoot("paused")
             return not loud, (
                 f"youtube audible: {loud}; playing: {', '.join(playing) or 'none'}; "
-                f"player: {self._player(tab)}"
+                f"player: {self._player(tab)}; audio: {_chrome_audio()}"
             )
         if name == "quieter":
             now = _volume()
@@ -535,7 +557,7 @@ async def run(args: argparse.Namespace) -> int:
     probe_client = BrowserClient(timeout=4.0)
     before = _record(probe_client)
     touched = _input_count()
-    probe = Probe(probe_client)
+    probe = Probe(probe_client, shots=args.shots)
     own = Own()
     results: list[dict[str, Any]] = []
     workdir = Path(args.clips)
@@ -734,6 +756,7 @@ def main() -> int:
         help="seconds of nobody at the keyboard before starting (0: start at once)",
     )
     parser.add_argument("--max-wait", type=float, default=3600.0, help="give up waiting after")
+    parser.add_argument("--shots", default="", help="save screenshots of the watch and pause")
     parser.add_argument("--clips", default=str(Path(__file__).parent / "results" / "demo-clips"))
     parser.add_argument("--out", default=str(Path(__file__).parent / "results" / "demo.json"))
     return asyncio.run(run(parser.parse_args()))
