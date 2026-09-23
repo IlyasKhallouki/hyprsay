@@ -252,6 +252,9 @@ class FakeService(Adapter):
 
 # --------------------------------------------------------------------------- the harness
 
+# the path these tests were written against; the single request has its own section
+FANOUT = Config(jev=replace(Config().jev, path="fanout"))
+
 ADDRESSED = {"addressed": 0.95}
 SAID = "play the second live version of bohemian rhapsody"
 
@@ -259,7 +262,7 @@ SAID = "play the second live version of bohemian rhapsody"
 def build(script=None, *, adapters=None, cfg=None, clock=None):
     jev = FakeEvaluator({**ADDRESSED, "intent": "none", **(script or {})})
     understander = Understander(
-        cfg or Config(),
+        cfg or FANOUT,
         FakeLexicon(),
         FakeGrammar(),
         jev,

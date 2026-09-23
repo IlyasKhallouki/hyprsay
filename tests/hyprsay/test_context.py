@@ -13,7 +13,7 @@ from dataclasses import replace
 import pytest
 
 from hyprsay import daemon
-from hyprsay.config import Config, Safety
+from hyprsay.config import Config, Jev, Safety
 from hyprsay.jev.fake import FakeEvaluator
 from hyprsay.model import (
     Action,
@@ -166,7 +166,7 @@ ADDRESSED = {"addressed": 0.95}
 def build(script=None, *, parses=None, cfg=None, clock=None, apps=APPS):
     jev = FakeEvaluator(script)
     understander = Understander(
-        cfg or Config(),
+        cfg or Config(jev=Jev(path="fanout")),
         FakeLexicon(apps),
         FakeGrammar(parses),
         jev,

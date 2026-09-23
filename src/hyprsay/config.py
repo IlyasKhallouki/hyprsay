@@ -85,7 +85,7 @@ class Jev:
     # "single": one request per command, an action and the words it needs
     # (nlu/decide.py). "fanout": the seven-request path it replaces, kept only until the
     # checkpoint has measured the two side by side, then deleted.
-    path: str = "fanout"
+    path: str = "single"
 
 
 @dataclass(frozen=True)

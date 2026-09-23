@@ -14,7 +14,7 @@ import asyncio
 
 import pytest
 
-from hyprsay.config import Config
+from hyprsay.config import Config, Jev
 from hyprsay.lexicon import Lexicon
 from hyprsay.model import App, DesktopState, Intent, Transcript, Verdict, Window
 from hyprsay.nlu import bank, ground
@@ -44,7 +44,7 @@ OBSIDIAN = make_app("obsidian", "Obsidian", "note taking")
 DISCORD = make_app("discord", "Discord", "chat")
 APPS = (CHROME, FIREFOX, SPOTIFY, KITTY, OBSIDIAN, DISCORD)
 LEXICON = Lexicon(APPS)
-CFG = Config()
+CFG = Config(jev=Jev(path="fanout"))
 
 
 def win(address, cls, rank, title="", workspace=1, pid=0, initial="") -> Window:

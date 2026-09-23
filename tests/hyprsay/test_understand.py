@@ -175,7 +175,9 @@ def desktop(*windows, active="0x1", layers=()) -> DesktopState:
 
 
 DESKTOP = desktop()
-CFG = Config()
+# the seven-request path these tests were written against; the single request has
+# its own section at the end, and this file shrinks when the fan-out is deleted
+CFG = Config(jev=Jev(path="fanout"))
 ADDRESSED = {"addressed": 0.95}
 
 
@@ -668,7 +670,7 @@ def test_every_request_stays_under_the_token_cap():
 
 def test_an_oversized_desktop_is_shrunk_not_sent():
     crowd = tuple(win(f"0x{n:x}", "firefox", n, workspace=n % 9 + 1) for n in range(1, 41))
-    cfg = replace(CFG, jev=Jev(token_cap=1000))
+    cfg = replace(CFG, jev=Jev(token_cap=1000, path="fanout"))
     u, jev = build({**ADDRESSED, "intent": "focus_window"}, cfg=cfg)
     say(u, "go to my music", desktop(*crowd, active="0x1"))
     assert jev.calls
@@ -1005,7 +1007,7 @@ def test_window_requests_failing_after_the_intent_is_known_degrade_to_hints():
 
 @pytest.mark.parametrize("off", ["disabled", "no evaluator"])
 def test_with_jev_off_the_evaluator_is_never_called(off):
-    cfg = replace(CFG, jev=Jev(enabled=False)) if off == "disabled" else CFG
+    cfg = replace(CFG, jev=Jev(enabled=False, path="fanout")) if off == "disabled" else CFG
     u, jev = build(music(), cfg=cfg, no_evaluator=off == "no evaluator")
     decision = say(u, "go to my music")
     assert decision.verdict is Verdict.SUGGEST
@@ -1032,7 +1034,7 @@ def test_a_disruptive_intent_without_its_verb_is_refused_even_when_degraded():
 
 
 def test_a_late_answer_never_produces_a_tier_2_action_but_may_still_focus():
-    cfg = replace(CFG, jev=Jev(deadline_s=0.001, late_answer_s=2.0))
+    cfg = replace(CFG, jev=Jev(deadline_s=0.001, late_answer_s=2.0, path="fanout"))
     close = {
         **ADDRESSED,
         "intent": "close_window",
@@ -1048,7 +1050,7 @@ def test_a_late_answer_never_produces_a_tier_2_action_but_may_still_focus():
 
 
 def test_an_evaluator_that_never_answers_cannot_hang_the_engine():
-    cfg = replace(CFG, jev=Jev(late_answer_s=0.05))
+    cfg = replace(CFG, jev=Jev(late_answer_s=0.05, path="fanout"))
     u, _ = build(evaluator=FakeEvaluator(music(), delay=30), cfg=cfg)
     decision = say(u, "go to my music")
     assert decision.verdict is Verdict.SUGGEST

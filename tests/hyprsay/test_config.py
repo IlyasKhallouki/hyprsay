@@ -54,6 +54,7 @@ def test_lists_become_tuples(tmp_path):
         "[safety]\ncountdown_s = true\n",
         "[interpret]\nenabled = 1\n",  # a boolean key that took a number
         '[interpret]\nmodell = "x"\n',  # a misspelled optional key is still an error
+        '[jev]\npath = "both"\n',  # the decision path is single or fanout, nothing else
         "this is not toml [",
     ],
 )
@@ -72,3 +73,10 @@ def test_a_bad_environment_number_is_a_config_error(tmp_path):
 def test_unrelated_environment_variables_are_ignored(tmp_path):
     cfg = config.load(tmp_path / "none.toml", env={"HYPRSAY_UNKNOWN_THING": "1", "HOME": "/x"})
     assert cfg == config.Config()
+
+
+def test_the_single_request_is_the_default_path_and_fanout_can_be_chosen(tmp_path):
+    assert config.Config().jev.path == "single"
+    file = tmp_path / "config.toml"
+    file.write_text('[jev]\npath = "fanout"\n')
+    assert config.load(file, env={}).jev.path == "fanout"
