@@ -2025,3 +2025,41 @@ def test_the_single_path_degrades_when_jev_times_out():
     decision = say(u, "take me to my music")
     assert decision.action is None
     assert u.last_exchange["path"] == "degraded"
+
+
+def test_the_words_answer_is_the_number_a_volume_needs():
+    script = {**ADDRESSED, "action": _option_labelled("percentage"), "words": "w4_5"}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "turn it back to 75 percent")
+    assert decision.action is not None
+    assert (decision.action.intent, decision.action.verb, decision.action.number) == (
+        Intent.VOLUME,
+        "set",
+        75,
+    )
+
+
+def test_a_volume_with_no_number_is_not_set_to_a_guess():
+    script = {**ADDRESSED, "action": _option_labelled("percentage"), "words": "none"}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "turn it back to seventy something")
+    assert decision.action is None
+
+
+BROWSING = desktop(active=FOX_A.address)
+
+
+def test_the_words_answer_is_the_text_a_search_recipe_types():
+    script = {**ADDRESSED, "action": _option_labelled("search the web"), "words": "w2_3"}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "search for cats", BROWSING)
+    assert decision.action is not None
+    assert decision.action.intent is Intent.RUN_RECIPE
+    assert decision.action.text == "cats"
+
+
+def test_a_search_with_no_words_is_not_run_empty():
+    script = {**ADDRESSED, "action": _option_labelled("search the web"), "words": "none"}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "search for cats", BROWSING)
+    assert decision.action is None

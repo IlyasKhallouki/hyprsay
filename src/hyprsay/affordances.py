@@ -801,7 +801,12 @@ def _reaches(words: Sequence[str], groups: Sequence[Sequence[str]]) -> float:
 
 
 def _reachable(
-    intent: Intent, source: str, action: Action, summary: str, context: Machine
+    intent: Intent,
+    source: str,
+    action: Action,
+    summary: str,
+    context: Machine,
+    ceiling: int = MAX_INAPP_TIER,
 ) -> Capability | None:
     """The capability for one in-app option, or None when its tier puts it out of reach.
 
@@ -811,11 +816,16 @@ def _reachable(
     the `MAX_INAPP_TIER` cut, which is about what an answer to a Choice can authorize.
     """
     capability = _capability(intent, source, summary, context, action)
-    return capability if capability.tier <= MAX_INAPP_TIER else None
+    return capability if capability.tier <= ceiling else None
 
 
 def _inapp_option(
-    capability: Capability, ident: str, label: str, handle: str, trust: Trust
+    capability: Capability,
+    ident: str,
+    label: str,
+    handle: str,
+    trust: Trust,
+    ceiling: int = MAX_INAPP_TIER,
 ) -> Affordance | None:
     """`_option`, refused when what comes back is still above `MAX_INAPP_TIER`.
 
@@ -827,7 +837,7 @@ def _inapp_option(
     2 act is not something an answer to a Choice can authorize.
     """
     option = _option(capability, ident, label, handle, trust)
-    return option if option.tier <= MAX_INAPP_TIER else None
+    return option if option.tier <= ceiling else None
 
 
 # The gestures offered for the focused window, each with the words this repository uses
@@ -1037,9 +1047,16 @@ def _recipes(context: Machine) -> list[Ranked]:
     at the end.
     """
     state = context.state
-    reached = _reached_recipes(spoken(context.heard))
+    words = spoken(context.heard)
+    reached = _reached_recipes(words)
     if not reached:
         return []
+    # A recipe that types (a search, an address) is tier 2, which a list alone may not
+    # authorize. It is offered anyway when the speaker used a reaching verb, and any other
+    # tier 2 recipe (closing a tab) only when its own verb was said: the same evidence
+    # `understand._reaching` accepts when it is chosen. The tier still makes it a
+    # countdown, and "open a new tab" still offers no way to close one.
+    reaching = bool(tiers.REACHING_VERBS & set(words))
     focused = state.focused
     out: list[Ranked] = []
     index = 0
@@ -1055,13 +1072,17 @@ def _recipes(context: Machine) -> list[Ranked]:
             if recipes.refusal_for(recipe, window, kind):
                 continue
             action = Action(Intent.RUN_RECIPE, window=window, verb=recipe.name)
-            capability = _reachable(Intent.RUN_RECIPE, RECIPE, action, recipe.description, context)
+            asked = recipes.verb_said(recipe, words) or (recipe.needs_text and reaching)
+            ceiling = 2 if asked else MAX_INAPP_TIER
+            capability = _reachable(
+                Intent.RUN_RECIPE, RECIPE, action, recipe.description, context, ceiling
+            )
             if capability is None:
                 continue
             label, trust = _recipe_label(recipe, window, context)
             index += 1
             option = _inapp_option(
-                capability, f"r{index}", label, _handle(window, recipe.name), trust
+                capability, f"r{index}", label, _handle(window, recipe.name), trust, ceiling
             )
             if option is None:
                 continue

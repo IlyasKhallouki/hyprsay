@@ -1990,8 +1990,12 @@ class Understander:
             app = self._app_by_id(handle)
             return Action(intent, app=app) if app is not None else None
         if intent is Intent.VOLUME:
-            # "set" is the one verb that needs a number, and a step Choice carries none
-            return Action(intent, verb=handle) if handle in bank.VOLUME_VERBS - {"set"} else None
+            if handle == "set":
+                # the one verb that needs a number, and only the words answer can carry
+                # one: without it the volume is never set to a guess
+                number = _percent(words)
+                return Action(intent, verb="set", number=number) if number is not None else None
+            return Action(intent, verb=handle) if handle in bank.VOLUME_VERBS else None
         if intent is Intent.MEDIA:
             return Action(intent, verb=handle) if handle in bank.MEDIA_VERBS else None
         if intent in (Intent.FULLSCREEN, Intent.TOGGLE_FLOATING):
@@ -2013,6 +2017,12 @@ class Understander:
                 # option only exists because the speaker's own words were found in that
                 # name (`controls.best_match`), which is what makes it corroborated.
                 return Action(intent, window=window, verb=inside, text=inside)
+            if intent is Intent.RUN_RECIPE:
+                recipe = recipes.by_name(inside)
+                if recipe is not None and recipe.needs_text:
+                    # what it types is what the speaker pointed at; a search with nothing
+                    # to search for is dropped rather than run empty
+                    return Action(intent, window=window, verb=inside, text=words) if words else None
             return Action(intent, window=window, verb=inside)
         # RESIZE_WINDOW and MOVE_WINDOW need a direction or a size word that a step
         # Choice does not carry (`REQUIRED`). Rather than invent one, the plan is dropped
@@ -2968,23 +2978,8 @@ class _Reach:
 # A recipe reached this way was chosen from a list, so `tiers.SPOKEN_BY_CONSTRUCTION`
 # does NOT apply: that shortcut exists because a recipe is normally only reachable by an
 # exact phrase, and here it is not. The speaker still has to have asked to go somewhere.
-REACHING_VERBS = frozenset(
-    {
-        "go",
-        "open",
-        "show",
-        "take",
-        "bring",
-        "pull",
-        "navigate",
-        "browse",
-        "visit",
-        "search",
-        "look",
-        "find",
-        "google",
-    }  # fmt: skip
-)
+# moved to `nlu/tiers.py`, where the harvest can read it too
+REACHING_VERBS = tiers.REACHING_VERBS
 
 
 def _renders(window: Window, name: str, phrase: str, lexicon: LexiconLike) -> bool:
@@ -3048,7 +3043,12 @@ def _reaching(action: Action, heard: _Heard) -> bool:
     """
     if action.intent not in tiers.IN_APP:
         return False
-    return bool(REACHING_VERBS & set(heard.literal))
+    if REACHING_VERBS & set(heard.literal):
+        return True
+    # a recipe that names its own spoken verbs ("close" for close_tab) was asked for when
+    # one of them was said, which is the same evidence `recipes.verb_said` gives the grammar
+    named = recipes.by_name(action.verb or "") if action.intent is Intent.RUN_RECIPE else None
+    return named is not None and recipes.verb_said(named, heard.literal)
 
 
 def _answered(decision: Decision) -> bool:
@@ -3178,6 +3178,15 @@ def _template(intent: Intent, slots: Slots) -> Action:
         number=slots.number,
         text=slots.text if intent in ARGUMENT_TEXT else None,
     )
+
+
+def _percent(words: str) -> int | None:
+    """The first whole number from 0 to 100 in the words, or None. The normalizer has
+    already turned "seventy five" into "75"."""
+    for token in words.split():
+        if token.isdigit() and 0 <= int(token) <= 100:
+            return int(token)
+    return None
 
 
 def _pinned(state: DesktopState, pinned_address: str) -> Window | None:

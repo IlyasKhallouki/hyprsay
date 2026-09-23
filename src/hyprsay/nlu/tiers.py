@@ -78,6 +78,27 @@ LITERAL_VERBS: dict[Intent, frozenset[str]] = {
     Intent.TYPE_TEXT: frozenset({"type", "write", "dictate", "enter"}),
 }
 DESTRUCTIVE_VERBS = LITERAL_VERBS[Intent.CLOSE_WINDOW]
+# The words that say the speaker is reaching INTO a window for something: going to a
+# page, searching, finding. An in-app option above tier 1 may be offered and chosen only
+# when one of these was said, because the option was then built out of the speaker's own
+# request and the tier still turns it into a countdown (`understand._reaching`).
+REACHING_VERBS = frozenset(
+    {
+        "go",
+        "open",
+        "show",
+        "take",
+        "bring",
+        "pull",
+        "navigate",
+        "browse",
+        "visit",
+        "search",
+        "look",
+        "find",
+        "google",
+    }  # fmt: skip
+)
 
 TERMINAL_CLASSES = frozenset(
     {

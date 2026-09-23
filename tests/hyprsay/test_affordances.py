@@ -792,20 +792,29 @@ def test_a_recipe_is_offered_only_when_the_words_reach_it():
     assert [r.affordance.label for r in sourced(asked, affordances.RECIPE)] == ["open a new tab"]
 
 
-def test_a_recipe_that_types_is_offered_only_where_typing_is_allowed():
+def test_a_recipe_that_types_is_offered_at_the_typing_tier_when_it_was_asked_for():
     heard = "search youtube for dino crisis"
-    refused = harvest(machine(INSIDE, heard=heard))
-    assert sourced(refused, affordances.RECIPE) == []
+    # typing is tier 2 by default, so the search is offered as a countdown: the speaker
+    # reached for it in their own words, which is what a tier 2 option needs
+    default = harvest(machine(INSIDE, heard=heard))
+    labels = {r.affordance.label: r.affordance.tier for r in sourced(default, affordances.RECIPE)}
+    assert labels["search YouTube in a new tab"] == 2
     allowed = harvest(
         Machine(
             state=INSIDE, heard=heard, lexicon=LEXICON, cfg=TYPING_ALLOWED, drift=tokens.Drift()
         )
     )
-    labels = [r.affordance.label for r in sourced(allowed, affordances.RECIPE)]
-    assert "search YouTube in a new tab" in labels
     # a recipe that types is exactly as dangerous as typing (recipes.tier_for), so this is
     # the typing allowlist deciding, not a second rule here
-    assert all(r.affordance.tier <= 1 for r in sourced(allowed, affordances.RECIPE))
+    tiers_now = {
+        r.affordance.label: r.affordance.tier for r in sourced(allowed, affordances.RECIPE)
+    }
+    assert tiers_now["search YouTube in a new tab"] == 1
+
+
+def test_a_recipe_that_types_is_not_offered_when_nothing_was_reached_for():
+    found = harvest(machine(INSIDE, heard="youtube dino crisis"))
+    assert all(r.affordance.tier <= 1 for r in sourced(found, affordances.RECIPE))
 
 
 def test_a_terminal_is_offered_no_recipe_and_no_gesture():
@@ -912,19 +921,27 @@ def test_an_in_app_option_takes_its_tier_from_the_module_that_owns_the_gesture()
         assert option.tier == tiers.tier(intent, action, INSIDE, CFG), option.id
 
 
-def test_no_in_app_option_is_ever_offered_above_tier_one():
+def test_no_control_or_gesture_is_ever_offered_above_tier_one():
     warm(CHROME_WINDOW, control("Reply"), control("Delete"), control("Send"))
     heard = "click delete, send, save, close the tab and go to github dot com"
     for cfg in (CFG, TYPING_ALLOWED):
         found = harvest(
             Machine(state=INSIDE, heard=heard, lexicon=LEXICON, cfg=cfg, drift=tokens.Drift())
         )
-        inside = [
-            r
-            for r in found.ranked
-            if r.source in (affordances.GESTURE, affordances.RECIPE, affordances.CONTROL)
-        ]
+        inside = [r for r in found.ranked if r.source in (affordances.GESTURE, affordances.CONTROL)]
+        # a page can silence its own button by naming it "Delete", and never add one
         assert all(r.affordance.tier <= affordances.MAX_INAPP_TIER for r in inside)
+
+
+def test_a_tier_two_recipe_is_offered_only_for_the_verb_that_asks_for_it():
+    heard = "click delete, send, save, close the tab and go to github dot com"
+    found = harvest(machine(INSIDE, heard=heard))
+    high = {r.affordance.label for r in sourced(found, affordances.RECIPE) if r.affordance.tier > 1}
+    # "close" asked for closing the tab and "go" for typing an address, and nothing else
+    assert "close this tab" in high
+    assert "leave this page and go to a site in the tab you are on" in high
+    quiet = harvest(machine(INSIDE, heard="open a new tab"))
+    assert [r.affordance.label for r in sourced(quiet, affordances.RECIPE)] == ["open a new tab"]
 
 
 def test_nothing_reaches_inside_a_window_unless_the_words_do():

@@ -662,6 +662,14 @@ def verb_said(recipe: Recipe, tokens: tuple[str, ...] | list[str]) -> bool:
     return bool(SPOKEN_VERBS.get(recipe.name, frozenset()) & set(tokens))
 
 
+def by_name(name: str) -> Recipe | None:
+    """The recipe called `name` in any table, the most specific table first."""
+    for table in RECIPES.values():
+        if name in table:
+            return table[name]
+    return None
+
+
 # ------------------------------------------------------------------------- the offering
 
 
