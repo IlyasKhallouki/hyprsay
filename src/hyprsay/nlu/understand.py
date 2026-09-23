@@ -562,6 +562,7 @@ class Understander:
             outcome = await self._from_grammar(parse, heard, state, pinned_address, chain)
             if isinstance(outcome, Decision):
                 if not self._single() or decide.fast(parse, outcome):
+                    outcome = self._page_scroll(outcome, heard, state)
                     return self._partial(seams, heard, outcome) or outcome
                 # parsed, but not completely enough to answer alone: the grammar's reading
                 # is one of the options Jev will see, not the answer (`decide.fast`)
@@ -1290,6 +1291,41 @@ class Understander:
         if decision is None:
             return self._suggest(heard, "that cannot be done from here", rehearable=False)
         return decision
+
+    def _page_scroll(self, decision: Decision, heard: _Heard, state: DesktopState) -> Decision:
+        """A spoken scroll with a browser in front scrolls the page through the extension.
+
+        The wheel scrolls whatever is under the pointer, and on the live demo the first
+        "scroll down" on YouTube moved nothing; the extension scrolls the element that
+        really scrolls (Spotify's page scrolls inside a panel). Anything that is not a
+        plain scroll of a browser, or a browser nobody can reach, is left to the wheel.
+        """
+        action = decision.action
+        if (
+            action is None
+            or action.intent is not Intent.SCROLL
+            or action.direction not in (Direction.UP, Direction.DOWN)
+            or decision.verdict not in ACTING
+        ):
+            return decision
+        from hyprsay.adapters.browser import is_browser
+
+        adapter = adapters.by_name(self.adapters, "browser")
+        if adapter is None or not is_browser(state.focused):
+            return decision
+        context = adapters.Context(state=state, heard=heard.text, now=self.context.now)
+        try:
+            capability = adapters.capability_of(adapter, "browser.scroll", context)
+            found = adapters.candidates(adapter, capability, {}, context) if capability else ()
+        except Exception:  # a broken extension leaves the wheel to do it
+            return decision
+        way = f" {action.direction.value}"
+        chosen = next((f for f in found if f.handle.endswith(way)), None)
+        if chosen is None:
+            return decision
+        step = plan.Step(position=1, id=chosen.id, affordance=chosen, probability=1.0, margin=1.0)
+        routed = self._service_step(step, heard, state, late=False)
+        return routed if routed is not None else decision
 
     def _reach_tab(
         self,

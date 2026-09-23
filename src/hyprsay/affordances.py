@@ -927,11 +927,20 @@ def _browser(context: Machine) -> list[Ranked]:
     if browser is None:
         return []
     words = spoken(context.heard)
+    # "a bit more" after a page scroll names nothing: when the last command went through
+    # the browser, what matches the words it was said in ranks first, like `_gestures`
+    last = context.previous
+    earlier = spoken(last.said) if last.intent == Intent.SERVICE.value else ()
     found = base.offer((browser,), context, limit=base.MAX_CANDIDATES)
-    return [
-        Ranked(replace(item, id=f"b{index}"), BROWSER, claims(words, item.label), index)
-        for index, item in enumerate(found, 1)
-    ]
+    ranked: list[Ranked] = []
+    for index, item in enumerate(found, 1):
+        score = claims(words, item.label)
+        again = claims(earlier, item.label) if earlier and score <= 0.0 else 0.0
+        if again > 0.0:
+            # graded, so "scroll ... down" after "scroll down" beats "scroll ... up"
+            score = AGAIN_SCORE * again
+        ranked.append(Ranked(replace(item, id=f"b{index}"), BROWSER, score, index))
+    return ranked
 
 
 def _extension_serves(context: Machine) -> bool:

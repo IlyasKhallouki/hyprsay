@@ -1038,3 +1038,33 @@ def test_sending_a_window_to_a_numbered_workspace_is_offered_when_asked():
     sends = [r for r in found.ranked if r.affordance.label.startswith("send ")]
     assert sends and all(r.affordance.label.endswith("to workspace 5") for r in sends)
     assert any("Spotify" in r.affordance.label for r in sends)
+
+
+class _Scrolling:
+    """The smallest browser adapter: it can scroll the page in front."""
+
+    name = "browser"
+
+    def can_serve(self, context):
+        return True
+
+    def capabilities(self, context):
+        from hyprsay.adapters.base import Capability
+
+        return (Capability("browser.scroll", "scroll this page", tier=0, kind="page"),)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        return tuple(
+            Affordance(f"g{n}", f"scroll this page {way}", "page", 0, f"scroll 7 {way}",
+                       "browser", "browser.scroll", Trust.UNTRUSTED)
+            for n, way in enumerate(("up", "down"), 1)
+        )  # fmt: skip
+
+
+def test_a_bit_more_after_a_page_scroll_ranks_that_scroll_first():
+    previous = affordances.Previous(intent="service", said="scroll down", address="0x2")
+    m = replace(machine(INSIDE, heard="a bit more", adapters=(_Scrolling(),)), previous=previous)
+    browser_options = sourced(harvest(m), affordances.BROWSER)
+    assert browser_options[0].affordance.label == "scroll this page down"

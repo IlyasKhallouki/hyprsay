@@ -2232,3 +2232,40 @@ def test_open_a_new_x_still_starts_the_app():
     u = _single_with((TabsOnly(),), {**ADDRESSED, "action": _option_labelled("Spotify")})
     decision = asyncio.run(u.understand(Transcript("open a new spotify", "test"), NO_MUSIC))
     assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
+
+
+class PageScroller(TabsOnly):
+    """A browser adapter that can also scroll the page in front."""
+
+    def __init__(self):
+        super().__init__()
+        from hyprsay.adapters.base import Capability
+
+        self.scroll = Capability("browser.scroll", "scroll this page", tier=0, kind="page")
+
+    def capabilities(self, context):
+        return (self.scroll, self.cap)
+
+    def resolve(self, capability, slots, context):
+        from hyprsay.adapters.base import Affordance, Trust
+
+        if capability != "browser.scroll":
+            return super().resolve(capability, slots, context)
+        return tuple(
+            Affordance(f"g{n}", f"scroll this page {way}", "page", 0,
+                       self.minted.mint(f"scroll 7 {way}", way), "browser", "browser.scroll",
+                       Trust.UNTRUSTED)
+            for n, way in enumerate(("down", "up"), 1)
+        )  # fmt: skip
+
+
+BROWSING_CHROME = desktop(win("0x9", "google-chrome", 0, "YouTube"), TERMINAL, active="0x9")
+
+
+def test_a_spoken_scroll_in_a_browser_scrolls_the_page_through_the_extension():
+    parses = {"scroll down": Parse(Intent.SCROLL, Slots(direction=Direction.DOWN))}
+    u = _single_with((PageScroller(),), {**ADDRESSED}, parses=parses)
+    decision = asyncio.run(u.understand(Transcript("scroll down", "test"), BROWSING_CHROME))
+    assert decision.action is not None
+    assert decision.action.intent is Intent.SERVICE
+    assert decision.action.service.handle == "scroll 7 down"
