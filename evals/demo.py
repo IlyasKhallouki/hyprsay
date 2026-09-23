@@ -290,6 +290,18 @@ class Probe:
         return False, f"no check called {name}"
 
 
+def _offered(exchange: dict[str, Any]) -> dict[str, str]:
+    """The options the single request put in front of Jev, by id, for the report."""
+    for request in exchange.get("requests") or []:
+        action = (request.get("questions") or {}).get("action") or {}
+        criteria = action.get("criteria") or {}
+        if criteria:
+            return {
+                k: (v.get("label") if isinstance(v, dict) else str(v)) for k, v in criteria.items()
+            }
+    return {}
+
+
 # --------------------------------------------------------------------------- speaking
 
 
@@ -469,6 +481,8 @@ async def run(args: argparse.Namespace) -> int:
                     "decided_ms": decided_ms,
                     "path": understander.last_exchange.get("path"),
                     "decided": understander.last_exchange.get("decided"),
+                    "options": _offered(understander.last_exchange),
+                    "turn": understander.last_exchange.get("turn"),
                 }
             )
             mark = {True: "PASS", False: "FAIL", None: "BLOCKED"}[passed]
