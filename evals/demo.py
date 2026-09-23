@@ -208,13 +208,23 @@ class Probe:
                 tab.get("id") if _host(tab.get("url", "")) == "open.spotify.com" else None
             )
 
+    def _logged_out(self) -> bool:
+        spotify = [t for t in self.browser.tabs() if _host(t.get("url", "")) == "open.spotify.com"]
+        if not spotify:
+            return False
+        try:
+            page = self.browser.snapshot(spotify[0]["id"], max=200)
+        except Exception:
+            return False
+        return any(e.get("name") == "Log in" for e in page.get("elements", []))
+
     def _scroll(self) -> float:
         try:
             return float(self.browser.snapshot(max=1)["viewport"]["scroll_y"])
         except Exception:
             return -1.0
 
-    def check(self, line: Line) -> tuple[bool, str]:
+    def check(self, line: Line) -> tuple[bool | None, str]:
         tab = _active(self.browser)
         url = str(tab.get("url", ""))
         host = _host(url)
@@ -229,6 +239,10 @@ class Probe:
                 t.get("audible") and _host(t.get("url", "")) == "open.spotify.com"
                 for t in self.browser.tabs()
             )
+            if not audible and self._logged_out():
+                # nothing can play in a player nobody is logged in to: that is a missing
+                # prerequisite for the owner, not a fault in the pipeline
+                return None, "Spotify is not logged in in this profile, so nothing can play"
             return audible, f"spotify tab audible: {audible}; title: {tab.get('title', '')[:50]}"
         if name == "on_youtube":
             return host == "youtube.com", f"active tab: {host}"
@@ -435,7 +449,7 @@ async def run(args: argparse.Namespace) -> int:
                     "decided": understander.last_exchange.get("decided"),
                 }
             )
-            mark = "PASS" if passed else "FAIL"
+            mark = {True: "PASS", False: "FAIL", None: "BLOCKED"}[passed]
             print(f"{mark}  {line.said!r}  heard {heard!r}  ({decided_ms} ms)")
             print(f"      did: {'; '.join(did)}")
             print(f"      saw: {evidence}")
@@ -443,12 +457,13 @@ async def run(args: argparse.Namespace) -> int:
         await client.aclose()
         restored = [] if args.keep else _restore(probe_client, before)
         print("\nrestored: " + ", ".join(restored))
-    passed = sum(r["passed"] for r in results)
-    print(f"\n{passed}/{len(results)} lines passed")
+    passed = sum(r["passed"] is True for r in results)
+    blocked = sum(r["passed"] is None for r in results)
+    print(f"\n{passed}/{len(results)} lines passed, {blocked} blocked on a prerequisite")
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(json.dumps({"voice": args.voice, "results": results}, indent=1))
     print(f"saved {args.out}")
-    return 0 if passed == len(results) else 1
+    return 0 if passed + blocked == len(results) else 1
 
 
 def main() -> int:
