@@ -83,7 +83,11 @@ class Jev:
     deadline_s: float = 1.4
     # how long a late answer stays acceptable for tiers 0 and 1 (docs/PLAN.md 5.5)
     late_answer_s: float = 2.5
-    token_cap: int = 1800
+    # 1,800 was sized for seven requests in parallel. The single request carries the
+    # options and the spans of what was said, and in the replay A/B requests of about
+    # 2,000 to 2,400 estimated tokens came back at 351 to 378 ms p50, inside the flat
+    # region measured earlier (latency and 503s only climb well past it).
+    token_cap: int = 2400
     zero_data_retention: bool = True
     enabled: bool = True  # False: grammar only, fully offline
     # "single": one request per command, an action and the words it needs

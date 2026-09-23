@@ -791,3 +791,11 @@ def test_on_the_single_path_an_unsure_words_answer_falls_back_to_cutting_the_ver
     u, _ = build({"action": "x1", "words": words, "step_1": "s2"}, adapters=(service,), cfg=SINGLE)
     say(u)
     assert service.asked == [("fake.play_track", {"query": "live version of bohemian rhapsody"})]
+
+
+def test_asking_to_search_names_a_capability_that_finds_by_name():
+    service = FakeService()
+    u, _ = build({"action": "x1", "words": "w2_4", "step_1": "s1"}, adapters=(service,), cfg=SINGLE)
+    decision = say(u, "search for bohemian rhapsody")
+    assert service.asked == [("fake.play_track", {"query": "bohemian rhapsody"})]
+    assert decision.verdict is Verdict.ACT

@@ -226,6 +226,9 @@ _FILLER = frozenset(
     }
 )  # fmt: skip
 
+# the words that ask for something to be found by name
+FINDING_VERBS = frozenset({"search", "find", "look", "lookup"})
+
 # Why the second turn's Choice named no step, in this module's vocabulary. `plan.Cut` is
 # about reading one answer and `turns.Stopped` is about an utterance that ended with
 # nothing done, so the two are mapped rather than merged: a cut that has no entry here is
@@ -1326,7 +1329,7 @@ class Understander:
                     return built, options, words
                 if len(options) <= MIN_SINGLE_OPTIONS:
                     break
-                options.popitem()
+                _cut_one(options)
         return None, {}, {}
 
     def _unsure(
@@ -1987,7 +1990,12 @@ class Understander:
         words = tuple(w for w in affordances.spoken(capability.summary) if w not in _FILLER)
         if not words:
             return False
-        return affordances.said(affordances.spoken(heard.text), (words,)) > 0.0
+        spoken = affordances.spoken(heard.text)
+        if "found" in words and FINDING_VERBS & set(spoken):
+            # "search for X" asks for something to be found by name, which is what a
+            # capability summarized as "..., found by name" does
+            return True
+        return affordances.said(spoken, (words,)) > 0.0
 
     def _action_for(
         self, affordance: Affordance, state: DesktopState, *, first: bool, words: str = ""
@@ -3212,6 +3220,23 @@ def _template(intent: Intent, slots: Slots) -> Action:
         number=slots.number,
         text=slots.text if intent in ARGUMENT_TEXT else None,
     )
+
+
+# What goes first when a request has to shrink: switching workspaces and reshaping the
+# window in front are always on the list and rarely what a long sentence was about. The
+# harvest ranks the cheapest and most reversible sources first as a tie break, which put
+# the Spotify options at the bottom of "search for hold the line" and cut them first.
+_CUT_FIRST = ("layout", "workspace")
+
+
+def _cut_one(options: dict[str, Affordance]) -> None:
+    """Drop one option: the lowest ranked layout or workspace one, else the lowest ranked."""
+    for kind in _CUT_FIRST:
+        for key in reversed(options):
+            if options[key].kind == kind:
+                del options[key]
+                return
+    options.popitem()
 
 
 def _addressable(recipe: str, words: str) -> bool:

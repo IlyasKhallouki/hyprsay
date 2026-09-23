@@ -2097,3 +2097,24 @@ def test_the_second_clause_is_harvested_against_the_desktop_the_first_one_leaves
         understand_module.affordances.harvest = real
     # the first clause focused a Firefox window, so the second one is judged with it in front
     assert len(seen) >= 2 and seen[-1] in (FOX_A.address, FOX_B.address)
+
+
+def test_a_request_that_must_shrink_drops_layout_and_workspaces_before_anything_else():
+    from hyprsay.adapters.base import Affordance, Trust
+
+    def aff(ident, kind):
+        return Affordance(ident, f"label {ident}", kind, 1, "h", "hyprsay", "x", Trust.TRUSTED)
+
+    offered = {
+        "w1": aff("w1", "window"),
+        "x1": aff("x1", "spotify track"),
+        "fullscreen": aff("fullscreen", "layout"),
+        "ws2": aff("ws2", "workspace"),
+        "x2": aff("x2", "media player"),
+    }
+    from hyprsay.nlu.understand import _cut_one
+
+    kept = dict(offered)
+    _cut_one(kept)
+    _cut_one(kept)
+    assert set(kept) == {"w1", "x1", "x2"}
