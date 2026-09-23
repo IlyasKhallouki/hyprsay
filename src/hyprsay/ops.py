@@ -448,12 +448,48 @@ def _media(action: Action, _before: DesktopState) -> str:
     command = _MEDIA.get(action.verb or "")
     if command is None:
         raise OpError("That is not something the player can do.")
+    missing = "playerctl is not installed, so media control is unavailable."
+    if command == "play-pause":
+        # A bare play-pause goes to whichever player playerctl lists first. Measured on
+        # the owner's desktop: that was a paused episode in another tab while a video
+        # played, so "pause" would have resumed the show and left the video running.
+        # So what is playing is paused, by name, and only with nothing playing does it
+        # fall back to the toggle, which is then a play.
+        playing = _playing_players(missing)
+        if playing:
+            if journal.dry_run():
+                return _would(f"pause {', '.join(playing)}")
+            safety.touch("media")
+            for name in playing:
+                _run_tool(["playerctl", "-p", name, "pause"], missing)
+            return "Paused."
     argv = ["playerctl", command]
     if journal.dry_run():
         return _would(f"run {' '.join(argv)}")
     safety.touch("media")
-    _run_tool(argv, "playerctl is not installed, so media control is unavailable.")
+    _run_tool(argv, missing)
     return f"Media {command}."
+
+
+def _playing_players(missing: str) -> list[str]:
+    """The media players that are playing right now, by their playerctl names."""
+    try:
+        listed = _run_tool(["playerctl", "-l"], missing)
+    except OpError:
+        # no player at all exits non-zero; the toggle below then says so in its own words
+        if shutil.which("playerctl") is None:
+            raise
+        return []
+    names = [n.strip() for n in listed.splitlines() if n.strip()]
+    playing: list[str] = []
+    for name in names:
+        try:
+            status = _run_tool(["playerctl", "-p", name, "status"], missing).strip()
+        except OpError:
+            continue
+        if status == "Playing":
+            playing.append(name)
+    return playing
 
 
 def _type_text(action: Action, _before: DesktopState) -> str:

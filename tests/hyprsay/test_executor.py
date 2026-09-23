@@ -72,6 +72,8 @@ class Desk:
         self.installed = {"wpctl", "playerctl", "loginctl"}
         self.volume_stdout = "Volume: 0.45\n"
         self.returncode = 0
+        # media players by name, and what each is doing
+        self.players: dict[str, str] = {}
 
     def apply_volume(self, spec: str) -> None:
         parts = self.volume_stdout.split()
@@ -93,13 +95,25 @@ class Desk:
 
     @property
     def writes(self) -> list[tuple]:
-        return [c for c in self.calls if c[:2] != ("run", ("wpctl", "get-volume", ops.SINK))]
+        return [c for c in self.calls if not _is_read(c)]
 
     def _record(self, name: str, call: tuple, default: object) -> object:
         self.calls.append(call)
         if name in self.raises:
             raise self.raises[name]
         return self.replies.get(name, default)
+
+
+def _is_read(call: tuple) -> bool:
+    """A call that only asks: the volume, the list of players, one player's status."""
+    if call[0] != "run":
+        return False
+    argv = call[1]
+    return (
+        argv == ("wpctl", "get-volume", ops.SINK)
+        or argv[:2] == ("playerctl", "-l")
+        or (argv[:2] == ("playerctl", "-p") and argv[-1] == "status")
+    )
 
 
 @pytest.fixture
@@ -127,6 +141,10 @@ def desk(monkeypatch) -> Desk:
         if "set-volume" in argv:
             d.apply_volume(argv[-1])  # a sink that really has a level, capped like wpctl -l 1.0
         stdout = d.volume_stdout if "get-volume" in argv else ""
+        if argv[:2] == ["playerctl", "-l"]:
+            stdout = "".join(f"{name}\n" for name in d.players)
+        if argv[:2] == ["playerctl", "-p"] and argv[-1] == "status":
+            stdout = d.players.get(argv[2], "") + "\n"
         return subprocess.CompletedProcess(argv, d.returncode, stdout=stdout, stderr="")
 
     monkeypatch.setattr(server, "hypr", hypr)
@@ -1222,3 +1240,23 @@ def test_a_service_action_with_no_service_on_it_does_nothing(playing):
     outcome = acts.execute(Action(Intent.SERVICE))
     assert not outcome.ok
     assert player.performed == []
+
+
+def test_pause_pauses_what_is_playing_and_never_starts_anything_else(desk):
+    # the first player playerctl lists is paused on a show; the video is playing elsewhere
+    desk.players = {"plasma-browser-integration": "Paused", "chromium.instance1": "Playing"}
+    outcome = desk.executor().execute(Action(Intent.MEDIA, verb="play_pause"))
+    assert outcome.ok
+    assert desk.writes == [("run", ("playerctl", "-p", "chromium.instance1", "pause"))]
+
+
+def test_play_or_pause_with_nothing_playing_still_plays(desk):
+    desk.players = {"spotify": "Paused"}
+    desk.executor().execute(Action(Intent.MEDIA, verb="play_pause"))
+    assert desk.writes == [("run", ("playerctl", "play-pause"))]
+
+
+def test_with_no_player_at_all_play_or_pause_falls_back_to_the_toggle(desk):
+    desk.players = {}
+    desk.executor().execute(Action(Intent.MEDIA, verb="play_pause"))
+    assert ("run", ("playerctl", "play-pause")) in desk.writes
