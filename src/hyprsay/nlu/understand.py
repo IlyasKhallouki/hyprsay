@@ -185,6 +185,8 @@ ACTING = context.ACTING
 _CAPABILITIES = frozenset(
     {
         Intent.FOCUS_WINDOW.value,
+        # closing, offered only when the verb was said (`affordances._closing`)
+        Intent.CLOSE_WINDOW.value,
         Intent.SWITCH_WORKSPACE.value,
         Intent.LAUNCH_APP.value,
         Intent.VOLUME.value,
@@ -1441,6 +1443,7 @@ class Understander:
         read-only by contract (`adapters.base.Adapter.resolve`), so a harvest still
         running when nobody wants it any more costs a thread and changes nothing.
         """
+        last = self.context.previous
         machine = affordances.Machine(
             state=self.context.state,
             heard=heard.text,
@@ -1449,6 +1452,9 @@ class Understander:
             cfg=self.cfg,
             adapters=self.adapters,
             drift=self._drift(),
+            previous=affordances.Previous(last.intent, last.said, last.address)
+            if last is not None
+            else affordances.Previous(),
         )
         try:
             async with asyncio.timeout(HARVEST_S):
@@ -1812,7 +1818,9 @@ class Understander:
             # tier 3 is confirmed by a physical key and is never offered to a model. It
             # cannot be built as an affordance either (adapters/base, MAX_OFFERABLE_TIER)
             return None
-        if level > 1 and not _reaching(action, heard):
+        if level > 1 and not (
+            _reaching(action, heard) or tiers.verb_said(action.intent, heard.literal)
+        ):
             # A step is chosen from a list, and a list is not evidence from the speaker.
             # That held while the list could only say "close this window": nothing in the
             # utterance had to mention closing for closing to be picked.
@@ -1981,7 +1989,7 @@ class Understander:
         handle = affordance.handle
         if intent is None:
             return None
-        if intent is Intent.FOCUS_WINDOW:
+        if intent in (Intent.FOCUS_WINDOW, Intent.CLOSE_WINDOW):
             window = state.by_address(handle)
             return Action(intent, window=window) if window is not None else None
         if intent is Intent.SWITCH_WORKSPACE:

@@ -189,6 +189,7 @@ SYSTEM = "system"
 SERVICE = "service"
 RECIPE = "recipe"
 CONTROL = "control"
+CLOSE = "close"
 
 # The last tie break, after what was said and after recency: the cheapest and most
 # reversible source first, which is the same order `nlu/tiers.py` puts the intents in.
@@ -205,6 +206,7 @@ ORDER: tuple[str, ...] = (
     SERVICE,
     RECIPE,
     CONTROL,
+    CLOSE,
 )
 _RANK: dict[str, int] = {source: index for index, source in enumerate(ORDER)}
 
@@ -226,6 +228,7 @@ QUOTA: dict[str, int] = {
     SERVICE: 14,
     RECIPE: 6,
     CONTROL: 6,
+    CLOSE: 8,
 }
 
 # The highest tier an option may carry. Not `base.MAX_OFFERABLE_TIER`, which is 2 and is
@@ -257,9 +260,27 @@ SAID_FLOOR = 0.85
 MIN_FUZZY_LETTERS = 4
 # a source that has no recency to report sits behind everything that does
 NOT_RECENT = 99
+# where a repeated gesture ranks: above everything the new words did not reach
+AGAIN_SCORE = 0.5
 
 
 # --------------------------------------------------------------------------- what is asked
+
+
+@dataclass(frozen=True)
+class Previous:
+    """What the last command did, as much as the harvest needs: its intent, the words it
+    was said in, and the window it touched. Built by the understander from its own turn
+    memory (`nlu/context.Turn`), so this module does not reach into that one."""
+
+    intent: str = ""
+    said: str = ""
+    address: str = ""
+
+
+# the words that ask for a window to be closed. `nlu/tiers.LITERAL_VERBS` is the table;
+# it is read, not copied, so the harvest and the verdict can never disagree about it.
+CLOSING_VERBS = tiers.LITERAL_VERBS[Intent.CLOSE_WINDOW]
 
 
 @dataclass(frozen=True)
@@ -284,6 +305,7 @@ class Machine(Context):
     cfg: Config = field(default_factory=Config)
     adapters: tuple[Adapter, ...] = ()
     drift: tokens.Drift = field(default_factory=tokens.Drift)
+    previous: Previous = field(default_factory=Previous)
 
 
 @dataclass(frozen=True)
@@ -511,6 +533,31 @@ def _windows(context: Machine) -> list[Ranked]:
         label, trust = _window_label(window, context.lexicon)
         option = _option(capability, f"w{index}", label, window.address, trust)
         out.append(Ranked(option, WINDOW, scores.get(window.address, 0.0), window.focus_rank))
+    return out
+
+
+def _closing(context: Machine) -> list[Ranked]:
+    """Every open window as something to close, but only when closing was asked for.
+
+    Tier 2, and it stays tier 2: `nlu/tiers.verdict` turns it into a countdown, and only
+    when the verb is in the recognizer's own words. The same ranking as `_windows`, so
+    "close the music player" puts Spotify first. Without the verb nothing is built, which
+    keeps a list of close buttons away from every utterance that did not ask for one.
+    """
+    state = context.state
+    if not state.windows or not CLOSING_VERBS & set(spoken(context.heard)):
+        return []
+    scores: dict[str, float] = {}
+    if context.lexicon is not None:
+        found = context.lexicon.match_windows(context.heard, state, limit=len(state.windows))
+        scores = {window.address: score for window, score in found}
+    out: list[Ranked] = []
+    for index, window in enumerate(sorted(state.windows, key=lambda w: w.focus_rank), 1):
+        action = Action(Intent.CLOSE_WINDOW, window=window)
+        capability = _capability(Intent.CLOSE_WINDOW, WINDOW, "close a window", context, action)
+        label, trust = _window_label(window, context.lexicon)
+        option = _option(capability, f"q{index}", f"close {label}", window.address, trust)
+        out.append(Ranked(option, CLOSE, scores.get(window.address, 0.0), window.focus_rank))
     return out
 
 
@@ -913,11 +960,23 @@ def _gestures(context: Machine) -> list[Ranked]:
     if tiers.is_terminal(focused, kind):
         return []
     words = spoken(context.heard)
+    # "a bit more" names no gesture. When the last command was a gesture on this same
+    # window, the gesture it was is offered again, first, whatever was said this time.
+    last = context.previous
+    again = (
+        spoken(last.said)
+        if last.intent in (Intent.SCROLL.value, Intent.PRESS_CHORD.value)
+        and last.address == focused.address
+        else ()
+    )
     out: list[Ranked] = []
     for index, (intent, payload, summary, groups) in enumerate(GESTURES, 1):
         score = _reaches(words, groups)
-        if score <= 0.0:
+        repeated = score <= 0.0 and bool(again) and _reaches(again, groups) > 0.0
+        if score <= 0.0 and not repeated:
             continue
+        if repeated:
+            summary, score = f"{summary} again", AGAIN_SCORE
         gesture = inapp.SCROLL if intent is Intent.SCROLL else inapp.CHORD
         keys = "" if intent is Intent.SCROLL else payload
         if inapp.refusal(focused, kind, context.state, context.cfg, gesture, keys):
@@ -1253,6 +1312,7 @@ def harvest(
         (GESTURE, _gestures),
         (RECIPE, _recipes),
         (CONTROL, _controls),
+        (CLOSE, _closing),
     ):
         try:
             built.extend(gather(context))
@@ -1271,6 +1331,7 @@ def harvest(
 
 __all__ = [
     "APP",
+    "CLOSE",
     "CONTROL",
     "GESTURE",
     "LAYOUT",
@@ -1287,6 +1348,7 @@ __all__ = [
     "WORKSPACE",
     "Harvest",
     "Machine",
+    "Previous",
     "Ranked",
     "budget_for",
     "claims",

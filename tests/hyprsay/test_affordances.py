@@ -958,3 +958,35 @@ def test_an_in_app_option_never_costs_a_harvest_that_asked_for_nothing():
     quiet = harvest(machine(INSIDE, heard="go to workspace 2"))
     assert quiet.built == harvest(machine(INSIDE, heard="go to workspace 2")).built
     assert all(r.source != affordances.CONTROL for r in quiet.ranked)
+
+
+# --------------------------------------------------------------------------- closing, and again
+
+MUSIC_WINDOW = win("0x3", "Spotify", rank=2, workspace=3)
+WITH_MUSIC = desktop(CHROME_WINDOW, KITTY_WINDOW, MUSIC_WINDOW, workspaces=(1, 2, 3), active="0x2")
+
+
+def test_closing_is_offered_only_when_a_closing_verb_was_said():
+    asked = harvest(machine(WITH_MUSIC, heard="could you close the music player"))
+    closing = sourced(asked, affordances.CLOSE)
+    assert {r.affordance.handle for r in closing} == {"0x1", "0x2", "0x3"}
+    assert all(r.affordance.tier == 2 for r in closing)
+    assert any("Spotify" in r.affordance.label for r in closing)
+    assert (
+        sourced(harvest(machine(WITH_MUSIC, heard="focus the music player")), affordances.CLOSE)
+        == []
+    )
+
+
+def test_the_last_gesture_is_offered_again_whatever_was_said():
+    previous = affordances.Previous(intent="scroll", said="scroll down", address="0x2")
+    found = harvest(replace(machine(INSIDE, heard="a bit more"), previous=previous))
+    gestures = sourced(found, affordances.GESTURE)
+    assert gestures, "a bit more must have something to pick"
+    assert gestures[0].affordance.label == "scroll down in this window again"
+
+
+def test_the_last_gesture_is_not_offered_again_on_another_window():
+    previous = affordances.Previous(intent="scroll", said="scroll down", address="0x9")
+    found = harvest(replace(machine(INSIDE, heard="a bit more"), previous=previous))
+    assert sourced(found, affordances.GESTURE) == []

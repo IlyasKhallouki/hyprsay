@@ -2063,3 +2063,12 @@ def test_a_search_with_no_words_is_not_run_empty():
     u, _ = build(script, cfg=SINGLE)
     decision = say(u, "search for cats", BROWSING)
     assert decision.action is None
+
+
+def test_closing_a_window_it_was_asked_to_close_is_a_countdown():
+    script = {**ADDRESSED, "action": _option_labelled("close Spotify")}
+    u, _ = build(script, cfg=SINGLE)
+    decision = say(u, "could you close spotify please")
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.intent is Intent.CLOSE_WINDOW
+    assert decision.action.window.address == MUSIC.address
