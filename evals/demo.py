@@ -69,17 +69,22 @@ def _volume() -> float:
 
 
 def _players() -> dict[str, str]:
-    out = subprocess.run(
-        ["playerctl", "-a", "metadata", "--format", "{{playerName}}.{{playerInstance}} {{status}}"],
-        capture_output=True,
-        text=True,
-    ).stdout
+    """Every player by the name `playerctl -p` takes, and what it is doing."""
+    names = subprocess.run(["playerctl", "-l"], capture_output=True, text=True).stdout.split()
     found: dict[str, str] = {}
-    for line in out.splitlines():
-        name, _, status = line.strip().rpartition(" ")
-        if name:
-            found[name] = status
+    for name in names:
+        status = subprocess.run(
+            ["playerctl", "-p", name, "status"], capture_output=True, text=True
+        ).stdout.strip()
+        found[name] = status
     return found
+
+
+def _muted() -> bool:
+    out = subprocess.run(
+        ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"], capture_output=True, text=True
+    ).stdout
+    return "[MUTED]" in out
 
 
 EXTENSION_ID = "pcfjlemgcbbpppclachnobhnnnahpgoj"
@@ -113,14 +118,17 @@ def _host(url: str) -> str:
 class Before:
     tabs: list[dict[str, Any]]
     volume: float
+    muted: bool
     playing: set[str]
     workspace: int
+    windows: set[str]
 
 
 def _record(browser: BrowserClient) -> Before:
     playing = {name for name, status in _players().items() if status == "Playing"}
     workspace = int(_hyprctl("activeworkspace").get("id", 1))
-    return Before(browser.tabs(), _volume(), playing, workspace)
+    windows = {c["address"] for c in _hyprctl("clients")}
+    return Before(browser.tabs(), _volume(), _muted(), playing, workspace, windows)
 
 
 def _restore(browser: BrowserClient, before: Before) -> list[str]:
@@ -144,12 +152,24 @@ def _restore(browser: BrowserClient, before: Before) -> list[str]:
         if tab["id"] not in still and urlparse(tab["url"]).scheme in ("http", "https"):
             browser.open(tab["url"], "new")
             done.append(f"reopened {_host(tab['url'])}")
+    # an application the demo started ("open spotify" once launched the desktop app)
+    for client in _hyprctl("clients"):
+        if client["address"] not in before.windows and "chrom" not in client["class"].lower():
+            subprocess.run(
+                ["hyprctl", "dispatch", "closewindow", f"address:{client['address']}"],
+                capture_output=True,
+            )
+            done.append(f"closed the {client['class']} window it opened")
     if before.volume >= 0:
         subprocess.run(
             ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", f"{before.volume:.2f}"],
             capture_output=True,
         )
-        done.append(f"volume back to {before.volume:.2f}")
+        subprocess.run(
+            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "1" if before.muted else "0"],
+            capture_output=True,
+        )
+        done.append(f"volume back to {before.volume:.2f}{', muted' if before.muted else ''}")
     subprocess.run(["hyprctl", "dispatch", "workspace", str(before.workspace)], capture_output=True)
     done.append(f"workspace back to {before.workspace}")
     return done
@@ -371,13 +391,15 @@ async def run(args: argparse.Namespace) -> int:
                 "google-chrome-stable",
                 f"--profile-directory={_profile()}",
                 "--new-window",
-                "https://open.spotify.com/",
+                # the first address is the tab in front, so Spotify waits behind it
                 "https://duckduckgo.com/",
+                "https://open.spotify.com/",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        time.sleep(6)
+        # Spotify's player takes 6 to 10 s to render on this machine (measured)
+        time.sleep(10)
         subprocess.run(["hyprctl", "dispatch", "workspace", str(free[1])], capture_output=True)
         time.sleep(0.6)
         for line in LINES:
