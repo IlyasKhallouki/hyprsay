@@ -82,6 +82,15 @@ def _players() -> dict[str, str]:
     return found
 
 
+def _profile() -> str:
+    """The Chrome profile the owner used last, which is where the extension is loaded."""
+    state = Path("~/.config/google-chrome/Local State").expanduser()
+    try:
+        return str(json.loads(state.read_text())["profile"].get("last_used") or "Default")
+    except (OSError, ValueError, KeyError):
+        return "Default"
+
+
 def _host(url: str) -> str:
     return (urlparse(url).hostname or "").removeprefix("www.")
 
@@ -321,13 +330,27 @@ async def run(args: argparse.Namespace) -> int:
     workdir = Path(args.clips)
     workdir.mkdir(parents=True, exist_ok=True)
     try:
-        if not any(_host(t["url"]) == "open.spotify.com" for t in before.tabs):
-            probe_client.open("https://open.spotify.com/", "new")
-            time.sleep(4)
-        # an empty workspace in front, so "open chrome" has somewhere to bring Chrome from
+        # A window of its own, in the owner's profile, so the demo never touches a window
+        # the owner is using: Spotify's player behind, a neutral page in front, so that
+        # "open spotify" is a real switch. It opens on an empty workspace, and the demo
+        # then starts from another empty one, so "open chrome" has somewhere to come from.
         used = {w["id"] for w in _hyprctl("workspaces")}
-        empty = next(n for n in range(9, 40) if n not in used)
-        subprocess.run(["hyprctl", "dispatch", "workspace", str(empty)], capture_output=True)
+        free = [n for n in range(9, 60) if n not in used]
+        subprocess.run(["hyprctl", "dispatch", "workspace", str(free[0])], capture_output=True)
+        time.sleep(0.4)
+        subprocess.Popen(
+            [
+                "google-chrome-stable",
+                f"--profile-directory={_profile()}",
+                "--new-window",
+                "https://open.spotify.com/",
+                "https://duckduckgo.com/",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        time.sleep(6)
+        subprocess.run(["hyprctl", "dispatch", "workspace", str(free[1])], capture_output=True)
         time.sleep(0.6)
         for line in LINES:
             probe.before(line)
