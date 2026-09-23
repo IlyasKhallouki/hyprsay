@@ -106,6 +106,10 @@ def _restore(browser: BrowserClient, before: Before) -> list[str]:
         if status == "Playing" and name not in before.playing:
             subprocess.run(["playerctl", "-p", name, "pause"], capture_output=True)
             done.append(f"paused {name}")
+        elif status != "Playing" and name in before.playing:
+            # the owner's own music was playing before the demo and "pause" reached it
+            subprocess.run(["playerctl", "-p", name, "play"], capture_output=True)
+            done.append(f"resumed {name}")
     now = browser.tabs()
     was = {t["id"] for t in before.tabs}
     for tab in now:
