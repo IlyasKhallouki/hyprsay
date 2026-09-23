@@ -990,3 +990,21 @@ def test_the_last_gesture_is_not_offered_again_on_another_window():
     previous = affordances.Previous(intent="scroll", said="scroll down", address="0x9")
     found = harvest(replace(machine(INSIDE, heard="a bit more"), previous=previous))
     assert sourced(found, affordances.GESTURE) == []
+
+
+def test_bringing_a_window_here_is_offered_when_here_was_said():
+    found = harvest(machine(WITH_MUSIC, heard="move my browser here"))
+    here = [r for r in found.ranked if r.affordance.capability == "move_to_workspace"]
+    # every window that is not already on the workspace in front
+    assert {r.affordance.handle for r in here} == {"0x1", "0x3"}
+    assert all(r.affordance.label.startswith("bring ") for r in here)
+    quiet = harvest(machine(WITH_MUSIC, heard="go to my browser"))
+    assert not [r for r in quiet.ranked if r.affordance.capability == "move_to_workspace"]
+
+
+def test_what_the_last_command_touched_comes_first_and_says_so():
+    previous = affordances.Previous(intent="launch_app", said="open spotify", app="Spotify")
+    found = harvest(replace(machine(WITH_MUSIC, heard="focus on it"), previous=previous))
+    windows = sourced(found, affordances.WINDOW)
+    assert windows[0].affordance.handle == "0x3"
+    assert "just" in windows[0].affordance.label

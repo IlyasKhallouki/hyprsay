@@ -252,6 +252,11 @@ _SPOKEN_PUNCTUATION: dict[str, str] = {
     "hyphen": "-",
 }
 _GLUE = frozenset(_SPOKEN_PUNCTUATION.values())
+# Endings that turn exactly two spoken words into an address. A recognizer writes
+# "GitHub. com" and the normalizer drops the full stop, so "github com" arrives with the
+# dot gone. Two words and a known ending, and nothing longer: "linus tech com" is still a
+# phrase, and so is anything whose last word is an ordinary one.
+_ENDINGS = frozenset({"com", "org", "net", "io", "dev", "ai", "app", "co", "fr", "tv", "gg"})
 # a word that can only mean a path, a query or a scheme. "colon" is the important one:
 # `javascript:` typed into an address bar runs script in the page that is already open,
 # with that page's cookies, so a sentence spoken by anyone in the room (or by a video)
@@ -289,6 +294,8 @@ def normalize_host(spoken: str) -> str:
     if any(w in _NOT_A_HOST_WORDS for w in words) or any(c in text for c in _NOT_A_HOST_CHARS):
         raise RecipeError("only a plain site name can be opened, never a scheme or a path")
     host = _glue(words)
+    if len(words) == 2 and words[1] in _ENDINGS and words[0] not in _SPOKEN_PUNCTUATION:
+        host = f"{words[0]}.{words[1]}"
     if " " in host:
         raise RecipeError("that sounded like a phrase rather than an address, so try a search")
     if "." not in host:

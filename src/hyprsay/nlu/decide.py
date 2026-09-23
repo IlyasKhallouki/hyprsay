@@ -160,6 +160,7 @@ COMPLETE = frozenset(
     }
 )
 _ACTS = frozenset({Verdict.ACT, Verdict.ACT_SWAP})
+IN_APP = frozenset({Intent.RUN_RECIPE, Intent.CLICK_CONTROL, Intent.PRESS_CHORD})
 
 
 def fast(parse: Parse, decision: Decision) -> bool:
@@ -174,8 +175,14 @@ def fast(parse: Parse, decision: Decision) -> bool:
     because "open spotify" can mean a browser tab or a website as well, and only the
     harvest knows which of those exist.
     """
-    if parse.intent in GRAMMAR_ONLY or decision.verdict is Verdict.REFUSE:
+    if parse.intent in GRAMMAR_ONLY:
         return True
+    if decision.verdict is Verdict.REFUSE:
+        # a refusal stands, except the grammar's own reading of something inside a
+        # window: "that sounded like a phrase rather than an address" is the address
+        # parser failing on "github. com", not a rule saying no. The harvest applies the
+        # real rules (`recipes.refusal_for`) to whatever it offers instead.
+        return parse.intent not in IN_APP
     action = decision.action
     if action is None:
         return False

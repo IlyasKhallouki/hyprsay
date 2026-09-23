@@ -202,3 +202,11 @@ def test_a_grammar_that_could_not_settle_it_is_not_fast(verdict):
     assert not decide.fast(
         Parse(Intent.FOCUS_WINDOW, Slots(window_ref="youtube")), Decision(verdict)
     )
+
+
+def test_a_grammar_refusal_of_something_inside_a_window_is_not_fast():
+    # "open github. com" was refused by the address parser, which is a parse failure and
+    # not a safety rule, so Jev gets to see the utterance
+    parse = Parse(Intent.RUN_RECIPE, Slots(text="github com"))
+    refused = Decision(Verdict.REFUSE, reason="that sounded like a phrase rather than an address")
+    assert not decide.fast(parse, refused)

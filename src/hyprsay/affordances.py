@@ -169,7 +169,7 @@ from hyprsay.adapters.base import Adapter, Affordance, Capability, Context, Trus
 from hyprsay.config import Config
 from hyprsay.jev import tokens
 from hyprsay.lexicon import mixed_script, phonetic_key, sanitize, similarity
-from hyprsay.model import Action, App, Direction, Intent, Window
+from hyprsay.model import Action, App, DesktopState, Direction, Intent, Window
 from hyprsay.nlu import tiers
 from hyprsay.nlu.resolve import LexiconLike
 
@@ -190,6 +190,7 @@ SERVICE = "service"
 RECIPE = "recipe"
 CONTROL = "control"
 CLOSE = "close"
+HERE = "here"
 
 # The last tie break, after what was said and after recency: the cheapest and most
 # reversible source first, which is the same order `nlu/tiers.py` puts the intents in.
@@ -207,6 +208,7 @@ ORDER: tuple[str, ...] = (
     RECIPE,
     CONTROL,
     CLOSE,
+    HERE,
 )
 _RANK: dict[str, int] = {source: index for index, source in enumerate(ORDER)}
 
@@ -229,6 +231,7 @@ QUOTA: dict[str, int] = {
     RECIPE: 6,
     CONTROL: 6,
     CLOSE: 8,
+    HERE: 8,
 }
 
 # The highest tier an option may carry. Not `base.MAX_OFFERABLE_TIER`, which is 2 and is
@@ -276,11 +279,16 @@ class Previous:
     intent: str = ""
     said: str = ""
     address: str = ""
+    # the trusted name of the application it acted on. A launch has no window yet when
+    # it is remembered, so this is how "focus on it" finds the window that appeared.
+    app: str = ""
 
 
 # the words that ask for a window to be closed. `nlu/tiers.LITERAL_VERBS` is the table;
 # it is read, not copied, so the harvest and the verdict can never disagree about it.
 CLOSING_VERBS = tiers.LITERAL_VERBS[Intent.CLOSE_WINDOW]
+# the words that ask for a window to come to the workspace in front
+HERE_WORDS = frozenset({"here", "bring", "pull", "move"})
 
 
 @dataclass(frozen=True)
@@ -529,10 +537,68 @@ def _windows(context: Machine) -> list[Ranked]:
         found = context.lexicon.match_windows(context.heard, state, limit=len(state.windows))
         scores = {window.address: score for window, score in found}
     out: list[Ranked] = []
+    last = context.previous
     for index, window in enumerate(sorted(state.windows, key=lambda w: w.focus_rank), 1):
         label, trust = _window_label(window, context.lexicon)
+        recency = window.focus_rank
+        if _touched_last(window, last, context.lexicon):
+            # "it", "that one": what the last command acted on is the likeliest thing a
+            # pronoun means, so it ranks first and the label says why
+            label = f"{label}, {'just opened' if last.intent == 'launch_app' else 'just used'}"
+            recency = -1
         option = _option(capability, f"w{index}", label, window.address, trust)
-        out.append(Ranked(option, WINDOW, scores.get(window.address, 0.0), window.focus_rank))
+        out.append(Ranked(option, WINDOW, scores.get(window.address, 0.0), recency))
+    return out
+
+
+def _touched_last(window: Window, last: Previous, lexicon: LexiconLike | None) -> bool:
+    """Did the last command act on this window? By address when it named one, and by the
+    trusted application name when it was a launch, whose window came afterwards."""
+    if not last.intent:
+        return False
+    if last.address:
+        return window.address == last.address
+    if not last.app or lexicon is None:
+        return False
+    app = lexicon.app_for_window(window)
+    return app is not None and app.trusted and app.name == last.app
+
+
+def here_workspace(state: DesktopState) -> str:
+    """The workspace in front: the compositor's own answer, else the focused window's."""
+    if state.active_workspace_id:
+        return str(state.active_workspace_id)
+    focused = state.focused
+    return str(focused.workspace_id) if focused is not None else ""
+
+
+def _here(context: Machine) -> list[Ranked]:
+    """Every window on another workspace, as something to bring to this one.
+
+    Only when the words ask for it ("move my browser here", "bring spotify"), for the
+    reason `_closing` gives: a list of every window twice over would crowd out what was
+    asked. The tier comes from `nlu/tiers.tier`, which makes a move that keeps the window
+    in view tier 1.
+    """
+    state = context.state
+    if not state.windows or not HERE_WORDS & set(spoken(context.heard)):
+        return []
+    current = here_workspace(state)
+    scores: dict[str, float] = {}
+    if context.lexicon is not None:
+        found = context.lexicon.match_windows(context.heard, state, limit=len(state.windows))
+        scores = {window.address: score for window, score in found}
+    out: list[Ranked] = []
+    for index, window in enumerate(sorted(state.windows, key=lambda w: w.focus_rank), 1):
+        if str(window.workspace_id) == current:
+            continue
+        action = Action(Intent.MOVE_TO_WORKSPACE, window=window, workspace=current)
+        capability = _capability(
+            Intent.MOVE_TO_WORKSPACE, WINDOW, "bring a window to this workspace", context, action
+        )
+        name, trust = _named_by(window, context.lexicon)
+        option = _option(capability, f"h{index}", f"bring {name} here", window.address, trust)
+        out.append(Ranked(option, HERE, scores.get(window.address, 0.0), window.focus_rank))
     return out
 
 
@@ -1313,6 +1379,7 @@ def harvest(
         (RECIPE, _recipes),
         (CONTROL, _controls),
         (CLOSE, _closing),
+        (HERE, _here),
     ):
         try:
             built.extend(gather(context))
@@ -1333,6 +1400,7 @@ __all__ = [
     "APP",
     "CLOSE",
     "CONTROL",
+    "HERE",
     "GESTURE",
     "LAYOUT",
     "MAX_INAPP_TIER",
@@ -1354,6 +1422,7 @@ __all__ = [
     "claims",
     "cost",
     "harvest",
+    "here_workspace",
     "said",
     "spoken",
     "target",

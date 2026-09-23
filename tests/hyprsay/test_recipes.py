@@ -316,6 +316,11 @@ def test_words_that_came_with_a_recipe_that_types_nothing_are_simply_not_perform
         ("gmail", "mail.google.com"),
         ("news dot ycombinator dot com", "news.ycombinator.com"),
         ("my dash site dot org", "my-site.org"),
+        # a recognizer writes "GitHub. com" and the normalizer drops the full stop: a
+        # label and a known ending, and nothing else, is still an address
+        ("github com", "github.com"),
+        ("YouTube com", "youtube.com"),
+        ("claude ai", "claude.ai"),
     ],
 )
 def test_a_spoken_address_becomes_a_host(spoken, host):
@@ -336,6 +341,9 @@ def test_a_spoken_address_becomes_a_host(spoken, host):
         ("user at github dot com", "never a scheme or a path"),
         ("github.com/issues", "never a scheme or a path"),
         ("linus tech tips", "sounded like a phrase"),
+        # only two words, and only a known ending: three words are still a phrase
+        ("linus tech com", "sounded like a phrase"),
+        ("hold the line", "sounded like a phrase"),
         ("ltt", "not a site I know"),
         ("xn dash dash 80ak6aa92e dot com", "encoded address is refused"),
         ("192 dot 168 dot 1 dot 1", "no domain ending"),

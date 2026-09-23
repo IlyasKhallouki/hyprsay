@@ -187,6 +187,8 @@ _CAPABILITIES = frozenset(
         Intent.FOCUS_WINDOW.value,
         # closing, offered only when the verb was said (`affordances._closing`)
         Intent.CLOSE_WINDOW.value,
+        # bringing a window here, offered only when that was asked (`affordances._here`)
+        Intent.MOVE_TO_WORKSPACE.value,
         Intent.SWITCH_WORKSPACE.value,
         Intent.LAUNCH_APP.value,
         Intent.VOLUME.value,
@@ -1452,7 +1454,7 @@ class Understander:
             cfg=self.cfg,
             adapters=self.adapters,
             drift=self._drift(),
-            previous=affordances.Previous(last.intent, last.said, last.address)
+            previous=affordances.Previous(last.intent, last.said, last.address, last.app)
             if last is not None
             else affordances.Previous(),
         )
@@ -1992,6 +1994,10 @@ class Understander:
         if intent in (Intent.FOCUS_WINDOW, Intent.CLOSE_WINDOW):
             window = state.by_address(handle)
             return Action(intent, window=window) if window is not None else None
+        if intent is Intent.MOVE_TO_WORKSPACE:
+            window = state.by_address(handle)
+            here = affordances.here_workspace(state)
+            return Action(intent, window=window, workspace=here) if window is not None else None
         if intent is Intent.SWITCH_WORKSPACE:
             return Action(intent, workspace=handle) if handle else None
         if intent is Intent.LAUNCH_APP:
