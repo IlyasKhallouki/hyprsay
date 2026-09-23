@@ -25,8 +25,8 @@ acts on the reading; this module is the part that can be tested without either.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
 from hyprsay.adapters.base import Affordance
@@ -89,6 +89,8 @@ class Reading:
     words_p: float = 0.0
     # the option the model liked second, for the journal and for "did you mean"
     runner_up: str = ""
+    # the whole action answer, so `choose` can set aside what cannot run
+    probabilities: dict[str, float] = field(default_factory=dict)
 
 
 def read(
@@ -125,7 +127,73 @@ def read(
     span = answers.get(WORDS)
     if isinstance(span, ChoiceAnswer) and span.choice in words:
         said, said_p = words[span.choice], span.p1
-    return Reading(addressed=heard, step=step, words=said, words_p=said_p, runner_up=runner_up)
+    probabilities = dict(action.probabilities) if isinstance(action, ChoiceAnswer) else {}
+    return Reading(
+        addressed=heard,
+        step=step,
+        words=said,
+        words_p=said_p,
+        runner_up=runner_up,
+        probabilities=probabilities,
+    )
+
+
+# Options that do the same thing to the same place, so they must not split the vote.
+# Going to an address in a new tab and in the current one is the case the replay found:
+# 0.56 and 0.37 between them, 0.93 together, and a margin rule that read it as unsure.
+SAME_THING: dict[str, str] = {"open_url": "go to an address", "go_to_url": "go to an address"}
+
+
+def family(affordance: Affordance) -> str:
+    """Which vote an option counts toward: its own id, unless it is a synonym of another."""
+    if affordance.capability == Intent.RUN_RECIPE.value:
+        recipe = affordance.handle.rsplit(" ", 1)[-1]
+        if recipe in SAME_THING:
+            return f"{affordance.handle.rsplit(' ', 1)[0]} {SAME_THING[recipe]}"
+    return affordance.id
+
+
+def choose(
+    reading: Reading,
+    options: Mapping[str, Affordance],
+    viable: Callable[[Affordance], bool] = lambda _: True,
+) -> plan.Step | None:
+    """The option to act on, with its probability and margin counted by vote.
+
+    Two rules, both about what the answer means rather than what it says:
+
+    - an option that cannot run cannot win. A "found by name" option with no name said,
+      or an address that is not one, is set aside, and its probability goes nowhere: it
+      is not handed to the runner-up, so nothing gains evidence it did not get.
+    - synonyms are one vote (`SAME_THING`). The winner inside the vote is the option the
+      model liked best.
+
+    `none` is a vote of its own. None comes back when it wins, or when nothing is left.
+    """
+    votes: dict[str, float] = {}
+    best: dict[str, tuple[float, str]] = {}
+    for key, p in reading.probabilities.items():
+        if key == bank.NONE:
+            votes[bank.NONE] = votes.get(bank.NONE, 0.0) + p
+            continue
+        found = options.get(key)
+        if found is None or not viable(found):
+            continue
+        vote = family(found)
+        votes[vote] = votes.get(vote, 0.0) + p
+        if p > best.get(vote, (-1.0, ""))[0]:
+            best[vote] = (p, key)
+    if not votes:
+        return None
+    ranked = sorted(votes.items(), key=lambda kv: -kv[1])
+    top, total = ranked[0]
+    if top == bank.NONE or top not in best:
+        return None
+    second = ranked[1][1] if len(ranked) > 1 else 0.0
+    key = best[top][1]
+    return plan.Step(
+        position=1, id=key, affordance=options[key], probability=total, margin=total - second
+    )
 
 
 # ------------------------------------------------------------------ the grammar's fast path
@@ -203,7 +271,10 @@ __all__ = [
     "MAX_SPAN_WORDS",
     "SPAN_PREFIX",
     "WORDS",
+    "SAME_THING",
     "Reading",
+    "choose",
+    "family",
     "fast",
     "questions",
     "read",

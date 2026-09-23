@@ -76,7 +76,11 @@ class STT:
 class Jev:
     route: str = "typesafe"
     model: str = "typesafe-ai/jev"
-    deadline_s: float = 0.9
+    # 0.9 s was set when seven requests ran side by side and one straggler could be
+    # dropped. With one request per command a cut-off answer is a failed command: the
+    # replay of real voice lost 2 of 114 to it. Jev measured 315 ms p50 with tails to
+    # 0.6-1.6 s from this machine, so 1.4 s keeps nearly all of them.
+    deadline_s: float = 1.4
     # how long a late answer stays acceptable for tiers 0 and 1 (docs/PLAN.md 5.5)
     late_answer_s: float = 2.5
     token_cap: int = 1800

@@ -1256,7 +1256,9 @@ class Understander:
             if chained is not None:
                 return chained
         reading = decide.read(answers.single, options, words)
-        step = reading.step
+        step = decide.choose(
+            reading, options, lambda found: self._viable(found, state, heard, reading.words)
+        )
         self.last_exchange["decided"] = {
             "source": "single",
             "id": step.id if step else "",
@@ -1280,6 +1282,19 @@ class Understander:
         if decision is None:
             return self._suggest(heard, "that cannot be done from here", rehearable=False)
         return decision
+
+    def _viable(
+        self, affordance: Affordance, state: DesktopState, heard: _Heard, words: str
+    ) -> bool:
+        """Could this option run with what was said? An adapter capability that has to be
+        asked needs a query; one of our own needs `_action_for` to build it."""
+        if affordance.adapter != affordances.SELF:
+            if turns.needs_fetching(affordance):
+                return bool(words) or bool(turns.strip_carrier(heard.text, heard.raw.split()))
+            return True
+        if affordance.capability not in _CAPABILITIES:
+            return True
+        return self._action_for(affordance, state, first=True, words=words) is not None
 
     def _single_request(
         self,
@@ -2037,8 +2052,11 @@ class Understander:
                 recipe = recipes.by_name(inside)
                 if recipe is not None and recipe.needs_text:
                     # what it types is what the speaker pointed at; a search with nothing
-                    # to search for is dropped rather than run empty
-                    return Action(intent, window=window, verb=inside, text=words) if words else None
+                    # to search for is dropped rather than run empty, and an address that
+                    # is not one ("ltt") is dropped here rather than refused after a countdown
+                    if not words or not _addressable(inside, words):
+                        return None
+                    return Action(intent, window=window, verb=inside, text=words)
             return Action(intent, window=window, verb=inside)
         # RESIZE_WINDOW and MOVE_WINDOW need a direction or a size word that a step
         # Choice does not carry (`REQUIRED`). Rather than invent one, the plan is dropped
@@ -3194,6 +3212,17 @@ def _template(intent: Intent, slots: Slots) -> Action:
         number=slots.number,
         text=slots.text if intent in ARGUMENT_TEXT else None,
     )
+
+
+def _addressable(recipe: str, words: str) -> bool:
+    """Would a recipe that types an address accept these words? Anything else accepts any."""
+    if recipe not in decide.SAME_THING:
+        return True
+    try:
+        recipes.normalize_host(words)
+    except recipes.RecipeError:
+        return False
+    return True
 
 
 def _percent(words: str) -> int | None:

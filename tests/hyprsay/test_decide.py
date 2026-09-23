@@ -210,3 +210,46 @@ def test_a_grammar_refusal_of_something_inside_a_window_is_not_fast():
     parse = Parse(Intent.RUN_RECIPE, Slots(text="github com"))
     refused = Decision(Verdict.REFUSE, reason="that sounded like a phrase rather than an address")
     assert not decide.fast(parse, refused)
+
+
+# --------------------------------------------------------------------------- choosing
+
+
+def _recipe(ident: str, name: str) -> Affordance:
+    return Affordance(
+        id=ident, label=name, kind="recipe", tier=2, handle=f"0x2 {name}", adapter="hyprsay",
+        capability="run_recipe", trust=Trust.TRUSTED,
+    )  # fmt: skip
+
+
+def _reading(probabilities: dict[str, float]) -> decide.Reading:
+    return decide.Reading(addressed=0.95, probabilities=probabilities)
+
+
+def test_two_ways_of_going_to_an_address_are_one_vote():
+    options = {"r1": _recipe("r1", "open_url"), "r2": _recipe("r2", "go_to_url"),
+               "r3": _recipe("r3", "search_web")}  # fmt: skip
+    step = decide.choose(_reading({"r1": 0.56, "r2": 0.37, "r3": 0.05, "none": 0.02}), options)
+    assert step is not None and step.id == "r1"
+    assert step.probability == pytest.approx(0.93)
+    assert step.margin == pytest.approx(0.88)
+
+
+def test_a_search_and_a_find_are_not_the_same_vote():
+    options = {"r1": _recipe("r1", "search_web"), "r2": _recipe("r2", "find")}
+    step = decide.choose(_reading({"r1": 0.5, "r2": 0.45, "none": 0.05}), options)
+    assert step is not None and step.margin == pytest.approx(0.05)
+
+
+def test_an_option_that_cannot_run_cannot_win():
+    options = {"x1": _aff("x1"), "x2": _aff("x2")}
+    step = decide.choose(
+        _reading({"x1": 0.7, "x2": 0.25, "none": 0.05}), options, viable=lambda a: a.id != "x1"
+    )
+    assert step is not None and step.id == "x2"
+    assert step.probability == pytest.approx(0.25)
+
+
+def test_none_can_win_the_choice():
+    step = decide.choose(_reading({"x1": 0.2, "none": 0.8}), {"x1": _aff("x1")})
+    assert step is None
