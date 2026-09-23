@@ -40,7 +40,7 @@ import logging
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import urlparse
 
@@ -80,7 +80,7 @@ SEARCH = Capability(
 )
 FIND = Capability(
     "browser.find",
-    "find something on this site by searching for it, then play or open it",
+    "find and play something on this site by name",
     tier=1,
     kind="page search",
     params=(Param("query", "text"),),
@@ -93,10 +93,12 @@ CLOSE = Capability(
     "browser.close_tab", "close this browser tab", tier=2, kind="browser tab", verbs=("close",)
 )
 ANYWHERE = (TAB, OPEN, ADDRESS)
-# the page's own options come first when a browser is in front: measured live, 14 tabs and
-# 10 top sites filled the browser's quota and "close this tab" never reached Jev
-IN_FRONT = (SEARCH, FIND, CLOSE, SCROLL, HISTORY, CLICK)
-BY_ID = {cap.id: cap for cap in (*ANYWHERE, *IN_FRONT)}
+# The page's own options come first when a browser is in front: measured live, 14 tabs and
+# 10 top sites filled the browser's quota and "close this tab" never reached Jev. The
+# page's links come last of all: `base.offer` stops at 50 options, and 40 links placed
+# before the tabs and sites once cut "open youtube.com in a new tab" before it was built.
+IN_FRONT = (SEARCH, FIND, CLOSE, SCROLL, HISTORY)
+BY_ID = {cap.id: cap for cap in (*ANYWHERE, *IN_FRONT, CLICK)}
 
 # how old a reading may be before a harvest refreshes it itself
 # the engine refreshes at key down, on focus and after every act (`daemon._warm_browser`),
@@ -110,7 +112,7 @@ SYNC_TIMEOUT_S = 0.6
 MAX_TABS = 8
 # how long the find capability lets a search settle before reading the results
 FIND_SETTLE_MS = 1500
-MAX_CLICKS = 40
+MAX_CLICKS = 24
 MAX_FOUND = 12
 
 _CHROMIUM = ("chrom", "brave")
@@ -278,10 +280,18 @@ class Browser:
     def capabilities(self, context: Context) -> tuple[Capability, ...]:
         if not is_browser(context.state.focused):
             return ANYWHERE
+        find = replace(FIND, summary=self._find_summary())
         if self._privacy.never:
             # clicking by name and finding by name both need the page's own text
-            return (*(c for c in IN_FRONT if c not in (CLICK, FIND)), *ANYWHERE)
-        return (*IN_FRONT, *ANYWHERE)
+            return (*(c for c in IN_FRONT if c is not FIND), *ANYWHERE)
+        return (*(find if c is FIND else c for c in IN_FRONT), *ANYWHERE, CLICK)
+
+    def _find_summary(self) -> str:
+        """The find capability named for the site in front ("... on spotify by name"),
+        from the address's host, which is the site's own name and not page text."""
+        active = self._active_tab()
+        site = _site_name(_host(str(active.get("url", "")))) if active else ""
+        return f"find and play something on {site} by name" if site else FIND.summary
 
     def resolve(
         self, capability: str, slots: Mapping[str, Any], context: Context
