@@ -82,11 +82,25 @@ def _players() -> dict[str, str]:
     return found
 
 
+EXTENSION_ID = "pcfjlemgcbbpppclachnobhnnnahpgoj"
+
+
 def _profile() -> str:
-    """The Chrome profile the owner used last, which is where the extension is loaded."""
-    state = Path("~/.config/google-chrome/Local State").expanduser()
+    """The Chrome profile hypruse-browser is loaded in, else the one used last.
+
+    Chrome records an extension per profile, in that profile's preferences, so the profile
+    whose preferences name the extension is the one whose windows the extension can see.
+    """
+    root = Path("~/.config/google-chrome").expanduser()
+    for prefs in sorted(root.glob("*/Secure Preferences")) + sorted(root.glob("*/Preferences")):
+        try:
+            if EXTENSION_ID in prefs.read_text(errors="ignore"):
+                return prefs.parent.name
+        except OSError:
+            continue
     try:
-        return str(json.loads(state.read_text())["profile"].get("last_used") or "Default")
+        state = json.loads((root / "Local State").read_text())
+        return str(state["profile"].get("last_used") or "Default")
     except (OSError, ValueError, KeyError):
         return "Default"
 
