@@ -182,7 +182,7 @@ def test_closing_the_tab_names_it_and_needs_the_verb(adapter):
 
 def test_a_label_is_cut_to_the_length_every_option_has(adapter):
     long = dict(TABS[0], title="x" * 200)
-    adapter._client.tabs = lambda: [long]
+    adapter._fixed[""].tabs = lambda: [long]
     assert all(len(o.label) <= browser.MAX_LABEL for o in offered(adapter, BEHIND, "browser.tab"))
 
 
@@ -192,7 +192,7 @@ def test_a_label_is_cut_to_the_length_every_option_has(adapter):
 def test_choosing_a_tab_switches_to_it(adapter):
     option = by_label(offered(adapter, BEHIND, "browser.tab"), "spotify")
     outcome = adapter.perform(option.capability, option.handle, Context(state=BEHIND))
-    assert outcome.ok and ("activate", 3) in adapter._client.calls
+    assert outcome.ok and ("activate", 3) in adapter._fixed[""].calls
 
 
 def test_choosing_a_site_opens_it_in_a_new_tab(adapter):
@@ -200,29 +200,29 @@ def test_choosing_a_site_opens_it_in_a_new_tab(adapter):
         adapter, browser.OPEN, {}, Context(state=BEHIND, heard="open youtube")
     )[0]
     adapter.perform(option.capability, option.handle, Context(state=BEHIND))
-    assert ("open", "https://www.youtube.com/", "new") in adapter._client.calls
+    assert ("open", "https://www.youtube.com/", "new") in adapter._fixed[""].calls
 
 
 def test_choosing_a_result_clicks_it(adapter):
     option = by_label(offered(adapter, IN_FRONT, "browser.click"), "result 2")
     outcome = adapter.perform(option.capability, option.handle, Context(state=IN_FRONT))
-    assert ("click", "s1", "e3") in adapter._client.calls
+    assert ("click", "s1", "e3") in adapter._fixed[""].calls
     assert outcome.message == "Clicked result 2: The new GPU is here."
 
 
 def test_a_click_on_a_page_that_re_rendered_finds_the_same_element_again(adapter):
     option = by_label(offered(adapter, IN_FRONT, "browser.click"), "result 2")
     rerendered = dict(RESULTS, snapshot_id="s2")
-    adapter._client.snapshots.append(rerendered)
-    adapter._client.stale_once = True
+    adapter._fixed[""].snapshots.append(rerendered)
+    adapter._fixed[""].stale_once = True
     adapter.perform(option.capability, option.handle, Context(state=IN_FRONT))
-    assert ("click", "s2", "e3") in adapter._client.calls
+    assert ("click", "s2", "e3") in adapter._fixed[""].calls
 
 
 def test_a_search_types_the_words_and_submits(adapter):
     option = offered(adapter, IN_FRONT, "browser.search")[0]
     adapter.perform(option.capability, option.handle, Context(state=IN_FRONT, words="ltt"))
-    assert ("type", "s1", "e1", "ltt", True) in adapter._client.calls
+    assert ("type", "s1", "e1", "ltt", True) in adapter._fixed[""].calls
 
 
 def test_a_search_with_no_words_does_nothing(adapter):
@@ -234,7 +234,7 @@ def test_a_search_with_no_words_does_nothing(adapter):
 def test_an_address_is_opened_as_the_host_it_spells(adapter):
     option = offered(adapter, BEHIND, "browser.address")[0]
     adapter.perform(option.capability, option.handle, Context(state=BEHIND, words="github dot com"))
-    assert ("open", "https://github.com/", "new") in adapter._client.calls
+    assert ("open", "https://github.com/", "new") in adapter._fixed[""].calls
 
 
 def test_a_handle_the_adapter_never_minted_is_refused(adapter):
@@ -247,18 +247,18 @@ def test_a_handle_the_adapter_never_minted_is_refused(adapter):
 
 def test_finding_types_the_query_into_the_search_box_and_offers_what_came_back(adapter):
     found = base.candidates(adapter, browser.FIND, {"query": "new gpu"}, Context(state=IN_FRONT))
-    assert ("type", "s1", "e1", "new gpu", True) in adapter._client.calls
+    assert ("type", "s1", "e1", "new gpu", True) in adapter._fixed[""].calls
     # what shares the query's words comes first
     assert found[0].label == "The new GPU is here"
     # and nothing that shares no word with it is offered at all
     assert [o.label for o in found] == ["The new GPU is here"]
     chosen = found[0]
     adapter.perform(chosen.capability, chosen.handle, Context(state=IN_FRONT))
-    assert ("click", "s1", "e3") in adapter._client.calls
+    assert ("click", "s1", "e3") in adapter._fixed[""].calls
 
 
 def test_a_page_with_no_search_box_cannot_find_anything(adapter):
-    adapter._client.snapshots = [dict(RESULTS, elements=RESULTS["elements"][1:])]
+    adapter._fixed[""].snapshots = [dict(RESULTS, elements=RESULTS["elements"][1:])]
     with pytest.raises(AdapterError):
         base.candidates(adapter, browser.FIND, {"query": "x"}, Context(state=IN_FRONT))
 
@@ -276,7 +276,7 @@ def test_a_tab_is_named_by_its_site_alone_unless_two_share_one(adapter):
         "switch to the spotify tab (open.spotify.com)",
     ]
     twin = dict(TABS[0], id=8, active=False, title="another video - YouTube")
-    adapter._client.tabs = lambda: [*TABS, twin]
+    adapter._fixed[""].tabs = lambda: [*TABS, twin]
     adapter.forget_page()  # the tabs are cached for a moment; a new tab is a new reading
     labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
     assert "switch to the youtube tab: another video - YouTube" in labels
@@ -286,7 +286,7 @@ def test_a_tab_is_named_by_its_site_alone_unless_two_share_one(adapter):
 def test_a_title_that_matches_a_redaction_rule_is_never_sent(adapter):
     adapter._privacy = Privacy()
     secret = dict(TABS[0], id=8, active=False, title="My Password Vault - YouTube")
-    adapter._client.tabs = lambda: [*TABS, secret]
+    adapter._fixed[""].tabs = lambda: [*TABS, secret]
     labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
     assert not any("Vault" in label for label in labels)
 
@@ -294,7 +294,7 @@ def test_a_title_that_matches_a_redaction_rule_is_never_sent(adapter):
 def test_never_withholds_titles_and_what_is_on_the_page(adapter):
     adapter._privacy = Privacy(titles="never")
     twin = dict(TABS[0], id=8, active=False, title="another video - YouTube")
-    adapter._client.tabs = lambda: [*TABS, twin]
+    adapter._fixed[""].tabs = lambda: [*TABS, twin]
     assert all("video" not in o.label for o in offered(adapter, BEHIND, "browser.tab"))
     assert offered(adapter, IN_FRONT, "browser.click") == ()
     assert offered(adapter, IN_FRONT, "browser.close_tab")[0].label == "close this tab"
@@ -305,7 +305,7 @@ def test_never_withholds_titles_and_what_is_on_the_page(adapter):
 def test_only_the_main_link_of_a_result_is_named_by_its_number(adapter):
     channel = element("e6", "Linus Tech Tips", group="g1", index=2, size=3)
     menu = element("e7", "Action menu", kind="button", role="button", group="g1", index=2, size=3)
-    adapter._client.snapshots = [dict(RESULTS, elements=[*RESULTS["elements"], channel, menu])]
+    adapter._fixed[""].snapshots = [dict(RESULTS, elements=[*RESULTS["elements"], channel, menu])]
     labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
     assert labels.count("result 2: The new GPU is here") == 1
     assert "Linus Tech Tips" in labels and "Action menu" in labels
@@ -313,13 +313,13 @@ def test_only_the_main_link_of_a_result_is_named_by_its_number(adapter):
 
 
 def test_a_known_site_that_was_said_is_offered_even_when_it_is_not_a_top_site(adapter):
-    adapter._client.top_sites = lambda: []
+    adapter._fixed[""].top_sites = lambda: []
     options = base.candidates(
         adapter, browser.OPEN, {}, Context(state=BEHIND, heard="open github please")
     )
     assert [o.label for o in options] == ["open github.com in a new tab"]
     adapter.perform(options[0].capability, options[0].handle, Context(state=BEHIND))
-    assert ("open", "https://github.com/", "new") in adapter._client.calls
+    assert ("open", "https://github.com/", "new") in adapter._fixed[""].calls
 
 
 def test_a_site_already_offered_as_a_top_site_is_not_offered_twice(adapter):
@@ -356,7 +356,7 @@ def test_the_pages_own_options_come_before_tabs_and_sites(adapter):
 
 def test_the_main_list_is_offered_before_the_rest_of_the_page(adapter):
     sidebar = [element(f"n{n}", f"Sidebar link {n}") for n in range(browser.MAX_CLICKS)]
-    adapter._client.snapshots = [dict(RESULTS, elements=[*sidebar, *RESULTS["elements"]])]
+    adapter._fixed[""].snapshots = [dict(RESULTS, elements=[*sidebar, *RESULTS["elements"]])]
     labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
     assert labels[:3] == [
         "result 1: I built a PC for 10 years",
@@ -368,13 +368,13 @@ def test_the_main_list_is_offered_before_the_rest_of_the_page(adapter):
 
 def test_a_page_that_could_not_be_read_is_not_asked_again_by_every_capability(adapter):
     def loading(tab_id=None, *, max=120, settle_ms=0):
-        adapter._client.calls.append(("snapshot", tab_id, settle_ms))
+        adapter._fixed[""].calls.append(("snapshot", tab_id, settle_ms))
         raise BrowserError("timeout", "no answer in time")
 
-    adapter._client.snapshot = loading
+    adapter._fixed[""].snapshot = loading
     for capability in ("browser.search", "browser.click", "browser.scroll", "browser.close_tab"):
         offered(adapter, IN_FRONT, capability)
-    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 1
+    assert sum(1 for call in adapter._fixed[""].calls if call[0] == "snapshot") == 1
 
 
 def test_a_harvest_during_a_warm_serves_what_the_warm_stored_instead_of_asking(
@@ -383,27 +383,27 @@ def test_a_harvest_during_a_warm_serves_what_the_warm_stored_instead_of_asking(
     monkeypatch.setattr(browser, "SYNC_TIMEOUT_S", 0.05)
     adapter._idle.clear()  # a warm is reading the page
     assert offered(adapter, IN_FRONT, "browser.search") == ()
-    assert adapter._client.calls == []
+    assert adapter._fixed[""].calls == []
     adapter._idle.set()
     assert offered(adapter, IN_FRONT, "browser.search")[0].label == "search youtube.com for words"
 
 
 def test_a_site_whose_search_box_is_not_on_the_page_yet_is_searched_by_its_address(adapter):
     buttons_only = [e for e in RESULTS["elements"] if e.get("kind") != "search"]
-    adapter._client.snapshots = [dict(RESULTS, elements=buttons_only)]
+    adapter._fixed[""].snapshots = [dict(RESULTS, elements=buttons_only)]
     options = offered(adapter, IN_FRONT, "browser.search")
     assert [o.label for o in options] == ["search youtube.com for words"]
     adapter.perform(
         options[0].capability, options[0].handle, Context(state=IN_FRONT, words="linus tech tips")
     )
     url = "https://www.youtube.com/results?search_query=linus%20tech%20tips"
-    assert ("open", url, "current") in adapter._client.calls
+    assert ("open", url, "current") in adapter._fixed[""].calls
 
 
 def test_a_site_with_no_search_address_and_no_search_box_offers_no_search(adapter):
     page = dict(RESULTS, url="https://example.com/", elements=[element("e5", "Home")])
-    adapter._client.snapshots = [page]
-    adapter._client.tabs = lambda: [dict(TABS[0], url="https://example.com/"), TABS[1]]
+    adapter._fixed[""].snapshots = [page]
+    adapter._fixed[""].tabs = lambda: [dict(TABS[0], url="https://example.com/"), TABS[1]]
     assert offered(adapter, IN_FRONT, "browser.search") == ()
 
 
@@ -411,12 +411,12 @@ def test_a_page_read_just_after_it_changed_is_read_again_soon(adapter, monkeypat
     monkeypatch.setattr(browser, "YOUNG_FRESH_S", 0.0)
     offered(adapter, IN_FRONT, "browser.search")
     offered(adapter, IN_FRONT, "browser.click")
-    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 1
+    assert sum(1 for call in adapter._fixed[""].calls if call[0] == "snapshot") == 1
     tab = by_label(offered(adapter, IN_FRONT, "browser.tab"), "spotify")
     adapter.perform(tab.capability, tab.handle, Context(state=IN_FRONT))
     offered(adapter, IN_FRONT, "browser.search")
     offered(adapter, IN_FRONT, "browser.click")
-    assert sum(1 for call in adapter._client.calls if call[0] == "snapshot") == 3
+    assert sum(1 for call in adapter._fixed[""].calls if call[0] == "snapshot") == 3
 
 
 SPOTIFY_RESULTS = {
@@ -446,7 +446,7 @@ SPOTIFY_RESULTS = {
 
 
 def _find(adapter, heard):
-    adapter._client.snapshots = [SPOTIFY_RESULTS]
+    adapter._fixed[""].snapshots = [SPOTIFY_RESULTS]
     context = Context(state=IN_FRONT, heard=heard)
     return base.candidates(adapter, browser.FIND, {"query": "hold the line"}, context)
 
@@ -462,7 +462,7 @@ def test_asked_to_play_a_found_item_is_played_by_its_own_play_button(adapter):
     dessina = by_label(found, "Dessina")
     assert dessina.label == "play Hold The Line, Dessina"
     adapter.perform(dessina.capability, dessina.handle, Context(state=IN_FRONT))
-    assert ("click", "s2", "e60") in adapter._client.calls
+    assert ("click", "s2", "e60") in adapter._fixed[""].calls
 
 
 def test_the_results_are_numbered_and_not_the_filter_tabs_or_the_footer(adapter):
@@ -480,7 +480,7 @@ def test_the_results_are_numbered_and_not_the_filter_tabs_or_the_footer(adapter)
             item(f"c{n}", "Linus Tech Tips", "g3", n, 3),
             item(f"m{n}", "More actions", "g3", n, 3, kind="button"),
         ]
-    adapter._client.snapshots = [dict(RESULTS, elements=[*filters, *footer, *videos])]
+    adapter._fixed[""].snapshots = [dict(RESULTS, elements=[*filters, *footer, *videos])]
     labels = [o.label for o in offered(adapter, IN_FRONT, "browser.click")]
     assert "result 2: A long video title number 2" in labels
     assert not any(label.startswith("result") and "Filter" in label for label in labels)
@@ -491,7 +491,7 @@ def test_an_extensions_own_page_is_not_offered_as_a_tab(adapter):
     url = "chrome-extension://ojjomngeodfmogkcdfalfiijbgibcklh/o.html"
     page = {"id": 5, "window_id": 1, "index": 2, "active": False, "audible": False,
             "title": "Options", "url": url}  # fmt: skip
-    adapter._client.tabs = lambda: [*TABS, page]
+    adapter._fixed[""].tabs = lambda: [*TABS, page]
     labels = [o.label for o in offered(adapter, BEHIND, "browser.tab")]
     assert not any("ojjomngeodf" in label for label in labels)
 
@@ -502,14 +502,79 @@ def _scroll_down(adapter):
 
 
 def test_a_scroll_on_a_page_still_too_short_to_scroll_waits_for_it_to_render(adapter):
-    adapter._client.headings = [{"scroll_y": 0, "scroll_height": 945}] * 2
+    adapter._fixed[""].headings = [{"scroll_y": 0, "scroll_height": 945}] * 2
     outcome = _scroll_down(adapter)
     assert outcome.ok
-    assert sum(1 for call in adapter._client.calls if call[0] == "scroll") == 3
+    assert sum(1 for call in adapter._fixed[""].calls if call[0] == "scroll") == 3
 
 
 def test_a_page_that_never_grows_says_there_is_nothing_to_scroll(adapter, monkeypatch):
     monkeypatch.setattr(browser, "RENDER_WAIT_S", 0.05)
-    adapter._client.headings = [{"scroll_y": 0, "scroll_height": 945}] * 1000
+    adapter._fixed[""].headings = [{"scroll_y": 0, "scroll_height": 945}] * 1000
     outcome = _scroll_down(adapter)
     assert not outcome.ok and "nothing further" in outcome.message
+
+
+# --------------------------------------------------------------------------- profiles
+
+
+MANET_URL = "https://staging.manet-app.com/campaigns"
+MANET_TAB = {"id": 21, "window_id": 2, "index": 0, "active": True, "audible": False,
+             "title": "Campaign | Manet", "url": MANET_URL}  # fmt: skip
+MANET_PAGE = dict(
+    RESULTS,
+    snapshot_id="s9",
+    tab_id=21,
+    url=MANET_TAB["url"],
+    elements=[element("m1", "Search campaigns", kind="search", role="searchbox")],
+)
+MANET_WINDOW = Window("0x9", "google-chrome", "google-chrome", "Campaign | Manet - Google Chrome",
+                      1, "1", 0, focus_rank=0)  # fmt: skip
+
+
+@pytest.fixture
+def two_profiles(monkeypatch, tmp_path):
+    """Two Chrome profiles, each with the extension and its own host: YouTube and Spotify
+    in one, Manet in the other, and the Manet window is the one in front."""
+    monkeypatch.setattr(browser, "FIND_POLL_S", 0.0)
+    (tmp_path / "hypruse").mkdir()
+    (tmp_path / "hypruse" / "browser.sock").touch()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    personal, work = FakeClient(), FakeClient()
+    work.tabs = lambda: [MANET_TAB]
+    work.snapshots = [MANET_PAGE]
+    adapter = browser.Browser(clients={"a": personal, "b": work})
+    state = DesktopState(windows=(MANET_WINDOW, CHROME, KITTY), active_address="0x9", locked=False)
+    return adapter, personal, work, state
+
+
+def test_the_page_in_front_is_read_from_the_profile_whose_window_is_in_front(two_profiles):
+    adapter, personal, work, state = two_profiles
+    searches = offered(adapter, state, "browser.search")
+    assert [o.label for o in searches] == ["search staging.manet-app.com for words"]
+    assert ("snapshot", 21, 0) in work.calls
+    assert not any(call[0] == "snapshot" for call in personal.calls)
+
+
+def test_a_tab_in_another_profile_is_switched_to_through_that_profile(two_profiles):
+    adapter, personal, work, state = two_profiles
+    spotify = by_label(offered(adapter, state, "browser.tab"), "spotify")
+    adapter.perform(spotify.capability, spotify.handle, Context(state=state))
+    assert ("activate", 3) in personal.calls
+    assert not any(call[0] == "activate" for call in work.calls)
+
+
+def test_a_site_opens_in_the_profile_whose_window_is_in_front(two_profiles):
+    adapter, personal, work, state = two_profiles
+    context = Context(state=state, heard="open youtube")
+    site = base.candidates(adapter, browser.OPEN, {}, context)[0]
+    adapter.perform(site.capability, site.handle, context)
+    assert any(call[0] == "open" for call in work.calls)
+    assert not any(call[0] == "open" for call in personal.calls)
+
+
+def test_an_installed_web_app_window_is_not_a_browser_the_extension_can_act_in():
+    web_app = "chrome-agimnkijcaahngcdmfeangaknmldooml-Profile_2"
+    app = Window("0x7", web_app, web_app, "YouTube", 1, "1", 0)
+    assert not browser.is_browser(app)
+    assert browser.is_browser(CHROME)

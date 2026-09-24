@@ -58,7 +58,12 @@ from hyprsay.adapters.base import (
 )
 from hyprsay.config import Privacy
 from hyprsay.model import Outcome, Window
-from hypruse.browser.client import BrowserClient, BrowserError, BrowserUnavailable, socket_path
+from hypruse.browser.client import (
+    BrowserClient,
+    BrowserError,
+    BrowserUnavailable,
+    socket_paths,
+)
 
 log = logging.getLogger(__name__)
 
@@ -150,11 +155,16 @@ _CHROMIUM = ("chrom", "brave")
 _WORDS_TO_SKIP = frozenset({"the", "a", "an", "of", "by", "on", "in", "to", "and", "for", "play"})
 
 
+# an installed web app's window ("chrome-agimnkijcaahngcdmfeangaknmldooml-Profile_2" is
+# YouTube's): Chrome, but not a window the extension lists or can act in
+_WEB_APP = re.compile(r"^(chrome|chromium|brave)-[a-p]{32}-")
+
+
 def is_browser(window: Window | None) -> bool:
     if window is None:
         return False
     cls = (window.cls or window.initial_class or "").lower()
-    return any(marker in cls for marker in _CHROMIUM)
+    return any(marker in cls for marker in _CHROMIUM) and not _WEB_APP.match(cls)
 
 
 def _host(url: str) -> str:
@@ -193,8 +203,20 @@ class Browser:
 
     name = NAME
 
-    def __init__(self, client: BrowserClient | None = None, privacy: Privacy | None = None) -> None:
-        self._client = client
+    def __init__(
+        self, client: Any = None, privacy: Privacy | None = None, clients: Any = None
+    ) -> None:
+        # one client per Chrome profile with the extension in it: each profile runs a host
+        # of its own on a socket of its own and sees only its own windows. `client` and
+        # `clients` are for tests; the engine finds the sockets itself.
+        self._fixed: dict[str, Any] | None = (
+            dict(clients) if clients is not None else ({"": client} if client is not None else None)
+        )
+        self._clients: dict[str, BrowserClient] = {}
+        # which profile each tab lives in, from the last reading of the tabs
+        self._owner: dict[int, str] = {}
+        # the title of the window in front, which says whose tab is in front
+        self._front_title = ""
         self._privacy = privacy or Privacy()
         self._minted = Minted(limit=512)
         # what a click handle pointed at, so a click on a page that re-rendered can find
@@ -212,10 +234,31 @@ class Browser:
 
     # ------------------------------------------------------------------ the connection
 
-    def _browser(self, timeout: float = 2.0) -> BrowserClient:
-        if self._client is None:
-            self._client = BrowserClient(timeout=timeout)
-        return self._client
+    def _connected(self) -> dict[str, Any]:
+        """A client for every profile whose extension is listening, in socket order."""
+        if self._fixed is not None:
+            return self._fixed
+        live = {str(path): path for path in socket_paths()}
+        for gone in set(self._clients) - set(live):
+            self._clients.pop(gone).close()
+        for key, path in live.items():
+            if key not in self._clients:
+                self._clients[key] = BrowserClient(path, timeout=2.0)
+        return {key: self._clients[key] for key in live}
+
+    def _browser(self, tab_id: Any = None) -> Any:
+        """The client for the profile a tab lives in; with no tab, the profile in front."""
+        clients = self._connected()
+        if not clients:
+            raise AdapterError(
+                "the browser extension is not connected: is Chrome running with "
+                "hypruse-browser loaded? (hypruse browser status)"
+            )
+        if tab_id is None:
+            front = self._active_tab()
+            tab_id = front.get("id") if front else None
+        key = self._owner.get(int(tab_id)) if tab_id is not None else None
+        return clients.get(key) if key in clients else next(iter(clients.values()))
 
     def _call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         try:
@@ -238,16 +281,33 @@ class Browser:
         `timeout` bounds each call, so a harvest can afford to ask and a warm can afford
         to wait for a page that is still loading.
         """
-        client = self._browser()
+        clients = self._connected()
+        if not clients:
+            raise AdapterError("the browser extension is not connected")
         now = time.monotonic()
         reading = self._reading
         if force or now - reading.tabs_at > TABS_FRESH_S:
-            tabs = self._call(client.call, "tabs.list", timeout=timeout).get("tabs", [])
+            tabs: list[dict[str, Any]] = []
+            owner: dict[int, str] = {}
+            failed: AdapterError | None = None
+            for key, client in clients.items():
+                try:
+                    found = self._call(client.call, "tabs.list", timeout=timeout).get("tabs", [])
+                except AdapterError as exc:
+                    failed = exc  # one profile that does not answer costs only its tabs
+                    continue
+                for tab in found:
+                    owner[int(tab.get("id", -1))] = key
+                tabs.extend(found)
+            if failed is not None and not tabs:
+                raise failed
             with self._lock:
-                reading.tabs, reading.tabs_at = tabs, time.monotonic()
+                reading.tabs, reading.tabs_at, self._owner = tabs, time.monotonic(), owner
         if sites and (force or now - reading.sites_at > SITES_FRESH_S):
             try:
-                found = self._call(client.call, "sites.top", timeout=timeout).get("sites", [])
+                found = self._call(self._browser().call, "sites.top", timeout=timeout).get(
+                    "sites", []
+                )
             except AdapterError:
                 found = []
             with self._lock:
@@ -257,10 +317,13 @@ class Browser:
             young = reading.snapshot_at - reading.changed_at < LOADING_S
             stale = now - reading.snapshot_at > (YOUNG_FRESH_S if young else SNAPSHOT_FRESH_S)
             other_tab = active is not None and reading.snapshot_for != active.get("id")
-            if force or stale or other_tab:
+            if active is not None and (force or stale or other_tab):
                 try:
+                    # the tab named outright: each profile's "last focused window" is its
+                    # own, and only one of them is the window in front
+                    args = {"max": 120, "settle_ms": 0, "tab_id": active["id"]}
                     snap = self._call(
-                        client.call, "page.snapshot", {"max": 120, "settle_ms": 0}, timeout=timeout
+                        self._browser(active["id"]).call, "page.snapshot", args, timeout=timeout
                     )
                 except AdapterError:
                     # a page Chrome will not let an extension into (a new tab page, the Web
@@ -273,7 +336,7 @@ class Browser:
 
     def warm(self, *, page: bool = True) -> None:
         """Refresh in the background, once at a time. Never raises, never blocks."""
-        if self._warming.is_set() or not socket_path().exists():
+        if self._warming.is_set() or not socket_paths():
             return
         self._warming.set()
         self._idle.clear()
@@ -295,9 +358,20 @@ class Browser:
             self._reading.tabs_at = 0.0
             self._reading.changed_at = time.monotonic()
 
-    def _active_tab(self) -> dict[str, Any] | None:
-        # the extension lists the focused window first, so its active tab comes first
-        return next((t for t in self._reading.tabs if t.get("active")), None)
+    def _active_tab(self, tabs: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        """The tab in front: of each window's active tab, the one whose title the window in
+        front carries ("Campaign | Manet - Google Chrome"). With one profile the extension
+        lists its focused window first, so the first active tab is the fallback."""
+        actives = [t for t in (self._reading.tabs if tabs is None else tabs) if t.get("active")]
+        front = self._front_title
+        titled = [
+            t
+            for t in actives
+            if len(str(t.get("title", ""))) >= 3 and front.startswith(str(t.get("title", "")))
+        ]
+        if titled:
+            return max(titled, key=lambda t: len(str(t.get("title", ""))))
+        return actives[0] if actives else None
 
     def _ensure(self, page: bool) -> None:
         if time.monotonic() - self._failed_at < RETRY_AFTER_S:
@@ -317,8 +391,11 @@ class Browser:
 
     def probe(self) -> tuple[bool, str]:
         try:
-            hello = self._browser().connect()
-        except BrowserUnavailable:
+            clients = self._connected()
+            if not clients:
+                raise BrowserUnavailable("no socket")
+            hello = next(iter(clients.values())).connect()
+        except (BrowserUnavailable, AdapterError):
             return False, (
                 "the browser extension is not connected: load hypruse-browser in Chrome and "
                 "run hypruse browser install"
@@ -326,7 +403,7 @@ class Browser:
         return True, f"hypruse-browser {hello.get('extension', '?')} in {hello.get('browser', '?')}"
 
     def can_serve(self, context: Context) -> bool:
-        return any(is_browser(w) for w in context.state.windows) and socket_path().exists()
+        return any(is_browser(w) for w in context.state.windows) and bool(socket_paths())
 
     def capabilities(self, context: Context) -> tuple[Capability, ...]:
         if not is_browser(context.state.focused):
@@ -351,6 +428,8 @@ class Browser:
         if declared is None:
             raise AdapterError(f"{capability} is not something the browser does")
         in_front = is_browser(context.state.focused)
+        if in_front and context.state.focused is not None:
+            self._front_title = str(context.state.focused.title or "")
         if capability == FIND.id:
             return self._find(str(slots.get("query", "")), context.heard)
         self._ensure(page=in_front)
@@ -358,7 +437,7 @@ class Browser:
             tabs = list(self._reading.tabs)
             sites = list(self._reading.sites)
             snap = dict(self._reading.snapshot)
-        active = next((t for t in tabs if t.get("active")), None)
+        active = self._active_tab(tabs)
         if capability == TAB.id:
             return self._tabs(tabs, active if in_front else None, context.heard)
         if capability == OPEN.id:
@@ -427,9 +506,13 @@ class Browser:
     def perform(self, capability: str, handle: str, context: Context) -> Outcome:
         if handle not in self._minted:
             raise AdapterError("that is not an option the browser offered, so nothing was done")
-        client = self._browser()
         kind, _, rest = handle.partition(" ")
         label = self._minted.label_for(handle)
+        # the profile the tab lives in; opening something goes to the profile in front
+        first = rest.split(" ", 1)[0]
+        client = self._browser(
+            int(first) if kind not in ("open", "address", "here") and first.isdigit() else None
+        )
         if kind == "tab":
             self._call(client.activate, int(rest))
             self.forget_page()
@@ -476,14 +559,16 @@ class Browser:
             self.forget_page()
             return Outcome(True, "Closed the tab.")
         if kind == "click":
-            self._on_element(handle, rest, lambda s, e: client.click(s, e))
+            self._on_element(handle, rest, client, lambda s, e: client.click(s, e))
             self.forget_page()
             return Outcome(True, f"Clicked {label}." if label else "Clicked.")
         if kind == "search":
             if not context.words.strip():
                 raise AdapterError("say what to search for as well")
             words = context.words
-            self._on_element(handle, rest, lambda s, e: client.type(s, e, words, submit=True))
+            self._on_element(
+                handle, rest, client, lambda s, e: client.type(s, e, words, submit=True)
+            )
             self.forget_page()
             return Outcome(True, "Searched.")
         if kind == "searchurl":
@@ -649,7 +734,7 @@ class Browser:
 
     # ------------------------------------------------------------------ acting on elements
 
-    def _on_element(self, handle: str, rest: str, act: Any) -> None:
+    def _on_element(self, handle: str, rest: str, client: Any, act: Any) -> None:
         """Act on the element a handle names, finding it again if the page re-rendered."""
         tab, snapshot_id, element_id = rest.split(" ", 2)
         try:
@@ -659,7 +744,7 @@ class Browser:
             if "stale" not in str(exc):
                 raise
         role, name, index = self._targets.get(handle, ("", "", 0))
-        fresh = self._call(self._browser().snapshot, int(tab))
+        fresh = self._call(client.snapshot, int(tab))
         again = next(
             (
                 e
@@ -681,8 +766,10 @@ class Browser:
         query = query.strip()
         if not query:
             return ()
-        client = self._browser(timeout=3.0)
-        snap = self._call(client.snapshot)
+        front = self._active_tab()
+        tab_id = int(front["id"]) if front else None
+        client = self._browser(tab_id)
+        snap = self._call(client.snapshot, tab_id)
         box = next((e for e in snap.get("elements", []) if e.get("kind") == "search"), None)
         if box is None:
             raise AdapterError("this page has no search box to find that with")
@@ -693,7 +780,7 @@ class Browser:
         while time.monotonic() < deadline:
             time.sleep(FIND_POLL_S)
             try:
-                results = self._call(client.snapshot)
+                results = self._call(client.snapshot, tab_id)
             except AdapterError:
                 continue  # the page is navigating; look again
             ranked = _ranked_for(query, _clickable(results))
