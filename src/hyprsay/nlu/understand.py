@@ -1316,7 +1316,9 @@ class Understander:
             # "none" won, or nothing that won could run. The grammar's own reading, when it
             # had one, is then the best there is: live, "close this app" with a Chrome app
             # window in front (named only by its class) was countdown by the grammar and
-            # "none" by Jev five times out of five
+            # "none" by Jev five times out of five. Not a reading that carries free text:
+            # "search for deft bunk" said after "open spotify" is the grammar's web search,
+            # the swallowing the single request exists to stop (`decide.fast`)
             return self._fall_back(fallback) or self._unsure(reading, options, heard)
         # anything else that won is acted on, however narrowly (`tiers.verdict`)
         affordance = step.affordance
@@ -1329,8 +1331,13 @@ class Understander:
         return decision
 
     def _fall_back(self, fallback: Decision | None) -> Decision | None:
-        """The grammar's reading when Jev could not be asked, noted as such."""
-        if fallback is None:
+        """The grammar's reading when Jev could not be asked or found nothing, noted as such.
+
+        Not a reading that carries free text: "search for deft bunk" said after "open
+        spotify" is the grammar's web search, the swallowing the single request exists to
+        stop (`decide.fast`). A close, a focus or a launch names its target outright.
+        """
+        if fallback is None or _carries_text(fallback):
             return None
         self.last_exchange["path"] = "degraded, grammar"
         return fallback
@@ -1939,9 +1946,10 @@ class Understander:
         note = replace(note, asked_ms=self.last_exchange.get("elapsed_ms") or 0.0)
         if elapsed is not None:
             self.last_exchange["elapsed_ms"] = elapsed
-        # the best result is taken however narrowly it won (`tiers.verdict`); only "none"
-        # ends the turn with nothing done
-        picked = plan.read(answers.steps, options, count=1, floor=0.0, margin=0.0)
+        # a clear winner only: a fetched result is one particular song or page, and a
+        # narrow one is a guess ("play the song, but turn the volume down" played "Africa"
+        # when it was allowed to). Giving up here names no options either.
+        picked = plan.read(answers.steps, options, count=1)
         if not picked.steps:
             return self._gave_up(note, _GAVE_UP.get(picked.cut, turns.Stopped.UNANSWERED), heard)
         chosen = picked.steps[0]
@@ -3542,6 +3550,11 @@ def _ordinal_item(text: str) -> int | None:
     if rest and rest[0].removesuffix("s") not in _LIST_ITEMS:
         return None
     return number
+
+
+def _carries_text(decision: Decision) -> bool:
+    action = decision.action
+    return action is None or action.intent in ARGUMENT_TEXT or bool(action.text)
 
 
 def _words_fit(capability: Capability, words: str) -> bool:

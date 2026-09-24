@@ -2328,3 +2328,24 @@ def test_when_jev_finds_nothing_the_grammars_own_reading_acts():
     )
     assert decision.verdict is Verdict.COUNTDOWN
     assert decision.action.window == FOX_A
+
+
+def test_when_jev_finds_nothing_a_grammar_search_does_not_run_in_its_place():
+    # "search for deft bunk" after "open spotify": the grammar's web search is the
+    # swallowing the single request exists to stop
+    parses = {
+        "search for deft bunk": Parse(Intent.RUN_RECIPE, Slots(verb="search_web", text="deft bunk"))
+    }
+    u = Understander(
+        SINGLE, FakeLexicon(APPS), FakeGrammar(parses), FakeEvaluator({**ADDRESSED}),
+        normalizer=FakeNormalizer(), adapters=(),
+    )  # fmt: skip
+    firefox_in_front = desktop(FOX_A, TERMINAL, active=FOX_A.address)
+    decision = asyncio.run(
+        u.understand(
+            Transcript("search for deft bunk", "test"),
+            firefox_in_front,
+            pinned_address=FOX_A.address,
+        )
+    )
+    assert decision.verdict not in ACTING
