@@ -37,9 +37,15 @@ class PTT:
 
 @dataclass(frozen=True)
 class STT:
-    # "hybrid": local first, the gateway only when the local transcript leads nowhere
+    # "cloud_first": both models on every clip, the gateway's answer when it comes within
+    # cloud_deadline_s, the local one otherwise. The default since the owner's first
+    # spoken session, where the local model heard "Spotify" as "spotter" (stt/hybrid.py
+    # has the measurement). Every command's audio goes to the gateway (docs/PRIVACY.md).
+    # "hybrid": local first, the gateway only when the local transcript leads nowhere.
     # "local": never send audio anywhere. "cloud": always use the gateway model.
-    backend: str = "hybrid"
+    backend: str = "cloud_first"
+    # the gateway measured 532 ms p50 and 1.24 s at worst over 24 commands
+    cloud_deadline_s: float = 1.5
     local_model: str = "parakeet-110m"  # or "moonshine-tiny"
     # measured from this machine: fish 452 ms and 8 of 8 on degraded audio;
     # gemini-3.5-transcribe takes about 3.2 s and is not suitable for commands
@@ -220,7 +226,7 @@ class Config:
 
 _CHOICES = {
     ("ptt", "transport"): {"event"},
-    ("stt", "backend"): {"hybrid", "local", "cloud"},
+    ("stt", "backend"): {"cloud_first", "hybrid", "local", "cloud"},
     ("stt", "local_model"): {"parakeet-110m", "moonshine-tiny"},
     ("stt", "stream_model"): {"kroko-en-streaming", ""},
     ("jev", "route"): {"typesafe", "evaluate"},

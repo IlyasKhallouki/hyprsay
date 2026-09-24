@@ -179,9 +179,12 @@ than silently ignored.
 
 ```toml
 [stt]
-backend = "hybrid"          # "local": audio never leaves.  "cloud": always use the gateway
+backend = "cloud_first"     # both models, the gateway's words when they come in time
+                            # "hybrid": local, the gateway only as a rescue
+                            # "local": audio never leaves.  "cloud": the gateway alone
 cloud_model = "fish-audio/transcribe-1"
-incremental = true          # carry out a clause while the key is still held
+cloud_deadline_s = 1.5      # how long cloud_first waits before taking the local words
+incremental = true          # carry out a clause while the key is still held (local modes)
 chunk_ms = 400              # how often the growing buffer is decoded during a hold
 settle_decodes = 2          # identical decodes before a trailing clause counts as finished
 stream_model = ""           # "kroko-en-streaming" for a genuine online recognizer

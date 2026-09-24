@@ -7,7 +7,7 @@ from hyprsay import config
 
 def test_an_absent_file_is_a_working_configuration(tmp_path):
     cfg = config.load(tmp_path / "missing.toml", env={})
-    assert cfg.stt.backend == "hybrid"
+    assert cfg.stt.backend == "cloud_first"
     assert cfg.stt.local_model == "parakeet-110m"
     assert cfg.jev.zero_data_retention is True
     # a duplicate request races a slow one, and the deadline leaves room for it

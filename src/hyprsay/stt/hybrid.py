@@ -50,6 +50,48 @@ class HybridRecognizer:
                 await close()
 
 
+class CloudFirstRecognizer:
+    """Both models on every clip, the cloud's answer when it comes in time.
+
+    The owner's first spoken session (2026-09-24) heard "Spotify" as "spotter",
+    "spotterfie" and "part of fine" through the local model. Measured on 24 spoken
+    commands: the cloud model 24 of 24 at 532 ms p50, the local one 21 of 24 at 180 ms,
+    and the local model five times larger 20 of 24 at 573 ms. So the cloud leads, and the
+    local decode, started at the same moment, answers when the cloud fails or is late.
+
+    Named "cloudfirst:" so that nothing decodes during the hold (`stream.make_partials`):
+    those partials would come from the local model this exists to overrule, and a clause
+    acted on early from them would be the mishearing all over again.
+    """
+
+    def __init__(self, local: Recognizer, cloud: Recognizer, *, deadline_s: float) -> None:
+        self.local = local
+        self.cloud = cloud
+        self.deadline_s = deadline_s
+        self.name = f"cloudfirst:{cloud.name}+{local.name}"
+
+    async def transcribe(self, pcm: bytes, sample_rate: int) -> Transcript:
+        local = asyncio.create_task(self.local.transcribe(pcm, sample_rate))
+        try:
+            async with asyncio.timeout(self.deadline_s):
+                heard = await self.cloud.transcribe(pcm, sample_rate)
+            if heard.text.strip():
+                local.cancel()
+                return heard
+        except (SttError, TimeoutError, httpx.HTTPError, OSError):
+            pass  # the local decode is already running; it answers instead
+        return await local
+
+    async def warm(self) -> None:
+        warmers = [_method(recognizer, "warm") for recognizer in (self.local, self.cloud)]
+        await asyncio.gather(*(warm() for warm in warmers if warm))
+
+    async def aclose(self) -> None:
+        for recognizer in (self.local, self.cloud):
+            if close := _method(recognizer, "aclose"):
+                await close()
+
+
 def _method(recognizer: Recognizer, name: str):
     method = getattr(recognizer, name, None)
     return method if callable(method) else None
@@ -65,6 +107,12 @@ def make_recognizer(
     works; the daemon can tell by the absence of `rescue`.
     """
     backend = cfg.stt.backend
+    if backend == "cloud_first":
+        local = LocalRecognizer(cfg.stt.local_model)
+        if not key:
+            return local
+        cloud = _cloud(cfg, key, transport)
+        return CloudFirstRecognizer(local, cloud, deadline_s=cfg.stt.cloud_deadline_s)
     if backend == "local":
         return LocalRecognizer(cfg.stt.local_model)
     if backend == "cloud":

@@ -7,6 +7,7 @@ import io
 import json
 import tarfile
 import threading
+import time
 import wave
 
 import httpx
@@ -30,6 +31,7 @@ from hyprsay.stt import (
 )
 from hyprsay.stt import gateway as gateway_module
 from hyprsay.stt import local as local_module
+from hyprsay.stt.hybrid import CloudFirstRecognizer
 
 KEY = "test-key-not-real"
 PCM = (np.sin(np.arange(8000) / 9.0) * 12000).astype("<i2").tobytes()
@@ -319,7 +321,7 @@ def test_make_recognizer_cloud_without_a_key_says_so():
 
 
 def test_make_recognizer_hybrid_is_local_with_a_cloud_rescue():
-    recognizer = make_recognizer(Config(), KEY)
+    recognizer = make_recognizer(Config(stt=STT(backend="hybrid")), KEY)
     assert isinstance(recognizer, HybridRecognizer)
     assert recognizer.local.name == "local:parakeet-110m"
     assert recognizer.cloud.name == "gateway:fish-audio/transcribe-1"
@@ -327,7 +329,7 @@ def test_make_recognizer_hybrid_is_local_with_a_cloud_rescue():
 
 
 def test_make_recognizer_hybrid_without_a_key_degrades_to_local():
-    recognizer = make_recognizer(Config(), None)
+    recognizer = make_recognizer(Config(stt=STT(backend="hybrid")), None)
     assert isinstance(recognizer, LocalRecognizer)
     assert not hasattr(recognizer, "rescue")
 
@@ -593,3 +595,57 @@ def test_a_failed_download_is_a_model_error(tmp_path):
     with pytest.raises(ModelError, match="HTTP 404"):
         models.ensure("moonshine-tiny", root=tmp_path, transport=serving(b"", status=404)[0])
     assert not models.installed("moonshine-tiny", tmp_path)
+
+
+# --------------------------------------------------------------------------- cloud first
+
+
+class Failing(FakeRecognizer):
+    async def transcribe(self, pcm, sample_rate):
+        self.calls += 1
+        raise SttUnavailable("HTTP 503")
+
+
+class Slow(FakeRecognizer):
+    async def transcribe(self, pcm, sample_rate):
+        self.calls += 1
+        await asyncio.sleep(1.0)
+        return Transcript(text=self.text, backend=self.name)
+
+
+def test_cloud_first_takes_the_clouds_words_when_they_come():
+    local, cloud = (
+        FakeRecognizer("local:x", "close spotterfie"),
+        FakeRecognizer("gateway:y", "close spotify"),
+    )
+    heard = asyncio.run(CloudFirstRecognizer(local, cloud, deadline_s=1.0).transcribe(PCM, 16000))
+    assert (heard.text, heard.backend) == ("close spotify", "gateway:y")
+
+
+@pytest.mark.parametrize("cloud", [Failing("gateway:y", ""), FakeRecognizer("gateway:y", "")])
+def test_cloud_first_falls_back_to_the_local_words_when_the_cloud_has_none(cloud):
+    local = FakeRecognizer("local:x", "close spotterfie")
+    heard = asyncio.run(CloudFirstRecognizer(local, cloud, deadline_s=1.0).transcribe(PCM, 16000))
+    assert (heard.text, heard.backend) == ("close spotterfie", "local:x")
+
+
+def test_cloud_first_does_not_wait_past_its_deadline():
+    local, cloud = FakeRecognizer("local:x", "open spotify"), Slow("gateway:y", "open spotify")
+    started = time.perf_counter()
+    heard = asyncio.run(CloudFirstRecognizer(local, cloud, deadline_s=0.1).transcribe(PCM, 16000))
+    assert heard.backend == "local:x"
+    assert time.perf_counter() - started < 0.6
+
+
+def test_cloud_first_is_the_default_and_decodes_nothing_during_the_hold():
+    from hyprsay.stt.stream import make_partials
+
+    recognizer = make_recognizer(Config(), KEY)
+    assert isinstance(recognizer, CloudFirstRecognizer)
+    # partials would come from the local model this exists to overrule
+    assert make_partials(Config(), recognizer) is None
+    close(recognizer)
+
+
+def test_cloud_first_without_a_key_is_local():
+    assert isinstance(make_recognizer(Config(), None), LocalRecognizer)
