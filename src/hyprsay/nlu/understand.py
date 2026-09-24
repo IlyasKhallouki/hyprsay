@@ -1313,8 +1313,11 @@ class Understander:
                 Verdict.NOTHING, reason="that did not sound like a command", heard=heard.said
             )
         if step is None:
-            # "none" won, or nothing that won could run
-            return self._unsure(reading, options, heard)
+            # "none" won, or nothing that won could run. The grammar's own reading, when it
+            # had one, is then the best there is: live, "close this app" with a Chrome app
+            # window in front (named only by its class) was countdown by the grammar and
+            # "none" by Jev five times out of five
+            return self._fall_back(fallback) or self._unsure(reading, options, heard)
         # anything else that won is acted on, however narrowly (`tiers.verdict`)
         affordance = step.affordance
         if affordance.adapter != affordances.SELF and turns.needs_fetching(affordance):

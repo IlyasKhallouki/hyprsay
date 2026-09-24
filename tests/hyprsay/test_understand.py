@@ -2310,3 +2310,21 @@ def test_with_jev_unavailable_the_grammars_own_reading_still_acts():
     assert decision.action.intent is Intent.PRESS_CHORD
     assert decision.action.verb == "ctrl+w"
     assert u.last_exchange["path"] == "degraded, grammar"
+
+
+def test_when_jev_finds_nothing_the_grammars_own_reading_acts():
+    # live: "close this app" with a window named only by its class; the grammar read it
+    # as closing the window in front, Jev answered "none" five times out of five
+    parses = {"close this app": Parse(Intent.CLOSE_WINDOW, Slots(deictic=True))}
+    u = Understander(
+        SINGLE, FakeLexicon(APPS), FakeGrammar(parses), FakeEvaluator({**ADDRESSED}),
+        normalizer=FakeNormalizer(), adapters=(),
+    )  # fmt: skip
+    firefox_in_front = desktop(FOX_A, TERMINAL, active=FOX_A.address)
+    decision = asyncio.run(
+        u.understand(
+            Transcript("close this app", "test"), firefox_in_front, pinned_address=FOX_A.address
+        )
+    )
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window == FOX_A
