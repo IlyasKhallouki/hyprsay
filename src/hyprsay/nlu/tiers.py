@@ -351,37 +351,28 @@ class Evidence:
 
 
 def verdict(level: int, evidence: Evidence) -> tuple[Verdict, str]:
-    """The verdict for a fully formed action, and one plain sentence saying why."""
+    """The verdict for a fully formed action, and one plain sentence saying why.
+
+    The owner's rule, set on 2026-09-22 and repeated with force on 2026-09-24: act on the
+    best reading and never ask which. The old rules turned a weak piece of evidence into
+    "pick a number"; in the owner's first spoken session Jev chose "close Spotify" at
+    0.86 to 1.0 from "close part of fine" and "close spotterfie", and those rules threw
+    the answer away four times. So a reading that got this far acts. What keeps a
+    disruptive one safe is the spoken cancel window, and its verb said out loud.
+    """
     if level >= 3:
         if evidence.source != "grammar":
             return Verdict.REFUSE, "session actions are only accepted as exact commands"
         return Verdict.CONFIRM_KEY, "press the confirm key to continue"
     if level == 2:
         return _disruptive(evidence)
-    if not evidence.corroborated:
-        return Verdict.HINTS, "nothing you said names that target, so pick a number"
-    if not evidence.agree:
-        return Verdict.HINTS, "two readings of the command disagree, so pick a number"
-    if level == 1:
-        if not evidence.wide_margin:
-            return Verdict.HINTS, "that was a close call, so pick a number"
-        return Verdict.ACT, ""
-    # tier 0 is free to reverse: act now, and let a number re-target (PLAN 5.6)
-    if evidence.plausible > 1:
-        return Verdict.ACT_SWAP, "say a number to switch to another candidate"
     return Verdict.ACT, ""
 
 
 def _disruptive(evidence: Evidence) -> tuple[Verdict, str]:
     if not evidence.verb_said:
         return Verdict.REFUSE, "a disruptive action needs its verb said out loud, like close"
-    if evidence.late:
-        return Verdict.HINTS, "the answer came late, so nothing disruptive happens by itself"
-    if not evidence.explicit_target or evidence.by_title:
-        return Verdict.HINTS, "say which window, or pick a number"
-    if not (evidence.corroborated and evidence.agree and evidence.wide_margin):
-        return Verdict.HINTS, "not sure enough of the target for that, so pick a number"
-    return Verdict.COUNTDOWN, "cancel within the countdown to stop this"
+    return Verdict.COUNTDOWN, "say cancel to stop this"
 
 
 # Intents that can only be reached by an exact grammar phrase the speaker said, never by

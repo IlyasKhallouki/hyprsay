@@ -289,51 +289,39 @@ def test_slots_from_the_grammar_travel_into_the_action():
     )
 
 
-def test_a_focus_among_several_windows_of_one_app_takes_the_most_recent_and_offers_a_swap():
-    # free to reverse, so asking twice is the worse failure; but the pick is a rule (most
-    # recently used, never the one already focused), not a model's guess, and no network
+def test_a_focus_among_several_windows_of_one_app_takes_the_most_recent_and_shows_nothing():
+    # the pick is a rule (most recently used, never the one already focused), not a
+    # model's guess, and never a list: the owner's rule is to act on the best reading
     u, jev = build(parses={"focus firefox": focus("firefox")})
     decision = say(u, "focus firefox")
-    assert (decision.verdict, decision.tier) == (Verdict.ACT_SWAP, 0)
+    assert (decision.verdict, decision.tier) == (Verdict.ACT, 0)
     assert decision.action.window == FOX_A
-    assert [c.window for c in decision.candidates] == [FOX_A, FOX_B]
+    assert len(decision.candidates) <= 1
     assert len(jev.calls) == 0
 
 
-def test_the_swap_rule_never_picks_the_window_already_focused():
+def test_the_most_recent_rule_never_picks_the_window_already_focused():
     u, _ = build(parses={"focus firefox": focus("firefox")})
     decision = say(u, "focus firefox", state=replace(DESKTOP, active_address=FOX_A.address))
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_B
 
 
-def test_the_same_tie_on_an_action_that_is_not_free_to_reverse_still_asks():
+def test_the_same_tie_on_a_move_takes_the_most_recent_window_too():
     move = Parse(Intent.MOVE_TO_WORKSPACE, Slots(window_ref="firefox", workspace="3"))
     u, jev = build(parses={"move firefox to workspace 3": move})
     decision = say(u, "move firefox to workspace 3")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.action.window is None
-    assert [c.window for c in decision.candidates] == [FOX_A, FOX_B]
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == FOX_A
+    assert decision.action.workspace == "3"
     assert len(jev.calls) == 0
-
-
-def test_hints_carry_the_pending_operation_as_a_template_with_a_blank_target():
-    move = Parse(Intent.MOVE_TO_WORKSPACE, Slots(window_ref="firefox", workspace="4"))
-    u, _ = build(parses={"move firefox to 4": move})
-    decision = say(u, "move firefox to 4")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.action.intent is Intent.MOVE_TO_WORKSPACE
-    assert decision.action.workspace == "4"
-    assert decision.action.window is None
-    assert u.pending == decision.action
 
 
 def test_a_leftover_word_that_singles_out_one_title_breaks_the_tie_locally():
     u, jev = build(parses={"focus the firefox with cats": focus("firefox")})
     decision = say(u, "focus the firefox with cats")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
-    assert [c.window for c in decision.candidates] == [FOX_A, FOX_B]
     assert len(jev.calls) == 0
 
 
@@ -344,17 +332,17 @@ def test_leftover_words_inside_the_referring_phrase_do_not_hide_the_trusted_matc
         parses={"focus the firefox with cats": focus("firefox with cats")}, lexicon=lexicon
     )
     decision = say(u, "focus the firefox with cats")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
     assert len(jev.calls) == 0
 
 
-def test_a_title_never_picks_the_window_to_close():
+def test_closing_one_of_two_windows_counts_down_on_the_most_recent_rather_than_asking():
     close = Parse(Intent.CLOSE_WINDOW, Slots(window_ref="firefox"))
     u, jev = build(parses={"close the firefox with cats": close})
     decision = say(u, "close the firefox with cats")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.action.window is None
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window == FOX_A
     assert len(jev.calls) == 0
 
 
@@ -377,25 +365,25 @@ def test_lock_screen_is_tier_3_and_waits_for_a_physical_key():
     assert len(jev.calls) == 0
 
 
-def test_focusing_an_app_with_no_open_window_offers_to_launch_it():
+def test_focusing_an_app_with_no_open_window_starts_it():
     u, jev = build(parses={"focus gimp": focus("gimp")})
     decision = say(u, "focus gimp")
-    assert decision.verdict is Verdict.SUGGEST
+    assert decision.verdict is Verdict.ACT
     assert decision.action.intent is Intent.LAUNCH_APP
     assert decision.action.app == GIMP
-    assert decision.suggestions == ("open gimp",)
+    assert decision.suggestions == ()
     assert len(jev.calls) == 0
 
 
-def test_an_exact_match_the_utterance_does_not_corroborate_becomes_hints():
+def test_an_exact_match_the_utterance_does_not_corroborate_is_still_focused():
     class Silent(FakeLexicon):
         def corroborates(self, utterance, *, app=None, window=None):
             return False
 
     u, _ = build(parses={"focus spotify": focus("spotify")}, lexicon=Silent(APPS))
     decision = say(u, "focus spotify")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.candidates[0].window == MUSIC
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == MUSIC
 
 
 def test_an_untrusted_app_is_never_launched():
@@ -534,42 +522,6 @@ def test_a_very_long_utterance_is_dictation_and_is_not_sent():
 # --------------------------------------------------------------------------- picking
 
 
-def test_a_number_while_picking_acts_on_that_candidate_with_the_pending_intent():
-    u, jev = build(parses={"focus firefox": focus("firefox")})
-    hints = say(u, "focus firefox")
-    decision = say(u, "2", picking=hints.candidates)
-    assert decision.verdict is Verdict.ACT
-    assert decision.action.intent is Intent.FOCUS_WINDOW
-    assert decision.action.window == FOX_B
-    assert u.pending is None
-    assert len(jev.calls) == 0
-
-
-def test_a_pick_reuses_every_slot_of_the_pending_operation():
-    move = Parse(Intent.MOVE_TO_WORKSPACE, Slots(window_ref="firefox", workspace="4"))
-    u, _ = build(parses={"move firefox to 4": move})
-    hints = say(u, "move firefox to 4")
-    decision = say(u, "1", picking=hints.candidates)
-    assert (decision.verdict, decision.tier) == (Verdict.ACT, 1)
-    assert (decision.action.window, decision.action.workspace) == (FOX_A, "4")
-
-
-def test_only_pick_cancel_and_undo_are_valid_while_picking():
-    parses = {
-        "focus firefox": focus("firefox"),
-        "workspace 3": Parse(Intent.SWITCH_WORKSPACE, Slots(workspace="3")),
-    }
-    u, jev = build({**ADDRESSED, "intent": "focus_window"}, parses=parses)
-    hints = say(u, "focus firefox")
-    for other in ("workspace 3", "go to my music"):
-        again = say(u, other, picking=hints.candidates)
-        assert again.verdict is Verdict.HINTS
-        assert again.candidates == hints.candidates
-    assert len(jev.calls) == 0
-    # the hints are still live afterwards
-    assert say(u, "1", picking=hints.candidates).action.window == FOX_A
-
-
 def test_cancel_and_undo_while_picking_act_and_clear_the_pending_operation():
     for word, intent in (("cancel", Intent.CANCEL), ("undo", Intent.UNDO)):
         u, _ = build(parses={"focus firefox": focus("firefox")})
@@ -586,33 +538,6 @@ def test_a_number_with_no_badge_shows_the_hints_again():
     decision = say(u, "7", picking=hints.candidates)
     assert decision.verdict is Verdict.HINTS
     assert "7" in decision.reason
-
-
-def test_picking_which_window_to_close_is_still_a_countdown():
-    close = Parse(Intent.CLOSE_WINDOW, Slots(window_ref="firefox"))
-    u, _ = build(parses={"close firefox": close})
-    hints = say(u, "close firefox")
-    assert hints.verdict is Verdict.HINTS
-    decision = say(u, "2", picking=hints.candidates)
-    assert (decision.verdict, decision.tier) == (Verdict.COUNTDOWN, 2)
-    assert decision.action.window == FOX_B
-
-
-def test_a_picked_window_that_has_gone_is_refused():
-    u, _ = build(parses={"focus firefox": focus("firefox")})
-    hints = say(u, "focus firefox")
-    decision = say(u, "2", desktop(TERMINAL, FOX_A), picking=hints.candidates)
-    assert decision.verdict is Verdict.REFUSE
-    assert "gone" in decision.reason
-
-
-def test_the_launch_offer_can_be_picked():
-    u, _ = build(parses={"focus gimp": focus("gimp")})
-    offer = say(u, "focus gimp")
-    decision = say(u, "1", picking=offer.candidates)
-    assert (decision.verdict, decision.tier) == (Verdict.ACT, 1)
-    assert decision.action.intent is Intent.LAUNCH_APP
-    assert decision.action.app == GIMP
 
 
 def test_a_number_with_nothing_pending_is_refused():
@@ -692,7 +617,7 @@ def test_agreement_with_margin_and_one_plausible_window_just_acts():
     assert u.last_exchange["path"] == "jev"
 
 
-def test_tier_0_with_a_plausible_runner_up_acts_and_offers_a_swap():
+def test_tier_0_with_a_plausible_runner_up_acts_and_offers_nothing():
     script = {
         **ADDRESSED,
         "intent": "focus_window",
@@ -702,14 +627,12 @@ def test_tier_0_with_a_plausible_runner_up_acts_and_offers_a_swap():
     }
     u, _ = build(script)
     decision = say(u, "go to the browser")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
-    assert [c.window for c in decision.candidates] == [FOX_A, FOX_B]
+    assert len(decision.candidates) <= 1
 
 
-def test_disagreement_between_the_two_formulations_caps_at_hints():
-    # one corroborated window, so no tie rule applies: what is left is the two
-    # formulations pointing at different windows, and that alone must stop the action
+def test_disagreement_between_the_two_formulations_still_acts_on_the_best_reading():
     script = {
         **ADDRESSED,
         "intent": "focus_window",
@@ -719,23 +642,22 @@ def test_disagreement_between_the_two_formulations_caps_at_hints():
     }
     u, _ = build(script)
     decision = say(u, "go to my music")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.action.window is None
-    assert {c.window for c in decision.candidates} == {MUSIC, NOTES}
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window in (MUSIC, NOTES)
 
 
-def test_all_absolute_booleans_low_means_no_such_window_and_offers_a_launch():
+def test_all_absolute_booleans_low_means_no_such_window_and_starts_the_app():
     # the forced choice still crowns the terminal; nothing may focus it
     script = {**ADDRESSED, "intent": "focus_window", "window": "w1"}
     u, jev = build(script)
     decision = say(u, "bring up gimp")
-    assert decision.verdict is Verdict.SUGGEST
+    assert decision.verdict is Verdict.ACT
     assert decision.action.intent is Intent.LAUNCH_APP
     assert decision.action.app == GIMP
     assert "app" not in jev.asked, "the lexicon already knew the app, so R3 was skipped"
 
 
-def test_the_launch_offer_can_come_from_the_app_shards():
+def test_the_launch_can_come_from_the_app_shards():
     def the_image_editor(question, state):
         return next(k for k, d in question.options.items() if k != "none" and d["name"] == "GIMP")
 
@@ -743,7 +665,7 @@ def test_the_launch_offer_can_come_from_the_app_shards():
     u, jev = build(script)
     decision = say(u, "bring up my photo thing")
     assert "app" in jev.asked
-    assert decision.verdict is Verdict.SUGGEST
+    assert decision.verdict is Verdict.ACT
     assert decision.action.app == GIMP
 
 
@@ -791,30 +713,29 @@ def test_a_jev_close_that_points_uses_the_pinned_window():
     assert decision.action.window == FOX_B
 
 
-def test_a_jev_close_with_no_target_named_or_pointed_at_is_hints():
+def test_a_jev_close_with_no_target_named_counts_down_on_the_best_candidate():
     script = {**ADDRESSED, "intent": "close_window", "names_window": 0.1, "deictic": 0.2}
     u, _ = build(script)
     decision = say(u, "close", pinned_address="0x3")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.candidates[0].window == FOX_B
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window == FOX_B
 
 
-def test_a_thin_margin_blocks_tier_1_but_not_tier_0():
+def test_a_thin_margin_acts_at_tier_1_as_at_tier_0():
     thin = {"window": {"w4": 0.5, "w1": 0.4, "w2": 0.05, "w3": 0.05}, "is_w4": 0.8}
     u, _ = build({**ADDRESSED, "intent": "fullscreen", "names_window": 0.9, **thin})
-    assert say(u, "blow up the music").verdict is Verdict.HINTS
+    assert say(u, "blow up the music").verdict is Verdict.ACT
     u, _ = build({**ADDRESSED, "intent": "focus_window", **thin})
     decision = say(u, "jump over to the music")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == MUSIC
 
 
-def test_a_window_the_utterance_does_not_name_by_a_trusted_field_becomes_hints():
+def test_a_window_the_utterance_does_not_name_by_a_trusted_field_is_still_focused():
     u, _ = build(music())
     decision = say(u, "go to the thing for tunes")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.candidates[0].window == MUSIC
-    assert not decision.candidates[0].corroborated
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == MUSIC
 
 
 def test_an_operation_with_no_window_named_lands_on_the_pinned_window():
@@ -853,7 +774,7 @@ def test_intent_none_with_nothing_close_is_nothing():
     assert say(u, "what a day").verdict is Verdict.NOTHING
 
 
-def test_addressed_but_not_understood_suggests_examples_for_the_plausible_intents():
+def test_addressed_but_not_understood_lists_no_options():
     script = {
         **ADDRESSED,
         "intent": {"none": 0.5, "focus_window": 0.3, "launch_app": 0.16, "media": 0.04},
@@ -861,21 +782,14 @@ def test_addressed_but_not_understood_suggests_examples_for_the_plausible_intent
     u, _ = build(script)
     decision = say(u, "do the thing with the browser")
     assert decision.verdict is Verdict.SUGGEST
-    assert decision.suggestions == (
-        "focus_window example 1",
-        "focus_window example 2",
-        "launch_app example 1",
-        "launch_app example 2",
-    )
+    assert decision.suggestions == ()
 
 
-def test_a_near_tie_between_intents_suggests_instead_of_guessing():
+def test_a_near_tie_between_intents_acts_on_the_one_that_won():
     script = {**ADDRESSED, "intent": {"focus_window": 0.5, "launch_app": 0.45, "none": 0.05}}
     u, _ = build(script)
     decision = say(u, "firefox")
-    assert decision.verdict is Verdict.SUGGEST
-    assert decision.action is None
-    assert "focus_window example 1" in decision.suggestions
+    assert decision.suggestions == ()
 
 
 def test_an_unsupported_kind_says_so_plainly():
@@ -946,10 +860,10 @@ def test_command_confidence_is_the_minimum_over_the_answers_the_intent_read():
 
 
 def test_the_service_confidence_field_is_never_used_for_gating():
-    # the fake reports confidence 0.99 on every choice, including this near-tie
+    # the fake reports confidence 0.99 on every choice; it must never reach a decision
     thin = {"window": {"w4": 0.5, "w1": 0.45, "w2": 0.03, "w3": 0.02}, "is_w4": 0.8}
     u, _ = build({**ADDRESSED, "intent": "fullscreen", "names_window": 0.9, **thin})
-    assert say(u, "blow up the music").verdict is Verdict.HINTS
+    say(u, "blow up the music")
     assert "0.99" not in json.dumps(u.last_exchange)
 
 
@@ -960,20 +874,18 @@ def near_music():
     return FakeLexicon(APPS, window_scores={"tunes thing": [("0x4", 0.6), ("0x2", 0.4)]})
 
 
-def test_a_jev_timeout_degrades_to_hints_for_the_grammars_intent():
+def test_a_jev_timeout_acts_on_the_grammars_intent_with_the_best_window():
     u, jev = build(
         evaluator=FakeEvaluator.timing_out(),
         parses={"focus the tunes thing": focus("tunes thing")},
         lexicon=near_music(),
     )
     decision = say(u, "focus the tunes thing")
-    assert decision.verdict is Verdict.HINTS
+    assert decision.verdict is Verdict.ACT
     assert decision.action.intent is Intent.FOCUS_WINDOW
-    assert [c.window for c in decision.candidates] == [MUSIC, FOX_A]
-    assert "too long" in decision.reason
+    assert decision.action.window == MUSIC
     assert jev.calls
     assert u.last_exchange["path"] == "degraded"
-    assert say(u, "1", picking=decision.candidates).action.window == MUSIC
 
 
 @pytest.mark.parametrize("make", [FakeEvaluator.unavailable, FakeEvaluator.busy])
@@ -982,10 +894,10 @@ def test_jev_down_without_a_grammar_intent_is_a_suggestion_with_a_plain_reason(m
     decision = say(u, "go to my music")
     assert decision.verdict is Verdict.SUGGEST
     assert "unavailable" in decision.reason
-    assert decision.suggestions
+    assert decision.suggestions == ()
 
 
-def test_a_rejected_key_is_refused_plainly_and_still_hints_when_the_intent_is_known():
+def test_a_rejected_key_is_refused_plainly_and_still_acts_when_the_intent_is_known():
     u, _ = build(evaluator=FakeEvaluator.unauthorized())
     decision = say(u, "go to my music")
     assert decision.verdict is Verdict.REFUSE
@@ -995,15 +907,15 @@ def test_a_rejected_key_is_refused_plainly_and_still_hints_when_the_intent_is_kn
         parses={"focus the tunes thing": focus("tunes thing")},
         lexicon=near_music(),
     )
-    assert say(u, "focus the tunes thing").verdict is Verdict.HINTS
+    assert say(u, "focus the tunes thing").verdict is Verdict.ACT
 
 
-def test_window_requests_failing_after_the_intent_is_known_degrade_to_hints():
+def test_window_requests_failing_after_the_intent_is_known_act_on_the_best_window():
     failing = FakeEvaluator(music(), fail_on={"window": JevUnavailable("HTTP 503")})
     u, _ = build(evaluator=failing, lexicon=FakeLexicon(APPS))
     decision = say(u, "go to my music")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.candidates[0].window == MUSIC
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == MUSIC
 
 
 @pytest.mark.parametrize("off", ["disabled", "no evaluator"])
@@ -1019,7 +931,7 @@ def test_with_jev_off_the_evaluator_is_never_called(off):
         parses={"focus the tunes thing": focus("tunes thing")},
         lexicon=near_music(),
     )
-    assert say(u, "focus the tunes thing").verdict is Verdict.HINTS
+    assert say(u, "focus the tunes thing").verdict is Verdict.ACT
     assert len(jev.calls) == 0
 
 
@@ -1034,7 +946,7 @@ def test_a_disruptive_intent_without_its_verb_is_refused_even_when_degraded():
     assert say(u, "shut the tunes thing").verdict is Verdict.REFUSE
 
 
-def test_a_late_answer_never_produces_a_tier_2_action_but_may_still_focus():
+def test_a_late_answer_still_acts_and_a_close_still_counts_down():
     cfg = replace(CFG, jev=Jev(deadline_s=0.001, late_answer_s=2.0, path="fanout"))
     close = {
         **ADDRESSED,
@@ -1045,7 +957,8 @@ def test_a_late_answer_never_produces_a_tier_2_action_but_may_still_focus():
     }
     u, _ = build(evaluator=FakeEvaluator(close, delay=0.03), cfg=cfg)
     decision = say(u, "kill the music")
-    assert decision.verdict is Verdict.HINTS
+    # a late answer still acts; a close gets its spoken cancel window, not a question
+    assert decision.verdict is Verdict.COUNTDOWN
     u, _ = build(evaluator=FakeEvaluator(music(), delay=0.03), cfg=cfg)
     assert say(u, "go to my music").verdict is Verdict.ACT
 
@@ -1129,13 +1042,14 @@ def test_a_decisive_title_answer_breaks_a_tie_among_corroborated_windows():
     }
     u, _ = build(script)
     decision = say(u, "go to the firefox with kittens")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_B
 
 
 def test_a_title_answer_of_cannot_tell_never_breaks_the_tie():
     # measured live: without this option the question answered 0.97 for "bring the browser
-    # here", an utterance that mentions nothing in either title, and that pick moved a window
+    # here", an utterance that mentions nothing in either title. The tie is broken by
+    # recency instead, never by the title answer, and never by asking.
     script = {
         **ADDRESSED,
         "intent": "move_to_workspace",
@@ -1148,9 +1062,8 @@ def test_a_title_answer_of_cannot_tell_never_breaks_the_tie():
     }
     u, _ = build(script)
     decision = say(u, "put the firefox with kittens on workspace 5")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.action.window is None
-    assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == FOX_A
 
 
 def test_a_move_ignores_rivals_that_are_already_on_the_destination():
@@ -1166,12 +1079,12 @@ def test_a_move_ignores_rivals_that_are_already_on_the_destination():
     assert len(jev.calls) == 0
 
 
-def test_a_move_between_two_rivals_that_are_both_elsewhere_still_asks():
+def test_a_move_between_two_rivals_that_are_both_elsewhere_moves_the_most_recent():
     move = Parse(Intent.MOVE_TO_WORKSPACE, Slots(window_ref="firefox", workspace="here"))
     u, _ = build(parses={"bring firefox here": move})
     decision = say(u, "bring firefox here")  # both Firefox windows are on workspace 2
-    assert decision.verdict is Verdict.HINTS
-    assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window == FOX_A
 
 
 def test_an_indecisive_title_answer_leaves_an_ordinary_tie():
@@ -1186,10 +1099,9 @@ def test_an_indecisive_title_answer_leaves_an_ordinary_tie():
     u, _ = build(script)
     decision = say(u, "go to the firefox with kittens")
     # the title could not separate them, so this is an ordinary tie: a focus takes the
-    # most recent and offers the swap, never the title answer's weak preference
-    assert decision.verdict is Verdict.ACT_SWAP
+    # most recent, never the title answer's weak preference
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
-    assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
 
 
 def test_the_grammar_hands_a_same_app_tie_with_leftover_words_to_the_title_request():
@@ -1197,7 +1109,7 @@ def test_the_grammar_hands_a_same_app_tie_with_leftover_words_to_the_title_reque
     u, jev = build(script, parses={"focus the firefox with kittens": focus("firefox")})
     decision = say(u, "focus the firefox with kittens")
     assert "titled" in jev.asked and "intent" not in jev.asked
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
 
 
@@ -1227,13 +1139,12 @@ def test_a_described_app_launches_through_the_shards_when_a_trusted_field_names_
     assert decision.action.app == GIMP
 
 
-def test_an_app_jev_picks_that_nothing_said_corroborates_becomes_hints():
+def test_an_app_jev_picks_that_nothing_said_corroborates_is_started():
     u, _ = build({**ADDRESSED, "intent": "launch_app", "app": pick_app("GIMP")})
     decision = say(u, "fire up something for photos")
-    assert decision.verdict is Verdict.HINTS
+    assert decision.verdict is Verdict.ACT
     assert decision.action.intent is Intent.LAUNCH_APP
-    assert decision.action.app is None
-    assert decision.candidates[0].app == GIMP
+    assert decision.action.app == GIMP
 
 
 def test_untrusted_apps_are_never_offered_to_jev():
@@ -1355,7 +1266,7 @@ def test_with_the_real_grammar_a_leftover_title_word_still_breaks_the_tie_locall
     # the real grammar copies "firefox with cats" whole into the slot
     u, jev = real()
     decision = say(u, "focus the firefox with cats")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window == FOX_A
     assert len(jev.calls) == 0
 
@@ -1405,12 +1316,10 @@ def test_two_commands_in_one_utterance_come_back_as_one_decision_carrying_the_re
     assert u.last_exchange["clauses"] == ["focus firefox", "close kitty"]
 
 
-def test_a_clause_after_a_question_is_aimed_at_the_window_the_answer_picks():
-    """ "Find the channel and scroll down" with two browsers open: the first clause asks
-    which browser, so the second cannot be aimed at whatever held the key. It used to be,
-    which sent the scroll to the focused terminal and refused it. A hinted clause leaves
-    the same "settled at run time" a launch does, and `ops._authorize_gesture` guards it
-    there."""
+def test_a_clause_after_a_tie_is_aimed_at_the_window_the_tie_went_to():
+    """ "Go to youtube and scroll down" with two browsers open: the first clause takes the
+    most recent browser, so the second is aimed at it and not at the focused terminal,
+    which is where it used to go (and be refused)."""
     both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
     parses = {
         "go to youtube com": inapp_parse(Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"),
@@ -1418,10 +1327,11 @@ def test_a_clause_after_a_question_is_aimed_at_the_window_the_answer_picks():
     }
     u, _ = build(SEPARATED, parses=parses)
     decision = say(u, "go to youtube com and scroll down", both, pinned_address=TERMINAL.address)
-    assert decision.verdict is Verdict.HINTS
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window == FOX_A
     scroll = decision.rest[0]
     assert scroll.action.intent is Intent.SCROLL
-    assert scroll.action.window is None  # not the terminal, and not yet any window
+    assert scroll.action.window != TERMINAL
     assert scroll.verdict is not Verdict.REFUSE
 
 
@@ -1894,10 +1804,8 @@ def test_a_browser_recipe_goes_to_the_browser_even_when_a_terminal_is_focused():
     assert decision.action.window == FOX_A
 
 
-def test_a_recipe_offers_the_choice_when_two_windows_could_do_it():
-    """Nobody can know which browser was meant, so it asks. It used to refuse with the
-    typing sentence, which blamed the focused terminal for an ambiguity between two
-    browsers that had nothing to do with it."""
+def test_a_recipe_goes_to_the_most_recent_of_two_windows_that_could_do_it():
+    """It used to ask which browser, and before that refuse with the typing sentence."""
     both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
     u, _ = build(
         parses={
@@ -1907,30 +1815,9 @@ def test_a_recipe_offers_the_choice_when_two_windows_could_do_it():
         }
     )
     decision = say(u, "go to youtube com", both, pinned_address=TERMINAL.address)
-    assert decision.verdict is Verdict.HINTS
-    assert {c.window for c in decision.candidates} == {FOX_A, FOX_B}
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window == FOX_A
     assert "terminal" not in decision.reason
-
-
-def test_picking_a_window_for_a_recipe_keeps_what_the_recipe_is_for():
-    """A template drops dictated text on purpose: it waits in `pending` for a number, and
-    the speaker's private words do not outlive the decision they were cut for. What a
-    recipe is for is not dictation, though. Dropping it too left the hinted recipe with
-    nothing to type, so answering "1" ran a find for "" and refused."""
-    both = replace(browser(), windows=(TERMINAL, FOX_A, FOX_B), active_address=TERMINAL.address)
-    u, _ = build(
-        parses={
-            "go to youtube com": inapp_parse(
-                Intent.RUN_RECIPE, verb="go_to_url", text="youtube.com"
-            )
-        }
-    )
-    hints = say(u, "go to youtube com", both, pinned_address=TERMINAL.address)
-    assert hints.action.text == "youtube.com"
-    picked = say(u, "1", both, picking=hints.candidates)
-    assert picked.action.window in (FOX_A, FOX_B)
-    assert picked.action.text == "youtube.com"
-    assert picked.verdict is not Verdict.REFUSE
 
 
 def test_a_template_still_never_carries_dictated_text():
@@ -2011,16 +1898,15 @@ def test_the_single_path_stays_silent_when_it_was_not_said_to_the_computer():
     assert say(u, "take me to my music").verdict is Verdict.NOTHING
 
 
-def test_a_near_tie_does_nothing_and_names_both():
+def test_a_near_tie_acts_on_the_favourite_and_names_nothing():
     def tie(question, state):
         keys = [k for k in question.options if k != "none"]
         return {keys[0]: 0.45, keys[1]: 0.40, "none": 0.15}
 
     u, _ = build({**ADDRESSED, "action": tie}, cfg=SINGLE)
     decision = say(u, "take me to my music")
-    assert decision.verdict is Verdict.SUGGEST
-    assert decision.reason.startswith("did you mean")
-    assert " or " in decision.reason
+    assert decision.verdict in ACTING
+    assert "did you mean" not in decision.reason
 
 
 def test_the_single_path_degrades_when_jev_times_out():
@@ -2124,37 +2010,37 @@ def test_a_request_that_must_shrink_drops_layout_and_workspaces_before_anything_
 # --------------------------------------------------------------- the single request's safety rules
 
 
-def test_two_windows_the_words_both_name_are_a_tie_for_anything_above_tier_zero():
-    # FOX_A and FOX_B are both Firefox: "close firefox" must ask, however sure Jev is
+def test_two_windows_the_words_both_name_count_down_on_the_most_recent():
+    # FOX_A and FOX_B are both Firefox: "close firefox" takes the most recently used,
+    # with the spoken cancel window, and never asks which
     script = {**ADDRESSED, "action": _option_labelled("close Firefox")}
     u, _ = build(script, cfg=SINGLE)
     decision = say(u, "could you close firefox")
-    assert decision.verdict is Verdict.HINTS
-    assert {c.window.address for c in decision.candidates} == {FOX_A.address, FOX_B.address}
+    assert decision.verdict is Verdict.COUNTDOWN
+    assert decision.action.window.address == FOX_A.address
 
 
-def test_a_focus_tie_takes_the_most_recent_window_that_is_not_in_front_and_offers_the_rest():
+def test_a_focus_tie_takes_the_most_recent_window_that_is_not_in_front():
     def the_older_firefox(question, state):
         labels = {k: v.get("label", "") for k, v in question.options.items() if isinstance(v, dict)}
         return next(k for k, label in labels.items() if label.startswith("Firefox"))
 
     u, _ = build({**ADDRESSED, "action": the_older_firefox}, cfg=SINGLE)
     decision = say(u, "take me to firefox please")
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.window.address == FOX_A.address  # the most recently used
 
 
-def test_a_going_verb_offers_to_start_an_app_that_has_no_window():
+def test_a_going_verb_starts_an_app_that_has_no_window():
     script = {**ADDRESSED, "action": _option_labelled("GIMP")}
     u, _ = build(script, cfg=SINGLE)
     decision = say(u, "show me gimp")
-    assert decision.verdict is Verdict.SUGGEST
+    assert decision.verdict is Verdict.ACT
     assert decision.action is not None and decision.action.intent is Intent.LAUNCH_APP
 
 
-def test_an_app_named_only_by_its_kind_is_offered_not_started():
-    # the lexicon scores "terminal" against kitty through its kind alone, under the gate
-    # that lets a launch happen without asking
+def test_an_app_named_only_by_its_kind_is_started():
+    # "open another terminal": kitty is the terminal, and starting it is the best reading
     lexicon = FakeLexicon(APPS, app_scores={"open another terminal": [("kitty", 0.68)]})
 
     def launch_kitty(question, state):
@@ -2164,7 +2050,8 @@ def test_an_app_named_only_by_its_kind_is_offered_not_started():
     script = {**ADDRESSED, "action": launch_kitty}
     u, _ = build(script, cfg=SINGLE, lexicon=lexicon)
     decision = say(u, "open another terminal")
-    assert decision.verdict is not Verdict.ACT
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.intent is Intent.LAUNCH_APP
 
 
 class TabsOnly:
@@ -2345,11 +2232,12 @@ def test_a_bit_more_after_a_page_scroll_scrolls_again():
     assert again.action.service.handle == "scroll 7 down"
 
 
-def test_a_bare_more_with_nothing_before_it_names_nothing():
+def test_a_bare_more_with_nothing_before_it_does_what_jev_chose():
+    # nothing before it to continue, so it is Jev's reading alone that acts
     script = {**ADDRESSED, "action": _option_labelled("scroll this page down")}
     u = _single_with((PageScroller(),), script)
     decision = asyncio.run(u.understand(Transcript("a bit more", "test"), BROWSING_CHROME))
-    assert decision.verdict not in ACTING
+    assert decision.verdict in ACTING
 
 
 class PageClicker(TabsOnly):

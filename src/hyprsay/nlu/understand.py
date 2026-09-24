@@ -1121,14 +1121,13 @@ class Understander:
         return self._offer(found.app, found.candidates[0], heard)
 
     def _offer(self, app: App, candidate: Candidate, heard: _Heard) -> Decision:
-        """All R2b low, or no live match: offer to launch rather than focus the nearest."""
+        """No window of it is open: start it, rather than offer to (the owner's rule)."""
         return Decision(
-            Verdict.SUGGEST,
+            Verdict.ACT,
             Action(Intent.LAUNCH_APP, app=app),
             (candidate,),
             tier=1,
-            reason=f'no {app.name} window is open; say "open {app.name.lower()}" to start it',
-            suggestions=(f"open {app.name.lower()}",),
+            reason=f"no {app.name} window was open, so it was started",
             heard=heard.said,
         )
 
@@ -1313,8 +1312,10 @@ class Understander:
             return Decision(
                 Verdict.NOTHING, reason="that did not sound like a command", heard=heard.said
             )
-        if step is None or step.probability < plan.MIN_PROBABILITY or step.margin < plan.MIN_MARGIN:
+        if step is None:
+            # "none" won, or nothing that won could run
             return self._unsure(reading, options, heard)
+        # anything else that won is acted on, however narrowly (`tiers.verdict`)
         affordance = step.affordance
         if affordance.adapter != affordances.SELF and turns.needs_fetching(affordance):
             query = reading.words if reading.words_p >= WORDS_FLOOR else ""
@@ -1485,22 +1486,12 @@ class Understander:
     def _unsure(
         self, reading: decide.Reading, options: dict[str, Affordance], heard: _Heard
     ) -> Decision:
-        """Addressed, but no option won clearly: say the two it was torn between.
+        """Addressed, and nothing on the list was what was asked. No options are named.
 
         Hearing it again can only help when the model was unsure of everything, which is
         when a misheard word is the likely cause (`Decision.rehearable`).
         """
-        first = reading.step.affordance if reading.step else options.get(reading.runner_up)
-        second = options.get(reading.runner_up) if reading.step else None
-        labels = [a.label for a in (first, second) if a is not None]
-        low = reading.step is None or reading.step.probability < plan.MIN_PROBABILITY
-        if len(labels) == 2:
-            reason = f"did you mean {labels[0]} or {labels[1]}?"
-        elif labels:
-            reason = f"did you mean {labels[0]}?"
-        else:
-            reason = "not sure what you meant"
-        return self._suggest(heard, reason, rehearable=low)
+        return self._suggest(heard, "did not catch that", rehearable=True)
 
     # -------------------------------------------------------------- compound utterances
 
@@ -1945,7 +1936,9 @@ class Understander:
         note = replace(note, asked_ms=self.last_exchange.get("elapsed_ms") or 0.0)
         if elapsed is not None:
             self.last_exchange["elapsed_ms"] = elapsed
-        picked = plan.read(answers.steps, options, count=1)
+        # the best result is taken however narrowly it won (`tiers.verdict`); only "none"
+        # ends the turn with nothing done
+        picked = plan.read(answers.steps, options, count=1, floor=0.0, margin=0.0)
         if not picked.steps:
             return self._gave_up(note, _GAVE_UP.get(picked.cut, turns.Stopped.UNANSWERED), heard)
         chosen = picked.steps[0]
@@ -3099,32 +3092,29 @@ class Understander:
         heard: _Heard,
         state: DesktopState,
     ) -> Decision:
+        """Several targets fit: act on the best one, never a list to pick from.
+
+        The owner's rule (`tiers.verdict`). The best is the most recently used window that
+        is not already in front, when the targets are windows, and otherwise the first,
+        which is the ranking every caller already sorts by.
+        """
         level = tiers.tier(template.intent, template, state, self.cfg)
-        if level >= 2 and not tiers.verb_said(template.intent, heard.literal):
-            # even a numbered pick may not turn an unspoken verb into a disruptive action
-            verdict, why = tiers.verdict(level, Evidence(source="jev"))
-            return Decision(verdict, tier=level, reason=why, heard=heard.said)
         if not candidates:
-            return self._suggest(heard, reason, template.intent)
-        swap = self._most_recent_rival(template, candidates, level, state)
-        if swap is not None:
-            return Decision(
-                Verdict.ACT_SWAP,
-                replace(template, window=swap.window),
-                (swap, *(c for c in candidates if c is not swap))[:MAX_HINTS],
-                tier=level,
-                reason="several windows fit: took the most recent, say a number to switch",
-                heard=heard.said,
-            )
-        blank = replace(template, window=None, app=None)
-        return Decision(
-            Verdict.HINTS,
-            blank,
-            candidates[:MAX_HINTS],
-            tier=level,
-            reason=reason,
-            heard=heard.said,
+            return self._suggest(heard, "could not tell what that was about", template.intent)
+        best = self._most_recent_rival(template, candidates, level, state) or candidates[0]
+        if best.window is not None:
+            action = replace(template, window=best.window)
+        elif best.app is not None:
+            action = replace(template, app=best.app)
+        else:
+            return self._suggest(heard, "could not tell what that was about", template.intent)
+        evidence = Evidence(
+            source="jev",
+            corroborated=True,
+            verb_said=tiers.verb_said(template.intent, heard.literal),
+            explicit_target=True,
         )
+        return self._finish(action, evidence, (best,), heard, state)
 
     def _most_recent_rival(
         self,
@@ -3133,32 +3123,30 @@ class Understander:
         level: int,
         state: DesktopState,
     ) -> Candidate | None:
-        """Tier 0 only: which of several equally good windows to take without asking.
+        """Which of several equally good windows to take without asking.
 
         A focus costs nothing to reverse, so making the speaker say everything twice is the
         worse failure. But the choice must not ride on a noisy model: measured, Jev flips a
         near-tie about one time in eight. So it is a rule: the most recently used window
         that is not the one already focused ("go to the browser" said from a browser means
-        the other one). Every rival must be corroborated by a trusted field, so a hostile
-        title can never put a window on this list. Anything above tier 0 still asks.
+        the other one). For anything else, the most recently used of them. Only among
+        the ones that match equally well: a better match is not overruled by recency
+        ("the tunes thing" is Spotify even when Firefox was used last).
         """
-        if level != 0 or template.intent is not Intent.FOCUS_WINDOW or len(candidates) < 2:
+        best = max((c.score for c in candidates), default=0.0)
+        windows = [c for c in candidates if c.window is not None and c.score >= best - 1e-6]
+        if len(windows) < 2:
             return None
-        if not all(c.window is not None and c.corroborated for c in candidates):
-            return None
-        others = [c for c in candidates if c.window.address != state.active_address]
-        return min(others, key=lambda c: c.window.focus_rank) if others else None
+        if template.intent is Intent.FOCUS_WINDOW:
+            others = [c for c in windows if c.window.address != state.active_address]
+            return min(others, key=lambda c: c.window.focus_rank) if others else None
+        return min(windows, key=lambda c: c.window.focus_rank)
 
     def _suggest(
         self, heard: _Heard, reason: str, *intents: Intent, rehearable: bool = True
     ) -> Decision:
-        return Decision(
-            Verdict.SUGGEST,
-            reason=reason,
-            suggestions=self._examples(*intents),
-            heard=heard.said,
-            rehearable=rehearable,
-        )
+        # no examples to choose from: the owner does not want options, ever
+        return Decision(Verdict.SUGGEST, reason=reason, heard=heard.said, rehearable=rehearable)
 
     def _dictation(self, heard: _Heard) -> Decision:
         """Someone is dictating and the grammar could not place it.

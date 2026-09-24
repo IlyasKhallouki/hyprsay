@@ -241,13 +241,22 @@ def test_a_search_and_a_find_are_not_the_same_vote():
     assert step is not None and step.margin == pytest.approx(0.05)
 
 
-def test_an_option_that_cannot_run_cannot_win():
+def test_a_favourite_that_cannot_run_is_not_replaced_by_the_runner_up():
+    # "turn it back to seventy something": the volume could not be set without a number,
+    # and acting on whatever came second would do something nobody asked for
     options = {"x1": _aff("x1"), "x2": _aff("x2")}
     step = decide.choose(
         _reading({"x1": 0.7, "x2": 0.25, "none": 0.05}), options, viable=lambda a: a.id != "x1"
     )
-    assert step is not None and step.id == "x2"
-    assert step.probability == pytest.approx(0.25)
+    assert step is None
+
+
+def test_a_runner_up_that_cannot_run_does_not_stop_the_favourite():
+    options = {"x1": _aff("x1"), "x2": _aff("x2")}
+    step = decide.choose(
+        _reading({"x1": 0.7, "x2": 0.25, "none": 0.05}), options, viable=lambda a: a.id != "x2"
+    )
+    assert step is not None and step.id == "x1"
 
 
 def test_none_can_win_the_choice():

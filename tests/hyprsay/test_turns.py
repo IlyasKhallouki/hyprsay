@@ -593,21 +593,21 @@ def test_a_homoglyph_in_a_track_name_raises_what_it_costs_and_so_refuses_it():
     assert service.performed == []
 
 
-def test_an_untrusted_label_puts_an_option_in_the_list_and_still_never_authorizes_it():
-    """The whole trust rule in one utterance.
+def test_an_option_jev_chose_by_its_label_acts_below_tier_2():
+    """The trust rule as the owner set it on 2026-09-24: act on the best reading.
 
-    A track name ranks its own option into the list, because ranking is not authorization
-    (`affordances.claims`). It may not then be the evidence that acts on it: the tier
-    rests on the capability's SUMMARY, which is one line written in this repository. Here
-    the speaker says only words the track label holds, so the option is offered, chosen,
-    and refused for lack of anything the speaker said that names what it does.
+    A track name ranks its own option into the list, and when Jev then chooses it the
+    choice acts, at the capability's tier. Before, a label could not be the evidence and
+    this was refused; the owner's first session showed what that cost ("pick a number"
+    four times for a command Jev had right). A label still can never reach tier 2 on its
+    own: that needs the verb said out loud (`tiers.verdict`).
     """
     player = FakeService(caps=(PAUSE,))
     u, _ = build({"step_1": "x2"}, adapters=(player,))
     decision = say(u, "bohemian rhapsody live at wembley")
     assert u.last_exchange["path"] == "service"
-    assert decision.verdict is not Verdict.ACT
-    assert player.performed == []
+    assert decision.verdict is Verdict.ACT
+    assert decision.tier <= 1
 
 
 def test_a_capability_the_speaker_did_name_is_acted_on_through_the_adapter_that_owns_it():

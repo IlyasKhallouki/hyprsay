@@ -380,14 +380,14 @@ def test_open_an_app_that_is_not_running_still_launches_it():
     assert jev.calls == 0
 
 
-def test_open_with_two_windows_of_that_app_offers_the_other_as_a_badge():
+def test_open_with_two_windows_of_that_app_takes_the_most_recent_and_shows_no_badges():
     other = win("0x5", "google-chrome", 4, "Docs", workspace=2)
     u, _ = build()
     decision = say(u, "open chrome", desktop(TERMINAL, CHROME_8, other))
-    assert decision.verdict is Verdict.ACT_SWAP
+    assert decision.verdict is Verdict.ACT
     assert decision.action.intent is Intent.FOCUS_WINDOW
     assert decision.action.window is CHROME_8  # the most recently used of the two
-    assert [c.window for c in decision.candidates] == [CHROME_8, other]
+    assert len(decision.candidates) <= 1
 
 
 @pytest.mark.parametrize(
@@ -430,9 +430,9 @@ def test_a_hostile_title_cannot_turn_a_launch_into_a_focus_of_its_own_window():
     assert decision.action.window is None
 
 
-def test_reaching_a_window_still_needs_the_utterance_to_name_it():
-    """A focus that nothing said corroborates is hints, exactly as it is on the focus
-    path: this branch lowers what an utterance costs, so it may not skip that check."""
+def test_a_window_the_utterance_does_not_corroborate_is_still_reached():
+    """It used to be hints; the owner's rule is to act on the best reading, and focusing
+    the most recent Chrome is it."""
 
     class Silent(Lexicon):
         def corroborates(self, utterance, *, app=None, window=None):
@@ -440,41 +440,14 @@ def test_reaching_a_window_still_needs_the_utterance_to_name_it():
 
     u, _ = build(lexicon=Silent(APPS))
     decision = say(u, "open chrome")
-    assert decision.verdict is Verdict.HINTS
-    assert decision.candidates[0].window is CHROME_8
+    assert decision.verdict is Verdict.ACT
+    assert decision.action.window is CHROME_8
 
 
 # --------------------------------------------------------------------------- corrections
 
 
 TWO_CHROMES = desktop(TERMINAL, CHROME_8, win("0x5", "google-chrome", 4, "Docs", workspace=2))
-
-
-def pending(understander, text="open chrome", state=TWO_CHROMES):
-    """Act on something that leaves badges up, and hand the badges back."""
-    shown = say(understander, text, state)
-    assert len(shown.candidates) >= 2, "this fixture only works when two badges are showing"
-    return shown
-
-
-@pytest.mark.parametrize(
-    "correction", ["no the other one", "not that one", "the other one", "the other window"]
-)
-def test_a_correction_re_targets_the_badge_the_swap_did_not_take(correction):
-    u, _ = build()
-    shown = pending(u)
-    decision = say(u, correction, TWO_CHROMES, picking=shown.candidates)
-    assert decision.verdict is Verdict.ACT
-    assert decision.action.intent is Intent.FOCUS_WINDOW
-    assert decision.action.window == shown.candidates[1].window
-
-
-def test_undo_and_cancel_still_reach_the_machinery_they_always_did():
-    u, _ = build()
-    shown = pending(u)
-    for phrase, intent in (("undo that", Intent.UNDO), ("cancel", Intent.CANCEL)):
-        decision = say(u, phrase, TWO_CHROMES, picking=shown.candidates)
-        assert (decision.verdict, decision.action.intent) == (Verdict.ACT, intent)
 
 
 def test_a_correction_is_not_a_command_when_no_badge_is_showing():

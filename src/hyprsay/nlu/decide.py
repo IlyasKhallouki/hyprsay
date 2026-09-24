@@ -148,6 +148,10 @@ SAME_THING: dict[str, str] = {"open_url": "go to an address", "go_to_url": "go t
 SAME_CAPABILITY: dict[str, str] = {
     "browser.search": "look something up on this site",
     "browser.find": "look something up on this site",
+    # "open youtube dot com" split 0.61 to 0.33 between these two in the owner's session,
+    # and both open youtube.com in a new tab
+    "browser.open": "open a website in a new tab",
+    "browser.address": "open a website in a new tab",
 }
 
 
@@ -171,9 +175,9 @@ def choose(
 
     Two rules, both about what the answer means rather than what it says:
 
-    - an option that cannot run cannot win. A "found by name" option with no name said,
-      or an address that is not one, is set aside, and its probability goes nowhere: it
-      is not handed to the runner-up, so nothing gains evidence it did not get.
+    - an option that cannot run cannot win, and when it is the favourite nothing wins: a
+      "found by name" option with no name said, or an address that is not one, is not
+      replaced by whatever came second, since that was not what was asked for.
     - synonyms are one vote (`SAME_THING`, `SAME_CAPABILITY`). The winner inside the vote
       is the option that can run that the model liked best, and the vote keeps what its
       other members got: they were votes for the same thing, done another way.
@@ -193,12 +197,13 @@ def choose(
         votes[vote] = votes.get(vote, 0.0) + p
         if viable(found) and p > best.get(vote, (-1.0, ""))[0]:
             best[vote] = (p, key)
-    # a vote none of whose members can run goes nowhere
-    votes = {vote: p for vote, p in votes.items() if vote == bank.NONE or vote in best}
     if not votes:
         return None
     ranked = sorted(votes.items(), key=lambda kv: -kv[1])
     top, total = ranked[0]
+    # the model's favourite is the reading acted on, and nothing else is (`tiers.verdict`):
+    # when it cannot run ("set the volume" with no number said), the runner-up is not
+    # promoted, because at 0.02 it was not what the speaker asked for
     if top == bank.NONE or top not in best:
         return None
     second = ranked[1][1] if len(ranked) > 1 else 0.0

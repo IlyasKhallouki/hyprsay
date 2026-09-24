@@ -97,12 +97,24 @@ HISTORY = Capability("browser.history", "go back or forward a page", tier=1, kin
 CLOSE = Capability(
     "browser.close_tab", "close this browser tab", tier=2, kind="browser tab", verbs=("close",)
 )
+# "open youtube dot com in this tab", said in the owner's first session, had nothing to
+# become: every way of opening a site made a new tab. Offered only when the speaker said
+# which tab, so "open youtube" still opens a new one.
+HERE = Capability(
+    "browser.here",
+    "go to a website in this browser tab",
+    tier=1,
+    kind="website",
+    wants_words=True,
+    words_kind="address",
+    said_with=("this", "here", "current", "same"),
+)
 ANYWHERE = (TAB, OPEN, ADDRESS)
 # The page's own options come first when a browser is in front: measured live, 14 tabs and
 # 10 top sites filled the browser's quota and "close this tab" never reached Jev. The
 # page's links come last of all: `base.offer` stops at 50 options, and 40 links placed
 # before the tabs and sites once cut "open youtube.com in a new tab" before it was built.
-IN_FRONT = (SEARCH, FIND, CLOSE, SCROLL, HISTORY)
+IN_FRONT = (SEARCH, FIND, CLOSE, SCROLL, HISTORY, HERE)
 BY_ID = {cap.id: cap for cap in (*ANYWHERE, *IN_FRONT, CLICK)}
 
 # how old a reading may be before a harvest refreshes it itself
@@ -353,6 +365,11 @@ class Browser:
             return self._sites(sites, tabs, context.heard)
         if capability == ADDRESS.id:
             return (self._option(ADDRESS, "a1", "open a website by its address", "address"),)
+        if capability == HERE.id:
+            if not in_front:
+                return ()
+            label = "go to a website in this tab"
+            return (self._option(HERE, "h1", label, "here"),)
         if not in_front or active is None:
             return ()
         tab = int(active["id"])
@@ -421,14 +438,16 @@ class Browser:
             self._call(client.open, rest, "new")
             self.forget_page()
             return Outcome(True, f"Opened {_host(rest)} in a new tab.")
-        if kind == "address":
+        if kind in ("address", "here"):
             try:
                 host = recipes.normalize_host(context.words)
             except recipes.RecipeError as exc:
                 raise AdapterError(str(exc)) from exc
-            self._call(client.open, f"https://{host}/", "new")
+            where = "current" if kind == "here" else "new"
+            self._call(client.open, f"https://{host}/", where)
             self.forget_page()
-            return Outcome(True, f"Opened {host} in a new tab.")
+            done = "in this tab" if kind == "here" else "in a new tab"
+            return Outcome(True, f"Opened {host} {done}.")
         if kind == "scroll":
             tab, way = rest.split(" ", 1)
             heading = self._call(client.scroll, way, int(tab))

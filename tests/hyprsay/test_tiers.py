@@ -140,29 +140,21 @@ def test_typing_is_tier_2_until_the_app_is_allowlisted():
 SURE = Evidence(source="jev", corroborated=True, agree=True, wide_margin=True)
 
 
-def test_tier_0_acts_and_offers_a_swap_when_there_is_more_than_one_plausible_candidate():
-    assert tiers.verdict(0, replace(SURE, plausible=3))[0] is Verdict.ACT_SWAP
-    assert tiers.verdict(0, replace(SURE, plausible=1))[0] is Verdict.ACT
-
-
-def test_tier_0_acts_on_a_thin_margin_because_focus_is_free_to_reverse():
-    thin = replace(SURE, wide_margin=False, plausible=2)
-    assert tiers.verdict(0, thin)[0] is Verdict.ACT_SWAP
-
-
-def test_tier_1_needs_a_wide_margin_or_it_blocks_on_hints():
-    assert tiers.verdict(1, SURE)[0] is Verdict.ACT
-    assert tiers.verdict(1, replace(SURE, wide_margin=False))[0] is Verdict.HINTS
+# The owner's rule (2026-09-22, and again 2026-09-24): act on the best reading, never
+# offer a list to pick from. Weak evidence used to become "pick a number"; it acts now.
+WEAK = [
+    replace(SURE, plausible=3),
+    replace(SURE, wide_margin=False, plausible=2),
+    replace(SURE, corroborated=False),
+    replace(SURE, agree=False),
+    replace(SURE, late=True),
+]
 
 
 @pytest.mark.parametrize("level", [0, 1])
-def test_an_uncorroborated_pick_becomes_hints(level):
-    assert tiers.verdict(level, replace(SURE, corroborated=False))[0] is Verdict.HINTS
-
-
-@pytest.mark.parametrize("level", [0, 1])
-def test_disagreement_between_formulations_caps_at_hints(level):
-    assert tiers.verdict(level, replace(SURE, agree=False))[0] is Verdict.HINTS
+@pytest.mark.parametrize("evidence", WEAK)
+def test_tiers_0_and_1_act_on_the_best_reading_however_weak_the_evidence(level, evidence):
+    assert tiers.verdict(level, evidence)[0] is Verdict.ACT
 
 
 def test_tier_2_without_the_verb_said_is_refused_whatever_jev_thinks():
@@ -177,19 +169,24 @@ def test_tier_2_with_the_verb_and_an_explicit_target_is_a_countdown():
     assert tiers.verdict(2, evidence)[0] is Verdict.COUNTDOWN
 
 
-def test_tier_2_without_an_explicit_target_is_hints():
-    evidence = replace(SURE, explicit_target=False, verb_said=True)
-    assert tiers.verdict(2, evidence)[0] is Verdict.HINTS
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        replace(SURE, explicit_target=False, verb_said=True),
+        replace(SURE, explicit_target=True, verb_said=True, late=True),
+        replace(SURE, explicit_target=True, verb_said=True, by_title=True),
+        replace(SURE, verb_said=True, corroborated=False, wide_margin=False),
+    ],
+)
+def test_tier_2_with_its_verb_said_counts_down_rather_than_asking_which(evidence):
+    # the spoken cancel window is what keeps it safe, not a question
+    assert tiers.verdict(2, evidence)[0] is Verdict.COUNTDOWN
 
 
-def test_tier_2_never_comes_from_a_late_answer():
-    evidence = replace(SURE, explicit_target=True, verb_said=True, late=True)
-    assert tiers.verdict(2, evidence)[0] is Verdict.HINTS
-
-
-def test_a_title_never_authorizes_a_tier_2_target():
-    evidence = replace(SURE, explicit_target=True, verb_said=True, by_title=True)
-    assert tiers.verdict(2, evidence)[0] is Verdict.HINTS
+def test_no_verdict_ever_asks_the_speaker_to_pick():
+    for level in (0, 1, 2, 3):
+        for evidence in (*WEAK, SURE, Evidence(source="grammar"), Evidence(source="jev")):
+            assert tiers.verdict(level, evidence)[0] not in (Verdict.HINTS, Verdict.ACT_SWAP)
 
 
 def test_tier_3_is_a_physical_key_and_only_from_the_grammar():
